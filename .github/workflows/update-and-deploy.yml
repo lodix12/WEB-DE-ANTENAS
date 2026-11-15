@@ -1,0 +1,104 @@
+name: Actualizar Censo Infoantenas y Desplegar en GitHub Pages
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      refresh_data:
+        description: 'Recolectar censo actualizado desde Infoantenas (MINETUR) antes de compilar'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages-update-and-deploy'
+  cancel-in-progress: false
+
+jobs:
+  update-data:
+    name: Recolectar Censo Nacional (Infoantenas)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_data != false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Descargar repositorio (rama main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configurar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ejecutar recolector espacial de antenas de España
+        run: python3 scripts/fetch_antenas.py --output public/data/antenas.json --delay 1.0
+
+      - name: Confirmar y publicar cambios si el censo se ha actualizado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- public/data/antenas.json; then
+            git add public/data/antenas.json
+            git commit -m "chore(data): actualizar censo de antenas de España"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          else
+            echo "No se detectaron cambios en public/data/antenas.json"
+          fi
+
+  build-and-deploy:
+    name: Compilar Aplicación y Publicar en GitHub Pages
+    needs: [update-data]
+    if: always() && (needs.update-data.result == 'success' || needs.update-data.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Descargar último estado del repositorio
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'main' || github.sha }}
+
+      - name: Configurar Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Instalar dependencias limpias
+        run: npm ci
+
+      - name: Ejecutar pruebas automatizadas (Crawler Python + Frontend Vitest)
+        run: |
+          python3 -m unittest scripts/test_fetch_antenas.py
+          npm test
+
+      - name: Compilar bundle de producción (TypeScript + Vite)
+        run: npm run build
+
+      - name: Copiar respaldo 404.html para alojamiento estático
+        run: cp dist/index.html dist/404.html
+
+      - name: Configurar entorno GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Subir artefacto estático
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+      - name: Desplegar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

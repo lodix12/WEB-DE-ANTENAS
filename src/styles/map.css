@@ -1,0 +1,848 @@
+/* ==========================================================================
+   Cartografía MapLibre GL + OpenFreeMap — Estilos Técnicos Vanilla CSS
+   ========================================================================== */
+
+.antenas-map-root {
+  --map-surface: rgba(255, 255, 255, 0.92);
+  --map-surface-hover: rgba(241, 245, 249, 0.96);
+  --map-surface-subtle: rgba(248, 250, 252, 0.85);
+  --map-border: rgba(15, 23, 42, 0.12);
+  --map-border-strong: rgba(15, 23, 42, 0.22);
+  --map-text: #0f172a;
+  --map-text-muted: #475569;
+  --map-text-subtle: #64748b;
+  --map-accent: #0284c7;
+  --map-accent-strong: #0369a1;
+  --map-accent-soft: rgba(2, 132, 199, 0.12);
+  --map-accent-border: rgba(2, 132, 199, 0.36);
+  --map-danger: #dc2626;
+  --map-danger-soft: rgba(220, 38, 38, 0.1);
+  --map-shadow:
+    0 10px 26px -6px rgba(15, 23, 42, 0.16),
+    0 2px 6px -1px rgba(15, 23, 42, 0.08);
+  --map-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.1);
+  --map-font-sans:
+    'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    sans-serif;
+  --map-font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 420px;
+  overflow: hidden;
+  background-color: #e2e8f0;
+  font-family: var(--map-font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--map-text);
+  text-align: left;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.antenas-map-root *,
+.antenas-map-root *::before,
+.antenas-map-root *::after {
+  box-sizing: border-box;
+}
+
+.antenas-map-root[data-map-dark='true'] {
+  --map-surface: rgba(15, 23, 42, 0.88);
+  --map-surface-hover: rgba(30, 41, 59, 0.95);
+  --map-surface-subtle: rgba(30, 41, 59, 0.72);
+  --map-border: rgba(148, 163, 184, 0.22);
+  --map-border-strong: rgba(148, 163, 184, 0.36);
+  --map-text: #f8fafc;
+  --map-text-muted: #cbd5e1;
+  --map-text-subtle: #94a3b8;
+  --map-accent: #38bdf8;
+  --map-accent-strong: #0ea5e9;
+  --map-accent-soft: rgba(56, 189, 248, 0.16);
+  --map-accent-border: rgba(56, 189, 248, 0.44);
+  --map-danger: #f87171;
+  --map-danger-soft: rgba(248, 113, 113, 0.16);
+  --map-shadow:
+    0 12px 30px -6px rgba(2, 6, 23, 0.62),
+    0 3px 8px -2px rgba(2, 6, 23, 0.42);
+  --map-shadow-sm: 0 3px 10px rgba(2, 6, 23, 0.45);
+  background-color: #0b1120;
+}
+
+.antenas-map-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* ==========================================================================
+   Barra Superior Flotante: Regiones de España + Herramientas Cartográficas
+   ========================================================================== */
+
+.map-overlay-top-stack {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
+.map-region-bar {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, calc(100% - 10px));
+  padding: 4px;
+  background: var(--map-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--map-border);
+  border-radius: 10px;
+  box-shadow: var(--map-shadow);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.map-region-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.map-region-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--map-text-subtle);
+  white-space: nowrap;
+  border-right: 1px solid var(--map-border);
+  margin-right: 2px;
+}
+
+.map-region-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--map-text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 6px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.map-region-btn:hover {
+  background: var(--map-surface-hover);
+  color: var(--map-text);
+}
+
+.map-region-btn:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 1px;
+}
+
+.map-region-btn.is-active {
+  background: var(--map-accent-soft);
+  border-color: var(--map-accent-border);
+  color: var(--map-accent);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   Botonera Derecha: Estilo OpenFreeMap, GPS y Modo Medición RF
+   ========================================================================== */
+
+.map-tools-cluster {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.map-tool-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 11px;
+  background: var(--map-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--map-border);
+  border-radius: 9px;
+  box-shadow: var(--map-shadow);
+  color: var(--map-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.map-tool-btn:hover:not(:disabled) {
+  background: var(--map-surface-hover);
+  border-color: var(--map-border-strong);
+}
+
+.map-tool-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.map-tool-btn:focus-visible {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 1px;
+}
+
+.map-tool-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.map-tool-btn.is-active {
+  background: var(--map-accent-soft);
+  border-color: var(--map-accent-border);
+  color: var(--map-accent);
+  font-weight: 600;
+}
+
+.map-spin {
+  animation: map-spin-keyframes 0.9s linear infinite;
+}
+
+@keyframes map-spin-keyframes {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Selector desplegable de mapas base OpenFreeMap */
+
+.map-style-switcher-wrap {
+  position: relative;
+}
+
+.map-style-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 268px;
+  padding: 6px;
+  background: var(--map-surface);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid var(--map-border);
+  border-radius: 11px;
+  box-shadow: var(--map-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 30;
+}
+
+.map-style-popover-header {
+  padding: 4px 8px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--map-text-subtle);
+  border-bottom: 1px solid var(--map-border);
+  margin-bottom: 2px;
+}
+
+.map-style-option {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--map-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.map-style-option:hover {
+  background: var(--map-surface-hover);
+}
+
+.map-style-option.is-selected {
+  background: var(--map-accent-soft);
+  border-color: var(--map-accent-border);
+}
+
+.map-style-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  border: 1px solid var(--map-border-strong);
+  position: relative;
+  overflow: hidden;
+}
+
+.map-style-swatch[data-style='liberty'] {
+  background: linear-gradient(135deg, #f1f5f9 0%, #dcfce7 52%, #bae6fd 100%);
+}
+
+.map-style-swatch[data-style='positron'] {
+  background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 60%, #cbd5e1 100%);
+}
+
+.map-style-swatch[data-style='bright'] {
+  background: linear-gradient(135deg, #fef9c3 0%, #e0f2fe 55%, #cbd5e1 100%);
+}
+
+.map-style-swatch[data-style='dark'] {
+  background: linear-gradient(135deg, #090d16 0%, #1e293b 65%, #334155 100%);
+}
+
+.map-style-swatch[data-style='fiord'] {
+  background: linear-gradient(135deg, #0c192c 0%, #172554 55%, #0369a1 100%);
+}
+
+.map-style-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.map-style-option-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--map-text);
+}
+
+.map-style-option-desc {
+  font-size: 11px;
+  color: var(--map-text-subtle);
+  line-height: 1.25;
+}
+
+.map-style-check {
+  color: var(--map-accent);
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Banner Activo de Modo Medición / Radar RF
+   ========================================================================== */
+
+.map-radar-banner {
+  pointer-events: auto;
+  align-self: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: var(--map-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--map-accent-border);
+  border-radius: 999px;
+  box-shadow: var(--map-shadow);
+  max-width: 100%;
+}
+
+.map-radar-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--map-accent);
+  box-shadow: 0 0 0 0 var(--map-accent-border);
+  animation: map-radar-ping 1.8s ease-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes map-radar-ping {
+  0% {
+    box-shadow: 0 0 0 0 var(--map-accent-border);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(14, 165, 233, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(14, 165, 233, 0);
+  }
+}
+
+.map-radar-banner-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--map-text);
+}
+
+.map-radar-telemetry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--map-accent-soft);
+  color: var(--map-accent);
+  font-family: var(--map-font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-radar-radii {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 6px;
+  border-left: 1px solid var(--map-border);
+}
+
+.map-radius-chip {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--map-text-muted);
+  font-family: var(--map-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.map-radius-chip:hover {
+  background: var(--map-surface-hover);
+  color: var(--map-text);
+}
+
+.map-radius-chip.is-active {
+  background: var(--map-accent-soft);
+  border-color: var(--map-accent-border);
+  color: var(--map-accent);
+  font-weight: 600;
+}
+
+.map-radar-close-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--map-border);
+  background: var(--map-surface-subtle);
+  color: var(--map-text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.map-radar-close-btn:hover {
+  background: var(--map-danger-soft);
+  color: var(--map-danger);
+  border-color: rgba(220, 38, 38, 0.3);
+}
+
+.map-geo-alert {
+  pointer-events: auto;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  background: var(--map-surface);
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  border-radius: 8px;
+  box-shadow: var(--map-shadow-sm);
+  color: var(--map-danger);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Leyenda Inferior Izquierda Colapsable por Operador
+   ========================================================================== */
+
+.map-legend-card {
+  position: absolute;
+  bottom: 16px;
+  left: 12px;
+  z-index: 11;
+  width: 238px;
+  background: var(--map-surface);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid var(--map-border);
+  border-radius: 11px;
+  box-shadow: var(--map-shadow);
+  overflow: hidden;
+  transition: width 0.18s ease;
+}
+
+.map-legend-card.is-collapsed {
+  width: auto;
+}
+
+.map-legend-header {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  background: transparent;
+  border: none;
+  color: var(--map-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.map-legend-header:hover {
+  background: var(--map-surface-hover);
+}
+
+.map-legend-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.map-legend-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--map-text);
+}
+
+.map-legend-subtitle {
+  font-size: 11px;
+  color: var(--map-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.map-legend-chevron {
+  color: var(--map-text-subtle);
+  flex-shrink: 0;
+}
+
+.map-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 7px 8px;
+  border-top: 1px solid var(--map-border);
+}
+
+.map-legend-item {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--map-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    opacity 0.15s ease;
+}
+
+.map-legend-item:hover:not(:disabled) {
+  background: var(--map-surface-hover);
+}
+
+.map-legend-item:disabled {
+  cursor: default;
+}
+
+.map-legend-item.is-inactive {
+  opacity: 0.45;
+}
+
+.map-legend-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.map-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.9);
+}
+
+.antenas-map-root[data-map-dark='true'] .map-legend-dot {
+  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.95);
+}
+
+.map-legend-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-legend-item.is-inactive .map-legend-name {
+  text-decoration: line-through;
+}
+
+.map-legend-count {
+  font-family: var(--map-font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--map-text-subtle);
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Tooltip / Popup Ligero de Estación Base (MapLibre Popup)
+   ========================================================================== */
+
+.antenas-map-popup.maplibregl-popup {
+  z-index: 25;
+  pointer-events: none;
+}
+
+.antenas-map-popup .maplibregl-popup-content {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  box-shadow:
+    0 12px 28px -6px rgba(2, 6, 23, 0.55),
+    0 2px 6px rgba(2, 6, 23, 0.3);
+  color: #f8fafc;
+  font-family:
+    'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    sans-serif;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.antenas-map-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.antenas-map-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.antenas-map-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: rgba(15, 23, 42, 0.94);
+}
+
+.antenas-map-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.antenas-map-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.antenas-map-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: rgba(15, 23, 42, 0.94);
+}
+
+.antenas-map-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: rgba(15, 23, 42, 0.94);
+}
+
+.antenas-map-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: rgba(15, 23, 42, 0.94);
+}
+
+.map-popup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.map-popup-op-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.map-popup-op-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.map-popup-gid {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.14);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.map-popup-loc {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-bottom: 2px;
+}
+
+.map-popup-dir {
+  font-size: 11.5px;
+  color: #cbd5e1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.map-popup-hint {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  font-size: 10.5px;
+  color: #38bdf8;
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   Integración Visual de Controles Nativos MapLibre GL
+   ========================================================================== */
+
+.antenas-map-root .maplibregl-ctrl-group {
+  background: var(--map-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--map-border);
+  border-radius: 9px;
+  box-shadow: var(--map-shadow-sm);
+  overflow: hidden;
+}
+
+.antenas-map-root .maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--map-border);
+}
+
+.antenas-map-root[data-map-dark='true']
+  .maplibregl-ctrl-group
+  button
+  .maplibregl-ctrl-icon {
+  filter: invert(1) brightness(1.6);
+}
+
+.antenas-map-root .maplibregl-ctrl-scale {
+  background: var(--map-surface);
+  border-color: var(--map-text-muted);
+  color: var(--map-text);
+  font-family: var(--map-font-mono);
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+/* ==========================================================================
+   Adaptación Responsiva Móvil y Tablet
+   ========================================================================== */
+
+@media (max-width: 900px) {
+  .map-top-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .map-tools-cluster {
+    align-self: flex-end;
+  }
+}
+
+@media (max-width: 600px) {
+  .map-overlay-top-stack {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    gap: 6px;
+  }
+
+  .map-region-bar-label {
+    display: none;
+  }
+
+  .map-tool-btn-label {
+    display: none;
+  }
+
+  .map-tool-btn {
+    padding: 0 9px;
+  }
+
+  .map-legend-card {
+    bottom: 10px;
+    left: 8px;
+    width: 205px;
+  }
+
+  .map-radar-banner {
+    border-radius: 12px;
+    padding: 6px 10px;
+  }
+}
