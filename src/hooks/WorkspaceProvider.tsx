@@ -55,6 +55,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProvince, setSelectedProvinceState] = useState('');
   const [selectedMunicipality, setSelectedMunicipality] = useState('');
+  const [selectedBand, setSelectedBand] = useState('');
   const [activeOperators, setActiveOperators] = useState<OperatorKey[]>(() => [
     ...OPERATOR_ORDER,
   ]);
@@ -130,6 +131,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setSearchQuery('');
     setSelectedProvinceState('');
     setSelectedMunicipality('');
+    setSelectedBand('');
     setActiveOperators([...OPERATOR_ORDER]);
   }, []);
 
@@ -137,6 +139,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     searchQuery.trim().length > 0 ||
     selectedProvince !== '' ||
     selectedMunicipality !== '' ||
+    selectedBand !== '' ||
     activeOperators.length !== OPERATOR_ORDER.length;
 
   const triggerFlyTo = useCallback((lat: number, lon: number, zoom = 14) => {
@@ -184,6 +187,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       if (next) {
         setRadarModeActive(false);
         setMeasurePoints((pts) => (pts.length >= 2 ? [] : pts));
+      } else {
+        setMeasurePoints([]);
       }
       return next;
     });
@@ -195,18 +200,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const jumpToCoordinates = useCallback(
-    (lat: number, lon: number, label = 'Coordenadas introducidas') => {
+    (lat: number, lon: number, _label?: string) => {
       setRadarModeActive(false);
       setGpsError(null);
-      setRadarPointState({
-        lat,
-        lon,
-        label,
-        radiusKm: radarRadiusKm,
-      });
-      triggerFlyTo(lat, lon, 14.5);
+      triggerFlyTo(lat, lon, 15);
     },
-    [radarRadiusKm, triggerFlyTo],
+    [triggerFlyTo],
   );
 
   const requestGpsLocation = useCallback(
@@ -223,12 +222,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         (pos) => {
           setGpsLoading(false);
           const { latitude, longitude } = pos.coords;
-          setRadarPointState({
-            lat: latitude,
-            lon: longitude,
-            label: 'Mi ubicación GPS',
-            radiusKm: radarRadiusKm,
-          });
           if (flyOnSuccess) {
             triggerFlyTo(latitude, longitude, 14.2);
           }
@@ -252,13 +245,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         },
       );
     },
-    [radarRadiusKm, triggerFlyTo],
+    [triggerFlyTo],
   );
 
   const focusAntennaOnMap = useCallback(
     (ant: AntennaRecord) => {
       setActiveOperators((prev) =>
         prev.includes(ant.op) ? prev : [...prev, ant.op],
+      );
+      setSelectedBand((prev) =>
+        prev && !ant.bandas?.includes(prev) ? '' : prev,
       );
       setSelectedAntenna(ant);
       triggerFlyTo(ant.lat, ant.lon, 16);
@@ -278,6 +274,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setSelectedProvince,
       selectedMunicipality,
       setSelectedMunicipality,
+      selectedBand,
+      setSelectedBand,
       activeOperators,
       toggleOperator,
       selectAllOperators,
@@ -316,6 +314,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectedProvince,
       setSelectedProvince,
       selectedMunicipality,
+      selectedBand,
       activeOperators,
       toggleOperator,
       selectAllOperators,

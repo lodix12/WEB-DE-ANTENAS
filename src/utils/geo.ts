@@ -174,7 +174,7 @@ export interface MapSiteEntry {
   lat: number;
   /** Longitud WGS84 del marcador (centroide en emplazamientos agrupados) */
   lon: number;
-  /** `true` cuando agrupa antenas de >= 2 operadores distintos a < 5 m */
+  /** `true` cuando agrupa antenas de >= 2 operadores distintos a < 35 m */
   isMultiOperator: boolean;
   /** Operadores integrados ordenados canónicamente según `OPERATOR_ORDER` */
   operators: OperatorKey[];
@@ -198,6 +198,11 @@ const OPERATOR_RANK: Record<OperatorKey, number> = (() => {
 
 const GRID_COL_STRIDE = 4_000_000;
 
+function computeSafeSpatialCellDeg(maxDistanceMeters: number): number {
+  // Cubre holgadamente `maxDistanceMeters` en longitud incluso a >= 44° N (`cos(44°) ≈ 0.719 > 0.65`).
+  return Math.max(0.0006, maxDistanceMeters / 111320 / 0.65);
+}
+
 function clusterConnectedIndicesByDistance(
   records: AntennaRecord[],
   maxDistanceMeters: number,
@@ -208,9 +213,7 @@ function clusterConnectedIndicesByDistance(
     return records.map((_, idx) => [idx]);
   }
 
-  // `cellDeg = 0.0001` (~11.1 m en latitud, ~8.0 m en longitud a 44°N) para < 5 m,
-  // escalando automáticamente si se solicita un umbral mayor (ej. 10 m en Vodafone).
-  const cellDeg = Math.max(0.0001, maxDistanceMeters / 55_000);
+  const cellDeg = computeSafeSpatialCellDeg(maxDistanceMeters);
   const maxDistanceKm = maxDistanceMeters / 1000;
   const maxLatDiffDeg = (maxDistanceMeters / 110_500) * 1.05;
 
@@ -294,6 +297,222 @@ function clusterConnectedIndicesByDistance(
   return Array.from(groupsByRoot.values());
 }
 
+interface CandidateMultiOpEdge {
+  u: number;
+  v: number;
+  distKm: number;
+}
+
+/**
+ * Agrupa antenas de distintos operadores a `< maxDistanceMeters` mediante enlace completo
+ * (`complete-linkage`) recorriendo las aristas en orden de distancia ascendente:
+ * - Las antenas de Telefónica (`movistar`) NUNCA se unen entre sí ni directa ni transitivamente
+ *   (`!(hasMovistarA && hasMovistarB)`): ningún icono compartido puede contener más de 1 `movistar`.
+ * - Para unir dos grupos A y B, todos los miembros de A deben distar `< maxDistanceMeters`
+ *   de todos los miembros de B, evitando cadenas transitivas artificiales.
+ */
+function clusterMultiOperatorSitesByCompleteLinkage(
+  records: AntennaRecord[],
+  maxDistanceMeters: number,
+): number[][] {
+  const n = records.length;
+  if (n === 0) return [];
+  if (n === 1 || maxDistanceMeters <= 0) {
+    return records.map((_, idx) => [idx]);
+  }
+
+  const cellDeg = computeSafeSpatialCellDeg(maxDistanceMeters);
+  const maxDistanceKm = maxDistanceMeters / 1000;
+  const maxLatDiffDeg = (maxDistanceMeters / 110_500) * 1.05;
+
+  const edges: CandidateMultiOpEdge[] = [];
+  const grid = new Map<number, number[]>();
+
+  for (let i = 0; i < n; i++) {
+    const rec = records[i];
+    const row = Math.floor((rec.lat + 90) / cellDeg);
+    const col = Math.floor((rec.lon + 180) / cellDeg);
+
+    for (let dRow = -1; dRow <= 1; dRow++) {
+      const neighborRowBase = (row + dRow) * GRID_COL_STRIDE;
+      for (let dCol = -1; dCol <= 1; dCol++) {
+        const bucket = grid.get(neighborRowBase + (col + dCol));
+        if (!bucket) continue;
+        for (let k = 0; k < bucket.length; k++) {
+          const j = bucket[k];
+          const candidate = records[j];
+          // Solo generamos aristas entre operadores distintos; dos antenas del mismo operador
+          // (en particular Telefónica/Movistar) jamás se auto-fusionan en esta fase.
+          if (rec.op === candidate.op) {
+            continue;
+          }
+          if (Math.abs(rec.lat - candidate.lat) > maxLatDiffDeg) {
+            continue;
+          }
+          const distKm = haversineDistanceKm(
+            rec.lat,
+            rec.lon,
+            candidate.lat,
+            candidate.lon,
+          );
+          if (distKm < maxDistanceKm) {
+            edges.push({ u: j, v: i, distKm });
+          }
+        }
+      }
+    }
+
+    const ownKey = row * GRID_COL_STRIDE + col;
+    const ownBucket = grid.get(ownKey);
+    if (ownBucket) {
+      ownBucket.push(i);
+    } else {
+      grid.set(ownKey, [i]);
+    }
+  }
+
+  if (edges.length === 0) {
+    return records.map((_, idx) => [idx]);
+  }
+
+  edges.sort((a, b) => {
+    const distDiff = a.distKm - b.distKm;
+    if (distDiff !== 0) return distDiff;
+
+    const aIdU = records[a.u].id;
+    const aIdV = records[a.v].id;
+    const aMinId = aIdU < aIdV ? aIdU : aIdV;
+    const aMaxId = aIdU < aIdV ? aIdV : aIdU;
+
+    const bIdU = records[b.u].id;
+    const bIdV = records[b.v].id;
+    const bMinId = bIdU < bIdV ? bIdU : bIdV;
+    const bMaxId = bIdU < bIdV ? bIdV : bIdU;
+
+    if (aMinId !== bMinId) return aMinId < bMinId ? -1 : 1;
+    if (aMaxId !== bMaxId) return aMaxId < bMaxId ? -1 : 1;
+    if (a.u !== b.u) return a.u - b.u;
+    return a.v - b.v;
+  });
+
+  const parent = new Int32Array(n);
+  const hasMovistar = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    parent[i] = i;
+    hasMovistar[i] = records[i].op === 'movistar' ? 1 : 0;
+  }
+
+  const groupMembers = new Map<number, number[]>();
+
+  const find = (x: number): number => {
+    let curr = x;
+    while (parent[curr] !== curr) {
+      parent[curr] = parent[parent[curr]];
+      curr = parent[curr];
+    }
+    return curr;
+  };
+
+  for (let e = 0; e < edges.length; e++) {
+    const edge = edges[e];
+    const rootA = find(edge.u);
+    const rootB = find(edge.v);
+    if (rootA === rootB) continue;
+
+    // Regla estricta de Telefónica: nunca unir dos grupos que ya contengan `movistar`
+    if (hasMovistar[rootA] === 1 && hasMovistar[rootB] === 1) {
+      continue;
+    }
+
+    const membersA = groupMembers.get(rootA);
+    const membersB = groupMembers.get(rootB);
+
+    // Enlace completo `< maxDistanceMeters` entre todos los miembros de A y todos los de B
+    let allWithinThreshold = true;
+    if (membersA !== undefined || membersB !== undefined) {
+      const listA = membersA ?? [rootA];
+      const listB = membersB ?? [rootB];
+
+      for (let ia = 0; ia < listA.length && allWithinThreshold; ia++) {
+        const idxA = listA[ia];
+        const recA = records[idxA];
+        for (let ib = 0; ib < listB.length; ib++) {
+          const idxB = listB[ib];
+          if (
+            (idxA === edge.u && idxB === edge.v) ||
+            (idxA === edge.v && idxB === edge.u)
+          ) {
+            continue;
+          }
+          const recB = records[idxB];
+          if (Math.abs(recA.lat - recB.lat) > maxLatDiffDeg) {
+            allWithinThreshold = false;
+            break;
+          }
+          if (
+            haversineDistanceKm(recA.lat, recA.lon, recB.lat, recB.lon) >=
+            maxDistanceKm
+          ) {
+            allWithinThreshold = false;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!allWithinThreshold) {
+      continue;
+    }
+
+    const lenA = membersA ? membersA.length : 1;
+    const lenB = membersB ? membersB.length : 1;
+
+    let targetRoot = rootA;
+    let sourceRoot = rootB;
+    if (lenA < lenB || (lenA === lenB && rootB < rootA)) {
+      targetRoot = rootB;
+      sourceRoot = rootA;
+    }
+
+    parent[sourceRoot] = targetRoot;
+    if (hasMovistar[sourceRoot] === 1) {
+      hasMovistar[targetRoot] = 1;
+    }
+
+    let targetList = groupMembers.get(targetRoot);
+    if (!targetList) {
+      targetList = [targetRoot];
+      groupMembers.set(targetRoot, targetList);
+    }
+    const sourceList = groupMembers.get(sourceRoot);
+    if (sourceList) {
+      for (let s = 0; s < sourceList.length; s++) {
+        targetList.push(sourceList[s]);
+      }
+      groupMembers.delete(sourceRoot);
+    } else {
+      targetList.push(sourceRoot);
+    }
+  }
+
+  const emittedRoots = new Uint8Array(n);
+  const result: number[][] = [];
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    if (emittedRoots[root] === 1) continue;
+    emittedRoots[root] = 1;
+    const list = groupMembers.get(root);
+    if (list) {
+      list.sort((a, b) => a - b);
+      result.push(list);
+    } else {
+      result.push([root]);
+    }
+  }
+
+  return result;
+}
+
 function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
   const sorted = [...group].sort((a, b) => {
     const gidCmp = a.gid.localeCompare(b.gid, 'es');
@@ -327,15 +546,16 @@ function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
 }
 
 /**
- * Agrupa en tiempo lineal O(N) las antenas colocalizadas para su representación en MapLibre:
- * - Fusiona de forma defensiva registros residuales de Vodafone a `< 10 m` en una sola antena.
- * - Agrupa en 1 único `MapSiteEntry` multicolor todas las antenas situadas a `< maxDistanceMeters`
- *   (`< 5 m` por defecto) cuando pertenecen a `>= 2` operadores distintos.
- * - Si en una componente `< 5 m` solo figura 1 operador, mantiene cada estación individual.
+ * Agrupa las antenas colocalizadas para su representación en MapLibre:
+ * - Fusiona de forma defensiva registros residuales de Vodafone a `< maxDistanceMeters` (`35 m` por defecto).
+ * - Agrupa en 1 único `MapSiteEntry` multicolor antenas de `>= 2` operadores distintos situadas
+ *   a `< maxDistanceMeters` (`35 m` por defecto) mediante enlace completo en orden de distancia creciente.
+ * - Las antenas de Telefónica (`movistar`) NUNCA se fusionan con otra antena de Telefónica (`movistar`),
+ *   ni directamente ni de forma transitiva a través de otro operador.
  */
 export function groupColocatedAntennasForMap(
   antenas: AntennaRecord[],
-  maxDistanceMeters = 5,
+  maxDistanceMeters = 35,
 ): MapSiteEntry[] {
   const valid: AntennaRecord[] = [];
   for (let i = 0; i < antenas.length; i++) {
@@ -349,8 +569,8 @@ export function groupColocatedAntennasForMap(
     return [];
   }
 
-  // 1. Pase defensivo O(N) para garantizar que registros residuales de Vodafone a < 10 m
-  //    representen siempre una única antena antes de evaluar la agrupación multi-operador.
+  // 1. Pase defensivo para garantizar que registros residuales de Vodafone a < maxDistanceMeters
+  //    (35 m por defecto) representen siempre una única antena antes de agrupar entre operadores.
   const vodafoneRecords: AntennaRecord[] = [];
   const vodafoneOriginalIndices: number[] = [];
   for (let i = 0; i < valid.length; i++) {
@@ -363,10 +583,10 @@ export function groupColocatedAntennasForMap(
   let normalizedRecords = valid;
   let extraMergedIdsByPrimaryId: Map<string, string[]> | null = null;
 
-  if (vodafoneRecords.length >= 2) {
+  if (vodafoneRecords.length >= 2 && maxDistanceMeters > 0) {
     const vodafoneComponents = clusterConnectedIndicesByDistance(
       vodafoneRecords,
-      10,
+      maxDistanceMeters,
     );
     const hasResidualDuplicates = vodafoneComponents.some(
       (comp) => comp.length >= 2,
@@ -403,8 +623,8 @@ export function groupColocatedAntennasForMap(
     }
   }
 
-  // 2. Malla espacial (`cellDeg = 0.0001`, ~11.1 m) + Union-Find para conectar estaciones a `< 5 m`.
-  const components = clusterConnectedIndicesByDistance(
+  // 2. Agrupación multi-operador a < maxDistanceMeters con enlace completo y restricción estricta de Telefónica.
+  const components = clusterMultiOperatorSitesByCompleteLinkage(
     normalizedRecords,
     maxDistanceMeters,
   );

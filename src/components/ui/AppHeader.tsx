@@ -29,44 +29,6 @@ export function AppHeader() {
 
   return (
     <header className="app-header" role="banner">
-      <Link to="/" className="brand-link" id="header-brand-link">
-        <span className="brand-mark" aria-hidden="true">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 32 32"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M8.5 21.8a10.2 10.2 0 0 1 0-14.2M23.5 7.6a10.2 10.2 0 0 1 0 14.2"
-              stroke="currentColor"
-              strokeWidth="2.3"
-              strokeLinecap="round"
-            />
-            <path
-              d="M12 18.6a5.5 5.5 0 0 1 0-7.8M20 10.8a5.5 5.5 0 0 1 0 7.8"
-              stroke="#38BDF8"
-              strokeWidth="2.3"
-              strokeLinecap="round"
-            />
-            <circle cx="16" cy="14.7" r="2.3" fill="#F8FAFC" />
-            <path
-              d="M16 17v8.5M12.2 25.5h7.6"
-              stroke="#F8FAFC"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-            />
-          </svg>
-        </span>
-        <span className="brand-text">
-          <span className="brand-title">RadioMapa España</span>
-          <span className="brand-subtitle">
-            Censo de Estaciones Móviles · Fuente Infoantenas
-          </span>
-        </span>
-      </Link>
-
       <nav className="header-nav" aria-label="Navegación principal">
         <Link
           to="/"

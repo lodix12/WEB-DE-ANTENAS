@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import gzip
+from html.parser import HTMLParser
 import http.client
 import json
 import logging
@@ -37,13 +38,16 @@ import urllib.parse
 import urllib.request
 
 ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/infoantenasGeoJSON.do"
+DETAIL_ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do"
 PORTAL_SOURCE_URL = "https://geoportal.minetur.gob.es/VCTEL/vcne.do"
 SERVER_FEATURE_CAP = 1000
 DEFAULT_ZOOM = 7
 DEFAULT_DELAY_SECONDS = 1.0
+DEFAULT_BAND_CHECKPOINT_EVERY = 50
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
 MAX_SUBDIVISION_DEPTH = 9
+FREQ_RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$")
 
 BBox = tuple[float, float, float, float]  # (min_lon, min_lat, max_lon, max_lat)
 
@@ -811,7 +815,8 @@ class InfoantenasCrawler:
 
 
 EARTH_RADIUS_M = 6_371_008.8
-VODAFONE_DEDUP_DISTANCE_M = 10.0
+DEFAULT_VODAFONE_FUSION_M = 35.0
+VODAFONE_DEDUP_DISTANCE_M = DEFAULT_VODAFONE_FUSION_M
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -860,12 +865,14 @@ def _vodafone_canonical_sort_key(
 
 def fuse_vodafone_duplicates(
     records: list[dict[str, Any]],
-    max_distance_m: float = VODAFONE_DEDUP_DISTANCE_M,
+    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Fusiona declaraciones duplicadas de Vodafone (`op == "vodafone"`) situadas a
-    estrictamente `< max_distance_m` metros usando malla espacial (`cell_deg = 0.0002`,
-    ~22 m) + Union-Find.
+    estrictamente `< max_distance_m` metros (por defecto 35.0 m) usando malla espacial
+    (`cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)`) + Union-Find.
+    Las estaciones de Telefónica (`op == "movistar"`) y del resto de operadores
+    jamás se fusionan entre sí en el dataset.
 
     Conserva 1 única estación canónica por componente conexa (manteniendo sus
     coordenadas reales WGS84 `lat`, `lon` para garantizar que ningún par de
@@ -905,7 +912,7 @@ def fuse_vodafone_duplicates(
         if ra != rb:
             parent[rb] = ra
 
-    cell_deg = max(0.0002, max_distance_m / 70_000.0)
+    cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)
     grid: dict[tuple[int, int], list[int]] = {}
 
     for k, rec in enumerate(voda_records):
@@ -948,6 +955,10 @@ def fuse_vodafone_duplicates(
             single = dict(comp_members[0])
             if isinstance(single.get("mergedGids"), list):
                 single["mergedGids"] = list(single["mergedGids"])
+            if isinstance(single.get("bandas"), list):
+                single["bandas"] = list(single["bandas"])
+            if isinstance(single.get("frecuencias"), list):
+                single["frecuencias"] = list(single["frecuencias"])
             merged_by_root[root] = single
             continue
 
@@ -993,6 +1004,27 @@ def fuse_vodafone_duplicates(
         if merged_gids:
             merged_rec["mergedGids"] = merged_gids
 
+        if all(isinstance(m.get("bandas"), list) for m in sorted_members):
+            combined_freqs: list[str] = []
+            for member in sorted_members:
+                for freq_item in member.get("frecuencias") or []:
+                    if isinstance(freq_item, str):
+                        combined_freqs.append(freq_item)
+            bandas_u, freqs_u = summarize_frequency_ranges(combined_freqs)
+            if not bandas_u:
+                extra_bands = {
+                    str(b).strip()
+                    for member in sorted_members
+                    for b in (member.get("bandas") or [])
+                    if str(b).strip()
+                }
+                bandas_u = sorted(extra_bands, key=_band_sort_key)
+            merged_rec["bandas"] = bandas_u
+            merged_rec["frecuencias"] = freqs_u
+        else:
+            merged_rec.pop("bandas", None)
+            merged_rec.pop("frecuencias", None)
+
         merged_by_root[root] = merged_rec
 
     emitted_roots: set[int] = set()
@@ -1000,7 +1032,12 @@ def fuse_vodafone_duplicates(
     for rec_idx, rec in enumerate(records):
         voda_k = voda_pos_by_record_idx.get(rec_idx)
         if voda_k is None:
-            output_records.append(dict(rec))
+            copied = dict(rec)
+            if isinstance(copied.get("bandas"), list):
+                copied["bandas"] = list(copied["bandas"])
+            if isinstance(copied.get("frecuencias"), list):
+                copied["frecuencias"] = list(copied["frecuencias"])
+            output_records.append(copied)
             continue
         root = find(voda_k)
         if root not in emitted_roots:
@@ -1010,22 +1047,808 @@ def fuse_vodafone_duplicates(
     return output_records, fused_duplicates
 
 
+def build_detalle_estacion_url(gid: str) -> str:
+    """Construye la URL oficial `detalleEstacion.do?emplazamiento=<gid>`."""
+    encoded_gid = urllib.parse.quote(str(gid).strip(), safe="")
+    return f"{DETAIL_ENDPOINT_URL}?emplazamiento={encoded_gid}"
+
+
+def decode_detalle_estacion_payload(raw_bytes: bytes) -> str:
+    """Decodifica el HTML en ISO-8859-1 devuelto por `detalleEstacion.do`."""
+    if not raw_bytes:
+        return ""
+    if raw_bytes[:2] == b"\x1f\x8b":
+        raw_bytes = gzip.decompress(raw_bytes)
+    return raw_bytes.decode("iso-8859-1", errors="replace")
+
+
+def _format_mhz(val: float) -> str:
+    rounded_2 = round(val, 2)
+    if abs(val - rounded_2) < 1e-6:
+        return f"{rounded_2:.2f}"
+    return f"{round(val, 4):.4f}".rstrip("0").rstrip(".")
+
+
+def _band_sort_key(label: str) -> tuple[float, str]:
+    text = label.strip()
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*(GHz|MHz)$", text, flags=re.IGNORECASE)
+    if m:
+        value = float(m.group(1))
+        unit = m.group(2).upper()
+        mhz = value * 1000.0 if unit == "GHZ" else value
+        return (mhz, text)
+    return (float("inf"), text)
+
+
+def classify_frequency_band(min_mhz: float, max_mhz: float) -> str:
+    """Clasifica un rango de frecuencias (MHz) en su etiqueta comercial española."""
+    mid = (float(min_mhz) + float(max_mhz)) / 2.0
+    if 700.0 <= mid <= 790.0:
+        return "700 MHz"
+    if 790.0 < mid <= 870.0:
+        return "800 MHz"
+    if 875.0 <= mid <= 965.0:
+        return "900 MHz"
+    if 1420.0 <= mid <= 1520.0:
+        return "1500 MHz"
+    if 1700.0 <= mid <= 1890.0:
+        return "1800 MHz"
+    if 1895.0 <= mid <= 2200.0:
+        return "2100 MHz"
+    if 2490.0 <= mid <= 2700.0:
+        return "2600 MHz"
+    if 3300.0 <= mid <= 3900.0:
+        return "3500 MHz"
+    if 24000.0 <= mid <= 28000.0:
+        return "26 GHz"
+    return f"{round(mid)} MHz"
+
+
+def summarize_frequency_ranges(
+    ranges: list[tuple[float, float]] | list[str],
+) -> tuple[list[str], list[str]]:
+    """
+    Deduplica y ordena numéricamente rangos `(min_mhz, max_mhz)` o cadenas `"min - max"`,
+    devolviendo `(bandas_ordenadas, frecuencias_ordenadas)`.
+    """
+    parsed: dict[str, tuple[float, float]] = {}
+    for item in ranges:
+        if isinstance(item, str):
+            m = FREQ_RANGE_RE.match(item.strip())
+            if not m:
+                continue
+            lo, hi = float(m.group(1)), float(m.group(2))
+        else:
+            lo, hi = float(item[0]), float(item[1])
+        if lo > hi:
+            lo, hi = hi, lo
+        formatted = f"{_format_mhz(lo)} - {_format_mhz(hi)}"
+        if formatted not in parsed:
+            parsed[formatted] = (lo, hi)
+
+    sorted_items = sorted(parsed.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[0]))
+    frecuencias = [kv[0] for kv in sorted_items]
+    band_set = {classify_frequency_band(lo, hi) for _, (lo, hi) in sorted_items}
+    bandas = sorted(band_set, key=_band_sort_key)
+    return bandas, frecuencias
+
+
+class _ParsedHTMLTable:
+    def __init__(self, heading: str) -> None:
+        self.heading = heading
+        self.has_child_tables = False
+        self.rows: list[list[str]] = []
+        self.current_row: list[str] | None = None
+        self.current_cell: list[str] | None = None
+
+    def finish_cell(self) -> None:
+        if self.current_cell is not None:
+            text = " ".join("".join(self.current_cell).split()).strip()
+            if self.current_row is None:
+                self.current_row = []
+            self.current_row.append(text)
+            self.current_cell = None
+
+    def finish_row(self) -> None:
+        self.finish_cell()
+        if self.current_row is not None:
+            if self.current_row:
+                self.rows.append(self.current_row)
+            self.current_row = None
+
+
+class _DetalleEstacionHTMLParser(HTMLParser):
+    """Extrae tablas anidadas preservando la cabecera de sección `<h2>` precedente."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tables: list[_ParsedHTMLTable] = []
+        self._stack: list[_ParsedHTMLTable] = []
+        self._current_heading = ""
+        self._in_h2 = False
+        self._h2_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower == "h2":
+            self._in_h2 = True
+            self._h2_parts = []
+            return
+        if tag_lower == "table":
+            if self._stack:
+                self._stack[-1].has_child_tables = True
+            self._stack.append(_ParsedHTMLTable(heading=self._current_heading))
+            return
+        if not self._stack:
+            return
+        top = self._stack[-1]
+        if tag_lower == "tr":
+            top.finish_row()
+            top.current_row = []
+        elif tag_lower in ("td", "th"):
+            if top.current_row is None:
+                top.current_row = []
+            top.finish_cell()
+            top.current_cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower == "h2":
+            self._in_h2 = False
+            heading_txt = " ".join("".join(self._h2_parts).split()).strip()
+            if heading_txt:
+                self._current_heading = heading_txt
+            self._h2_parts = []
+            return
+        if not self._stack:
+            return
+        if tag_lower in ("td", "th"):
+            self._stack[-1].finish_cell()
+        elif tag_lower == "tr":
+            self._stack[-1].finish_row()
+        elif tag_lower == "table":
+            tbl = self._stack.pop()
+            tbl.finish_row()
+            self.tables.append(tbl)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_h2:
+            self._h2_parts.append(data)
+        if self._stack and self._stack[-1].current_cell is not None:
+            self._stack[-1].current_cell.append(data)
+
+    def flush(self) -> None:
+        while self._stack:
+            tbl = self._stack.pop()
+            tbl.finish_row()
+            self.tables.append(tbl)
+
+
+def parse_detalle_estacion_html(html: str) -> list[dict[str, Any]]:
+    """
+    Analiza el HTML de `detalleEstacion.do` y devuelve únicamente las filas válidas de
+    frecuencia de la tabla `CARACTERISTICAS TÉCNICAS`, ignorando por completo la tabla
+    `NIVELES MEDIDOS` y la de `LOCALIZACIÓN`.
+    """
+    if not html or not html.strip():
+        return []
+
+    parser = _DetalleEstacionHTMLParser()
+    parser.feed(html)
+    parser.close()
+    parser.flush()
+
+    extracted: list[dict[str, Any]] = []
+    for tbl in parser.tables:
+        if tbl.has_child_tables or not tbl.rows:
+            continue
+
+        heading_norm = _strip_accents(tbl.heading.upper())
+        header_cells = [_strip_accents(c.upper()) for c in tbl.rows[0]]
+        header_joined = " | ".join(header_cells)
+
+        has_tech_headers = (
+            len(header_cells) >= 3
+            and "OPERADOR" in header_cells[0]
+            and any(tok in header_cells[2] for tok in ("BANDA", "FRECUENCIA", "MHZ"))
+        )
+
+        # Descartar siempre NIVELES MEDIDOS y LOCALIZACIÓN
+        if not has_tech_headers:
+            if "NIVELES MEDIDOS" in heading_norm or "LOCALIZACION" in heading_norm:
+                continue
+            if any(
+                tok in header_joined
+                for tok in ("DISTANCIA", "ACIMUT", "VALOR MEDIDO", "DIRECCION")
+            ):
+                continue
+
+        start_idx = 1 if has_tech_headers else 0
+        for row in tbl.rows[start_idx:]:
+            if len(row) < 3:
+                continue
+            operador_raw = " ".join(row[0].split()).strip()
+            referencia_raw = " ".join(row[1].split()).strip()
+            banda_raw = " ".join(row[2].split()).strip()
+            if not operador_raw or not banda_raw:
+                continue
+            match = FREQ_RANGE_RE.match(banda_raw)
+            if not match:
+                continue
+            lo = float(match.group(1))
+            hi = float(match.group(2))
+            if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= 0.0:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            frecuencia_clean = f"{_format_mhz(lo)} - {_format_mhz(hi)}"
+            extracted.append(
+                {
+                    "operador": operador_raw,
+                    "op": classify_operator(operador_raw),
+                    "referencia": referencia_raw,
+                    "frecuencia": frecuencia_clean,
+                    "minMhz": lo,
+                    "maxMhz": hi,
+                    "banda": classify_frequency_band(lo, hi),
+                }
+            )
+
+    return extracted
+
+
+def get_record_gids(rec: dict[str, Any]) -> list[str]:
+    """Devuelve todos los `Gis_ID` asociados a una antena (`gid` + `mergedGids` sin duplicados)."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    primary = str(rec.get("gid") or "").strip()
+    if primary:
+        seen.add(primary)
+        ordered.append(primary)
+    merged = rec.get("mergedGids")
+    if isinstance(merged, list):
+        for item in merged:
+            gid_str = str(item or "").strip()
+            if gid_str and gid_str not in seen:
+                seen.add(gid_str)
+                ordered.append(gid_str)
+    return ordered
+
+
+def count_bands_populated(records: list[dict[str, Any]]) -> int:
+    """Cuenta cuántas antenas disponen ya del campo `bandas` sincronizado."""
+    return sum(1 for r in records if isinstance(r.get("bandas"), list))
+
+
+def _load_records_from_preserve_source(
+    preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
+) -> list[dict[str, Any]]:
+    if preserve_from is None:
+        return []
+    if isinstance(preserve_from, (str, Path)):
+        path = Path(preserve_from)
+        if not path.exists():
+            return []
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.warning("No se pudo leer preserve_from=%s: %s", path, exc)
+            return []
+        if isinstance(loaded, dict) and isinstance(loaded.get("antenas"), list):
+            return [r for r in loaded["antenas"] if isinstance(r, dict)]
+        return []
+    if isinstance(preserve_from, dict):
+        antenas = preserve_from.get("antenas")
+        if isinstance(antenas, list):
+            return [r for r in antenas if isinstance(r, dict)]
+        return []
+    if isinstance(preserve_from, list):
+        return [r for r in preserve_from if isinstance(r, dict)]
+    return []
+
+
+def preserve_bands_in_records(
+    records: list[dict[str, Any]],
+    preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
+) -> int:
+    """
+    Reutiliza `bandas` y `frecuencias` ya extraídas en un dataset previo casando por
+    `id` o `(op, gid)` (verificando que ningún `mergedGid` nuevo haya quedado sin cubrir).
+    Devuelve el número de antenas enriquecidas desde `preserve_from`.
+    """
+    prior_records = _load_records_from_preserve_source(preserve_from)
+    if not prior_records:
+        return 0
+
+    by_id: dict[str, dict[str, Any]] = {}
+    by_op_gid: dict[tuple[str, str], dict[str, Any]] = {}
+    for old_rec in prior_records:
+        if not isinstance(old_rec.get("bandas"), list):
+            continue
+        old_id = str(old_rec.get("id") or "").strip()
+        old_op = str(old_rec.get("op") or "").strip()
+        old_gid = str(old_rec.get("gid") or "").strip()
+        if old_id:
+            by_id[old_id] = old_rec
+        if old_op:
+            for g in get_record_gids(old_rec):
+                by_op_gid.setdefault((old_op, g), old_rec)
+            if old_gid:
+                by_op_gid[(old_op, old_gid)] = old_rec
+
+    restored = 0
+    for rec in records:
+        if isinstance(rec.get("bandas"), list):
+            continue
+        rec_id = str(rec.get("id") or "").strip()
+        rec_op = str(rec.get("op") or "").strip()
+        rec_gid = str(rec.get("gid") or "").strip()
+        cand = by_id.get(rec_id)
+        if cand is None and rec_op and rec_gid:
+            cand = by_op_gid.get((rec_op, rec_gid))
+        if cand is None:
+            continue
+
+        new_gids = set(get_record_gids(rec))
+        old_gids = set(get_record_gids(cand))
+        if new_gids and not new_gids.issubset(old_gids):
+            continue
+
+        rec["bandas"] = list(cand["bandas"])
+        rec["frecuencias"] = list(cand.get("frecuencias") or [])
+        restored += 1
+
+    return restored
+
+
+def _extract_record_ranges_for_gid(
+    rec: dict[str, Any],
+    entries: list[dict[str, Any]],
+    records_at_gid: list[dict[str, Any]],
+) -> list[tuple[float, float]]:
+    if not entries:
+        return []
+    rec_op = str(rec.get("op") or "").strip() or classify_operator(str(rec.get("opRaw") or ""))
+    if rec_op == "otros":
+        rec_op_raw_norm = _strip_accents(
+            " ".join(str(rec.get("opRaw") or "").upper().split())
+        )
+        exact = [
+            e
+            for e in entries
+            if _strip_accents(" ".join(str(e.get("operador") or "").upper().split()))
+            == rec_op_raw_norm
+        ]
+        matched = exact if exact else [e for e in entries if e.get("op") == "otros"]
+    else:
+        matched = [e for e in entries if e.get("op") == rec_op]
+
+    # Si la estación es el único registro con este `gid` y hay una razón social atípica
+    # no reconocida por `classify_operator`, usar como respaldo todas las filas válidas.
+    if not matched and len(records_at_gid) <= 1:
+        matched = list(entries)
+
+    return [(float(e["minMhz"]), float(e["maxMhz"])) for e in matched]
+
+
+class BandEnricher:
+    """
+    Motor incremental de extracción de bandas y frecuencias desde `detalleEstacion.do`
+    respetando estrictamente `>= 1.0 s` entre peticiones HTTP consecutivas.
+    """
+
+    def __init__(
+        self,
+        delay_seconds: float = DEFAULT_DELAY_SECONDS,
+        max_band_seconds: float | None = None,
+        max_band_requests: int | None = None,
+        checkpoint_path: Path | None = None,
+        checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
+        timeout_seconds: float = 30.0,
+        fail_fast: bool = False,
+        fetch_fn: Callable[[str], str | bytes] | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.delay_seconds = max(1.0, float(delay_seconds))
+        self.max_band_seconds = (
+            float(max_band_seconds) if max_band_seconds is not None else None
+        )
+        self.max_band_requests = (
+            int(max_band_requests) if max_band_requests is not None else None
+        )
+        self.checkpoint_path = checkpoint_path
+        self.checkpoint_every = max(1, int(checkpoint_every))
+        self.timeout_seconds = float(timeout_seconds)
+        self.fail_fast = bool(fail_fast)
+        self._custom_fetch_fn = fetch_fn
+        self._sleep = sleep_fn
+        self._clock = clock_fn
+
+        self.requests_count: int = 0
+        self.failed_gids_count: int = 0
+        self._last_request_ts: float | None = None
+        self._unsaved_requests: int = 0
+
+    def _wait_rate_limit(self) -> None:
+        if self._last_request_ts is not None and self.delay_seconds > 0:
+            elapsed = self._clock() - self._last_request_ts
+            remaining = self.delay_seconds - elapsed
+            if remaining > 0:
+                self._sleep(remaining)
+
+    def _would_exceed_time_budget(self, run_start_ts: float) -> bool:
+        if self.max_band_seconds is None:
+            return False
+        now = self._clock()
+        wait_needed = 0.0
+        if self._last_request_ts is not None and self.delay_seconds > 0:
+            wait_needed = max(0.0, self.delay_seconds - (now - self._last_request_ts))
+        return (now + wait_needed - run_start_ts) >= self.max_band_seconds
+
+    def _http_fetch_detalle(self, gid: str) -> list[dict[str, Any]]:
+        url = build_detalle_estacion_url(gid)
+        backoffs = (2.0, 4.0, 8.0)
+        last_err: Exception | None = None
+
+        for attempt in range(len(backoffs)):
+            self._wait_rate_limit()
+            self.requests_count += 1
+            self._unsaved_requests += 1
+
+            if self._custom_fetch_fn is not None:
+                try:
+                    payload = self._custom_fetch_fn(gid)
+                    self._last_request_ts = self._clock()
+                    html = (
+                        decode_detalle_estacion_payload(payload)
+                        if isinstance(payload, (bytes, bytearray))
+                        else str(payload)
+                    )
+                    return parse_detalle_estacion_html(html)
+                except Exception as exc:
+                    self._last_request_ts = self._clock()
+                    last_err = exc
+            else:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml,*/*",
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                        raw_bytes = resp.read()
+                    self._last_request_ts = self._clock()
+                    html = decode_detalle_estacion_payload(raw_bytes)
+                    if not html.strip():
+                        raise ValueError("Respuesta HTML vacía desde detalleEstacion.do")
+                    return parse_detalle_estacion_html(html)
+                except (
+                    urllib.error.HTTPError,
+                    urllib.error.URLError,
+                    TimeoutError,
+                    http.client.HTTPException,
+                    OSError,
+                    UnicodeDecodeError,
+                    ValueError,
+                ) as exc:
+                    self._last_request_ts = self._clock()
+                    last_err = exc
+
+            if attempt < len(backoffs) - 1:
+                wait_s = backoffs[attempt]
+                logging.warning(
+                    "Error en detalleEstacion emplazamiento=%s (intento %d/3): %s. Reintentando en %.1fs...",
+                    gid,
+                    attempt + 1,
+                    last_err,
+                    wait_s,
+                )
+                self._sleep(wait_s)
+
+        raise RuntimeError(
+            f"Fallo tras 3 intentos al consultar detalleEstacion emplazamiento={gid!r}: {last_err}"
+        ) from last_err
+
+    def _save_dataset_checkpoint(self, dataset: dict[str, Any]) -> None:
+        antenas = dataset.get("antenas") or []
+        crawl_stats = dataset.setdefault("crawlStats", {})
+        crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+        crawl_stats["bandRequestsCount"] = self.requests_count
+        dataset["updatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if self.checkpoint_path is not None:
+            write_compact_dataset(dataset, self.checkpoint_path)
+        self._unsaved_requests = 0
+
+    def _build_prioritized_units(
+        self,
+        antenas: list[dict[str, Any]],
+        pending_indices: list[int],
+    ) -> list[list[str]]:
+        prov_totals: dict[str, int] = {}
+        for rec in antenas:
+            p = str(rec.get("prov") or "")
+            prov_totals[p] = prov_totals.get(p, 0) + 1
+
+        single_gid_groups: dict[str, list[int]] = {}
+        multi_gid_units: list[tuple[int, list[str]]] = []
+        for idx in pending_indices:
+            gids = get_record_gids(antenas[idx])
+            if len(gids) == 1:
+                single_gid_groups.setdefault(gids[0], []).append(idx)
+            elif len(gids) > 1:
+                multi_gid_units.append((idx, gids))
+
+        raw_candidates: list[tuple[float, str, int, str, tuple[str, ...], list[str]]] = []
+        for gid, idxs in single_gid_groups.items():
+            gain = float(len(idxs))
+            first_rec = antenas[idxs[0]]
+            prov = str(first_rec.get("prov") or "")
+            op_sig = tuple(sorted({str(antenas[i].get("op") or "") for i in idxs}))
+            raw_candidates.append((gain, prov, prov_totals.get(prov, 0), gid, op_sig, [gid]))
+
+        for idx, gids in multi_gid_units:
+            rec = antenas[idx]
+            prov = str(rec.get("prov") or "")
+            op_sig = (str(rec.get("op") or ""),)
+            ratio = 1.0 / float(len(gids))
+            raw_candidates.append((ratio, prov, prov_totals.get(prov, 0), gids[0], op_sig, gids))
+
+        # Orden base: mayor ratio antenas/petición primero, priorizando MADRID y provincias con más censo
+        raw_candidates.sort(
+            key=lambda item: (
+                -item[0],
+                0 if item[1] == "MADRID" else 1,
+                -item[2],
+                item[1],
+                item[3],
+            )
+        )
+
+        # Entre emplazamientos compartidos (ratio >= 2.0), adelantar el primer ejemplar de
+        # cada combinación de operadores para poblar todos los operadores desde las primeras peticiones.
+        seen_shared_op_sigs: set[tuple[str, ...]] = set()
+        final_keyed: list[tuple[float, int, int, int, str, str, list[str]]] = []
+        for ratio, prov, prov_cnt, gid, op_sig, gids in raw_candidates:
+            first_of_sig = 1
+            if ratio >= 2.0 and op_sig not in seen_shared_op_sigs:
+                seen_shared_op_sigs.add(op_sig)
+                first_of_sig = 0
+            final_keyed.append(
+                (
+                    -ratio,
+                    first_of_sig,
+                    0 if prov == "MADRID" else 1,
+                    -prov_cnt,
+                    prov,
+                    gid,
+                    gids,
+                )
+            )
+
+        final_keyed.sort(key=lambda item: item[:6])
+        return [item[6] for item in final_keyed]
+
+    def enrich_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
+        antenas: list[dict[str, Any]] = dataset.get("antenas") or []
+        crawl_stats = dataset.setdefault("crawlStats", {})
+
+        all_records_per_gid: dict[str, list[dict[str, Any]]] = {}
+        for rec in antenas:
+            for g in get_record_gids(rec):
+                all_records_per_gid.setdefault(g, []).append(rec)
+
+        zero_gid_populated = 0
+        pending_indices: list[int] = []
+        pending_by_gid: dict[str, list[int]] = {}
+        for idx, rec in enumerate(antenas):
+            if isinstance(rec.get("bandas"), list):
+                continue
+            gids = get_record_gids(rec)
+            if not gids:
+                rec["bandas"] = []
+                rec["frecuencias"] = []
+                zero_gid_populated += 1
+                continue
+            pending_indices.append(idx)
+            for g in gids:
+                pending_by_gid.setdefault(g, []).append(idx)
+
+        if not pending_indices:
+            crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+            crawl_stats["bandRequestsCount"] = 0
+            if zero_gid_populated > 0:
+                self._save_dataset_checkpoint(dataset)
+            return dataset
+
+        units = self._build_prioritized_units(antenas, pending_indices)
+        gid_entries_cache: dict[str, list[dict[str, Any]]] = {}
+        failed_gids: set[str] = set()
+        consecutive_failures = 0
+        newly_populated = zero_gid_populated
+        run_start_ts = self._clock()
+
+        logging.info(
+            "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, delay=%.2fs)...",
+            len(pending_indices),
+            len(units),
+            self.delay_seconds,
+        )
+
+        unit_cursor = 0
+        total_units = len(units)
+        stop_loop = False
+
+        while unit_cursor < total_units and not stop_loop:
+            if (
+                self.max_band_requests is not None
+                and self.requests_count >= self.max_band_requests
+            ):
+                break
+            if self._would_exceed_time_budget(run_start_ts):
+                break
+
+            unit_gids = units[unit_cursor]
+            unit_cursor += 1
+            needed_gids = [
+                g
+                for g in unit_gids
+                if g not in gid_entries_cache and g not in failed_gids
+            ]
+            if not needed_gids:
+                continue
+
+            if self.max_band_requests is not None:
+                remaining_reqs = self.max_band_requests - self.requests_count
+                if len(needed_gids) > remaining_reqs and any(
+                    0
+                    < sum(
+                        1
+                        for g in later
+                        if g not in gid_entries_cache and g not in failed_gids
+                    )
+                    <= remaining_reqs
+                    for later in units[unit_cursor:]
+                ):
+                    continue
+
+            for gid in needed_gids:
+                if (
+                    self.max_band_requests is not None
+                    and self.requests_count >= self.max_band_requests
+                ):
+                    stop_loop = True
+                    break
+                if self._would_exceed_time_budget(run_start_ts):
+                    stop_loop = True
+                    break
+
+                try:
+                    entries = self._http_fetch_detalle(gid)
+                    gid_entries_cache[gid] = entries
+                    consecutive_failures = 0
+                except RuntimeError as exc:
+                    self.failed_gids_count += 1
+                    failed_gids.add(gid)
+                    consecutive_failures += 1
+                    logging.error("%s", exc)
+                    if self.fail_fast:
+                        raise
+                    if consecutive_failures >= 5:
+                        logging.error(
+                            "Se alcanzaron %d fallos consecutivos en detalleEstacion.do; deteniendo lote de forma segura.",
+                            consecutive_failures,
+                        )
+                        stop_loop = True
+                        break
+                    continue
+
+                for rec_idx in pending_by_gid.get(gid, ()):
+                    rec = antenas[rec_idx]
+                    if isinstance(rec.get("bandas"), list):
+                        continue
+                    rec_gids = get_record_gids(rec)
+                    if not all(g in gid_entries_cache for g in rec_gids):
+                        continue
+                    combined_ranges: list[tuple[float, float]] = []
+                    for rg in rec_gids:
+                        combined_ranges.extend(
+                            _extract_record_ranges_for_gid(
+                                rec,
+                                gid_entries_cache[rg],
+                                all_records_per_gid.get(rg, [rec]),
+                            )
+                        )
+                    bandas_sorted, freqs_sorted = summarize_frequency_ranges(
+                        combined_ranges
+                    )
+                    rec["bandas"] = bandas_sorted
+                    rec["frecuencias"] = freqs_sorted
+                    newly_populated += 1
+
+                if self.requests_count % 25 == 0:
+                    logging.info(
+                        "[bandas req #%d] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
+                        self.requests_count,
+                        gid,
+                        newly_populated,
+                        count_bands_populated(antenas),
+                        len(antenas),
+                    )
+
+                if self._unsaved_requests >= self.checkpoint_every:
+                    self._save_dataset_checkpoint(dataset)
+
+        crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+        crawl_stats["bandRequestsCount"] = self.requests_count
+        if self.requests_count > 0 or zero_gid_populated > 0:
+            self._save_dataset_checkpoint(dataset)
+
+        logging.info(
+            "Enriquecimiento finalizado: %d peticiones HTTP, +%d antenas enriquecidas (%d/%d totales con bandas).",
+            self.requests_count,
+            newly_populated,
+            crawl_stats["bandsPopulatedCount"],
+            len(antenas),
+        )
+        return dataset
+
+
+def enrich_dataset_bands(
+    dataset: dict[str, Any],
+    delay_seconds: float = DEFAULT_DELAY_SECONDS,
+    max_band_seconds: float | None = None,
+    max_band_requests: int | None = None,
+    checkpoint_path: Path | None = None,
+    checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
+    fail_fast: bool = False,
+    fetch_fn: Callable[[str], str | bytes] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock_fn: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Función auxiliar para enriquecer `bandas` y `frecuencias` sobre un `AntenasDataset`."""
+    enricher = BandEnricher(
+        delay_seconds=delay_seconds,
+        max_band_seconds=max_band_seconds,
+        max_band_requests=max_band_requests,
+        checkpoint_path=checkpoint_path,
+        checkpoint_every=checkpoint_every,
+        fail_fast=fail_fast,
+        fetch_fn=fetch_fn,
+        sleep_fn=sleep_fn,
+        clock_fn=clock_fn,
+    )
+    return enricher.enrich_dataset(dataset)
+
+
 def build_dataset(
     records_by_id: dict[str, dict[str, Any]] | list[dict[str, Any]],
     crawl_stats: dict[str, Any],
     updated_at: str | None = None,
+    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
+    preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None = None,
 ) -> dict[str, Any]:
     """
     Construye el objeto `AntenasDataset` tipado según `src/types/antena.ts`,
-    fusionando previamente declaraciones duplicadas de Vodafone a `< 10 m` y
-    ordenando las antenas determinísticamente por `(prov, mun, id)`.
+    fusionando previamente declaraciones duplicadas de Vodafone a `< max_distance_m`
+    (por defecto `< 35 m`), preservando opcionalmente `bandas`/`frecuencias` previas
+    y ordenando las antenas determinísticamente por `(prov, mun, id)`.
     """
     raw_records = (
         list(records_by_id.values())
         if isinstance(records_by_id, dict)
         else list(records_by_id)
     )
-    fused_records, fused_count = fuse_vodafone_duplicates(raw_records)
+    fused_records, fused_count = fuse_vodafone_duplicates(
+        raw_records, max_distance_m=max_distance_m
+    )
+
+    if preserve_from is not None:
+        preserve_bands_in_records(fused_records, preserve_from)
 
     prior_fused = int(crawl_stats.get("vodafoneFusedDuplicates") or 0)
     crawl_stats_out = dict(crawl_stats)
@@ -1035,6 +1858,14 @@ def build_dataset(
         fused_records,
         key=lambda r: (r["prov"], r["mun"], r["id"]),
     )
+
+    populated_count = count_bands_populated(sorted_antenas)
+    if (
+        populated_count > 0
+        or preserve_from is not None
+        or "bandsPopulatedCount" in crawl_stats_out
+    ):
+        crawl_stats_out["bandsPopulatedCount"] = populated_count
 
     op_counts: dict[str, int] = {k: 0 for k in OPERATOR_ORDER}
     op_entities: dict[str, set[str]] = {k: set() for k in OPERATOR_ORDER}
@@ -1104,13 +1935,18 @@ def write_compact_dataset(dataset: dict[str, Any], output_path: Path) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Recolector completo de antenas móviles de España (Infoantenas MINETUR)."
+        description="Recolector completo de antenas móviles y bandas RF de España (Infoantenas MINETUR)."
     )
     parser.add_argument(
         "--region",
         choices=("all", "sample"),
         default="all",
         help="Alcance geográfico: 'all' (toda España) o 'sample' (2 peticiones de muestra).",
+    )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="Ruta del archivo antenas.json existente (usado con --enrich-bands-only).",
     )
     parser.add_argument(
         "--output",
@@ -1121,7 +1957,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--delay",
         type=float,
         default=DEFAULT_DELAY_SECONDS,
-        help="Segundos mínimos de espera entre peticiones HTTP consecutivas (por defecto 1.0).",
+        help="Segundos mínimos de espera entre peticiones HTTP consecutivas (mínimo 1.0s en bandas).",
     )
     parser.add_argument(
         "--zoom",
@@ -1132,7 +1968,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         default=None,
-        help="Ruta opcional de archivo de checkpoint para guardar/reanudar progreso.",
+        help="Ruta opcional de archivo de checkpoint para guardar/reanudar el barrido GeoJSON.",
+    )
+    parser.add_argument(
+        "--preserve-from",
+        default=None,
+        help="Ruta a un antenas.json previo del que reutilizar bandas/frecuencias ya extraídas (por defecto --output si existe).",
+    )
+    parser.add_argument(
+        "--fetch-bands",
+        action="store_true",
+        help="Tras recolectar el censo, consulta detalleEstacion.do (a >= 1.0s/req) para antenas sin bandas.",
+    )
+    parser.add_argument(
+        "--enrich-bands-only",
+        action="store_true",
+        help="Carga --input y consulta detalleEstacion.do únicamente para las antenas pendientes sin bandas.",
+    )
+    parser.add_argument(
+        "--max-band-seconds",
+        type=float,
+        default=None,
+        help="Tiempo máximo en segundos dedicado a consultar detalleEstacion.do (ej. 14400 o 18000).",
+    )
+    parser.add_argument(
+        "--max-band-requests",
+        type=int,
+        default=None,
+        help="Número máximo opcional de peticiones a detalleEstacion.do en esta ejecución.",
+    )
+    parser.add_argument(
+        "--band-checkpoint-every",
+        type=int,
+        default=DEFAULT_BAND_CHECKPOINT_EVERY,
+        help="Guardar checkpoint atómico en --output cada N peticiones de bandas (por defecto 50).",
     )
     return parser.parse_args(argv)
 
@@ -1146,6 +2015,34 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     output_path = Path(args.output)
 
+    if args.enrich_bands_only:
+        input_path = Path(args.input) if args.input else output_path
+        if not input_path.exists():
+            logging.error("No existe el archivo de entrada: %s", input_path)
+            return 1
+        dataset = json.loads(input_path.read_text(encoding="utf-8"))
+        band_delay = max(1.0, float(args.delay))
+        enricher = BandEnricher(
+            delay_seconds=band_delay,
+            max_band_seconds=args.max_band_seconds,
+            max_band_requests=args.max_band_requests,
+            checkpoint_path=output_path,
+            checkpoint_every=args.band_checkpoint_every,
+        )
+        enricher.enrich_dataset(dataset)
+        if output_path.resolve() != input_path.resolve() and enricher.requests_count == 0:
+            write_compact_dataset(dataset, output_path)
+        size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0.0
+        logging.info(
+            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP).",
+            dataset["crawlStats"].get("bandsPopulatedCount", 0),
+            dataset["total"],
+            output_path,
+            size_mb,
+            enricher.requests_count,
+        )
+        return 0
+
     auto_checkpoint = False
     if args.checkpoint:
         checkpoint_path: Path | None = Path(args.checkpoint)
@@ -1155,6 +2052,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         checkpoint_path = None
 
+    preserve_path: Path | None
+    if args.preserve_from:
+        preserve_path = Path(args.preserve_from)
+    elif output_path.exists():
+        preserve_path = output_path
+    else:
+        preserve_path = None
+
+    prior_dataset: dict[str, Any] | None = None
+    if preserve_path is not None and preserve_path.exists():
+        try:
+            prior_dataset = json.loads(preserve_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.warning("No se pudo cargar %s para preservar bandas: %s", preserve_path, exc)
+
     delay = max(1.0, args.delay) if args.delay >= 1.0 else max(0.0, args.delay)
 
     crawler = InfoantenasCrawler(
@@ -1163,7 +2075,34 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_path=checkpoint_path,
     )
     dataset = crawler.crawl(region=args.region)
+
+    if prior_dataset is not None:
+        restored = preserve_bands_in_records(dataset["antenas"], prior_dataset)
+        dataset["crawlStats"]["bandsPopulatedCount"] = count_bands_populated(
+            dataset["antenas"]
+        )
+        prior_band_reqs = (prior_dataset.get("crawlStats") or {}).get("bandRequestsCount")
+        if prior_band_reqs is not None and not args.fetch_bands:
+            dataset["crawlStats"]["bandRequestsCount"] = int(prior_band_reqs)
+        logging.info(
+            "Preservadas bandas previas de %d antenas desde %s.",
+            restored,
+            preserve_path,
+        )
+
     size_bytes = write_compact_dataset(dataset, output_path)
+
+    if args.fetch_bands:
+        band_delay = max(1.0, float(args.delay))
+        enrich_dataset_bands(
+            dataset,
+            delay_seconds=band_delay,
+            max_band_seconds=args.max_band_seconds,
+            max_band_requests=args.max_band_requests,
+            checkpoint_path=output_path,
+            checkpoint_every=args.band_checkpoint_every,
+        )
+        size_bytes = write_compact_dataset(dataset, output_path)
 
     if auto_checkpoint and checkpoint_path and checkpoint_path.exists():
         try:
@@ -1173,12 +2112,13 @@ def main(argv: list[str] | None = None) -> int:
 
     size_mb = size_bytes / (1024 * 1024)
     logging.info(
-        "Completado: %d antenas únicas guardadas en %s (%.2f MB) en %d peticiones (%.1fs).",
+        "Completado: %d antenas únicas guardadas en %s (%.2f MB) en %d peticiones GeoJSON (%.1fs) | con bandas=%d.",
         dataset["total"],
         output_path,
         size_mb,
         dataset["crawlStats"]["requestsCount"],
         dataset["crawlStats"]["durationSeconds"],
+        dataset["crawlStats"].get("bandsPopulatedCount", 0),
     )
     return 0
 

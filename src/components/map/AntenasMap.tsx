@@ -7,7 +7,6 @@ import type {
   FeatureCollection,
   LineString,
   Point,
-  Polygon,
 } from 'geojson';
 import {
   OPENFREEMAP_STYLES,
@@ -18,7 +17,6 @@ import {
 import type { AntenasMapProps, MeasurePoint } from '../../types/map';
 import {
   SPAIN_REGION_PRESETS,
-  createCirclePolygonGeoJSON,
   formatDistance,
   groupColocatedAntennasForMap,
   haversineDistanceKm,
@@ -39,16 +37,7 @@ if (typeof window !== 'undefined') {
 }
 
 const ANTENAS_SOURCE_ID = 'antenas-source';
-const RADAR_SOURCE_ID = 'radar-source';
 const MEASURE_SOURCE_ID = 'measure-source';
-
-const LAYER_RADAR_FILL = 'radar-coverage-fill';
-const LAYER_RADAR_OUTLINE = 'radar-coverage-outline';
-const LAYER_RADAR_LOS_CASING = 'radar-los-casing';
-const LAYER_RADAR_LOS_LINE = 'radar-los-line';
-const LAYER_RADAR_LOS_LABEL = 'radar-los-label';
-const LAYER_RADAR_ORIGIN_HALO = 'radar-origin-halo';
-const LAYER_RADAR_ORIGIN_POINT = 'radar-origin-point';
 
 const LAYER_MEASURE_CASING = 'measure-line-casing';
 const LAYER_MEASURE_LINE = 'measure-line';
@@ -87,17 +76,23 @@ interface AntennaFeatureProperties {
   memberIdsPipe: string;
 }
 
-interface RadarFeatureProperties {
-  kind: 'coverage' | 'origin' | 'los';
-  radiusKm?: number;
-  label?: string;
-  distanceLabel?: string;
-}
-
 interface MeasureFeatureProperties {
   kind: 'measure-line' | 'measure-point' | 'measure-midpoint';
   pointTag?: 'A' | 'B';
   distanceLabel?: string;
+}
+
+function applyPitchLock(map: maplibregl.Map, locked: boolean): void {
+  if (locked) {
+    if (map.getPitch() !== 0) {
+      map.jumpTo({ pitch: 0 });
+    }
+    map.setMaxPitch(0);
+    map.touchPitch?.disable();
+  } else {
+    map.setMaxPitch(85);
+    map.touchPitch?.enable();
+  }
 }
 
 function formatMeasureDistanceLabel(km: number): string {
@@ -283,10 +278,20 @@ function buildSelectedFilter(
 function buildPopupHtml(
   props: AntennaFeatureProperties,
   site?: MapSiteEntry,
+  primaryAnt?: AntennaRecord,
 ): string {
   const locationLine = [props.mun, props.prov].filter(Boolean).join(', ');
   const safeLocation = escapeHtml(locationLine || 'Ubicación registrada');
   const safeDir = escapeHtml(props.dir || 'Sin dirección postal detallada');
+  const bandsHtml =
+    primaryAnt?.bandas && primaryAnt.bandas.length > 0
+      ? `<div class="map-popup-bands">${primaryAnt.bandas
+          .map(
+            (band) =>
+              `<span class="map-popup-band-chip">${escapeHtml(band)}</span>`,
+          )
+          .join('')}</div>`
+      : '';
 
   if (props.isMultiOp) {
     const pillsHtml = site
@@ -322,12 +327,13 @@ function buildPopupHtml(
 
     return `
       <div class="map-popup-head">
-        <span class="map-popup-shared-badge">Emplazamiento compartido (&lt; 5 m)</span>
+        <span class="map-popup-shared-badge">Emplazamiento compartido (&lt; 35 m)</span>
         <span class="map-popup-gid">${opCount} oper.</span>
       </div>
       <div class="map-popup-multi-list">${pillsHtml}</div>
       <div class="map-popup-loc">${safeLocation}</div>
       <div class="map-popup-dir">${safeDir}</div>
+      ${bandsHtml}
       <div class="map-popup-hint">Clic para inspeccionar operadores integrados</div>
     `;
   }
@@ -346,6 +352,7 @@ function buildPopupHtml(
     </div>
     <div class="map-popup-loc">${safeLocation}</div>
     <div class="map-popup-dir">${safeDir}</div>
+    ${bandsHtml}
     <div class="map-popup-hint">Clic para inspeccionar ficha técnica</div>
   `;
 }
@@ -360,16 +367,12 @@ export function AntenasMap(props: AntenasMapProps) {
     styleId,
     onStyleChange,
     flyToTarget,
-    radarPoint,
-    onRadarPointChange,
-    radarModeActive = false,
-    onToggleRadarMode,
     measurePoints,
     onMeasurePointsChange,
     measureModeActive,
     onToggleMeasureMode,
-    activeOperators,
-    onToggleOperator,
+    lock3dPitch,
+    onToggleLock3dPitch,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -384,9 +387,18 @@ export function AntenasMap(props: AntenasMapProps) {
     AntennaFeatureProperties
   > | null>(null);
 
-  const [activeRegionId, setActiveRegionId] = useState<string | null>(() =>
-    flyToTarget ? null : 'peninsula',
-  );
+  // Bloqueo 3D / vertical activado SIEMPRE por defecto al cargar la web (nunca se lee de localStorage)
+  const [internalLock3dPitch, setInternalLock3dPitch] = useState<boolean>(true);
+  const effectiveLock3dPitch = lock3dPitch ?? internalLock3dPitch;
+  const lock3dPitchRef = useRef<boolean>(effectiveLock3dPitch);
+
+  const handleToggleLock3dPitch = useCallback(() => {
+    if (onToggleLock3dPitch) {
+      onToggleLock3dPitch();
+    } else {
+      setInternalLock3dPitch((prev) => !prev);
+    }
+  }, [onToggleLock3dPitch]);
 
   // Soporte híbrido controlado o autónomo para la regla de distancia entre 2 puntos ("Medir en mapa")
   const [internalMeasurePoints, setInternalMeasurePoints] = useState<
@@ -416,11 +428,19 @@ export function AntenasMap(props: AntenasMapProps) {
 
   const handleToggleMeasureMode = useCallback(() => {
     if (onToggleMeasureMode) {
+      if (effectiveMeasureModeActive) {
+        onMeasurePointsChange?.([]);
+      }
       onToggleMeasureMode();
     } else {
-      setInternalMeasureMode((prev) => !prev);
+      setInternalMeasureMode((prev) => {
+        if (prev) {
+          setInternalMeasurePoints([]);
+        }
+        return !prev;
+      });
     }
-  }, [onToggleMeasureMode]);
+  }, [onToggleMeasureMode, effectiveMeasureModeActive, onMeasurePointsChange]);
 
   const currentStyleOption = useMemo(
     () =>
@@ -429,162 +449,72 @@ export function AntenasMap(props: AntenasMapProps) {
     [styleId],
   );
 
-  // Agrupación espacial en memoria (< 5 m entre distintos operadores + fusión defensiva Vodafone < 10 m)
+  // Agrupación espacial en memoria (< 35 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
   // hacia geometrías puntuales para el motor WebGL de MapLibre GL JS
-  const {
-    antenasGeoJson,
-    antenasById,
-    sitesById,
-    siteByMemberAntennaId,
-    multiIconKeys,
-  } = useMemo(() => {
-    const byId = new Map<string, AntennaRecord>();
-    for (let i = 0; i < antenas.length; i++) {
-      const ant = antenas[i];
-      if (Number.isFinite(ant.lat) && Number.isFinite(ant.lon)) {
-        byId.set(ant.id, ant);
-      }
-    }
-
-    const groupedSites = groupColocatedAntennasForMap(antenas, 5);
-    const bySiteId = new Map<string, MapSiteEntry>();
-    const byMemberId = new Map<string, MapSiteEntry>();
-    const iconKeys = new Set<string>();
-    const features: Feature<Point, AntennaFeatureProperties>[] = [];
-
-    for (let i = 0; i < groupedSites.length; i++) {
-      const site = groupedSites[i];
-      bySiteId.set(site.siteId, site);
-      for (let m = 0; m < site.memberIds.length; m++) {
-        byMemberId.set(site.memberIds[m], site);
-      }
-      if (site.isMultiOperator) {
-        iconKeys.add(site.iconKey);
+  const { antenasGeoJson, antenasById, sitesById, multiIconKeys } =
+    useMemo(() => {
+      const byId = new Map<string, AntennaRecord>();
+      for (let i = 0; i < antenas.length; i++) {
+        const ant = antenas[i];
+        if (Number.isFinite(ant.lat) && Number.isFinite(ant.lon)) {
+          byId.set(ant.id, ant);
+        }
       }
 
-      const primary = site.primary;
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [site.lon, site.lat],
-        },
-        properties: {
-          idx: i,
-          id: site.siteId,
-          primaryId: primary.id,
-          gid: primary.gid,
-          op: primary.op,
-          opRaw: primary.opRaw,
-          dir: primary.dir,
-          mun: primary.mun,
-          prov: primary.prov,
-          lat: site.lat,
-          lon: site.lon,
-          isMultiOp: site.isMultiOperator,
-          iconKey: site.iconKey,
-          operatorsCsv: site.operators.join('|'),
-          stationCount: site.members.length,
-          memberIdsPipe: `|${site.memberIds.join('|')}|`,
-        },
-      });
-    }
+      const groupedSites = groupColocatedAntennasForMap(antenas, 35);
+      const bySiteId = new Map<string, MapSiteEntry>();
+      const iconKeys = new Set<string>();
+      const features: Feature<Point, AntennaFeatureProperties>[] = [];
 
-    const collection: FeatureCollection<Point, AntennaFeatureProperties> = {
-      type: 'FeatureCollection',
-      features,
-    };
+      for (let i = 0; i < groupedSites.length; i++) {
+        const site = groupedSites[i];
+        bySiteId.set(site.siteId, site);
+        if (site.isMultiOperator) {
+          iconKeys.add(site.iconKey);
+        }
 
-    return {
-      antenasGeoJson: collection,
-      antenasById: byId,
-      sitesById: bySiteId,
-      siteByMemberAntennaId: byMemberId,
-      multiIconKeys: Array.from(iconKeys),
-    };
-  }, [antenas]);
-
-  // Construcción memorizada en memoria de geometrías auxiliares de radar RF (cobertura, pin central y vector LOS)
-  const radarGeoJson = useMemo<
-    FeatureCollection<Polygon | Point | LineString, RadarFeatureProperties>
-  >(() => {
-    const features: Feature<
-      Polygon | Point | LineString,
-      RadarFeatureProperties
-    >[] = [];
-
-    if (
-      radarPoint &&
-      Number.isFinite(radarPoint.lat) &&
-      Number.isFinite(radarPoint.lon)
-    ) {
-      const radiusKm = radarPoint.radiusKm ?? 2;
-      const circlePoly = createCirclePolygonGeoJSON(
-        radarPoint.lon,
-        radarPoint.lat,
-        radiusKm,
-        72,
-      );
-      features.push({
-        type: 'Feature',
-        geometry: circlePoly.geometry,
-        properties: {
-          kind: 'coverage',
-          radiusKm,
-        },
-      });
-
-      if (
-        selectedAntenna &&
-        Number.isFinite(selectedAntenna.lat) &&
-        Number.isFinite(selectedAntenna.lon)
-      ) {
-        const distKm = haversineDistanceKm(
-          radarPoint.lat,
-          radarPoint.lon,
-          selectedAntenna.lat,
-          selectedAntenna.lon,
-        );
-        const matchedSite = siteByMemberAntennaId.get(selectedAntenna.id);
-        const targetLon = matchedSite ? matchedSite.lon : selectedAntenna.lon;
-        const targetLat = matchedSite ? matchedSite.lat : selectedAntenna.lat;
-
+        const primary = site.primary;
         features.push({
           type: 'Feature',
           geometry: {
-            type: 'LineString',
-            coordinates: [
-              [radarPoint.lon, radarPoint.lat],
-              [targetLon, targetLat],
-            ],
+            type: 'Point',
+            coordinates: [site.lon, site.lat],
           },
           properties: {
-            kind: 'los',
-            distanceLabel: formatDistance(distKm),
+            idx: i,
+            id: site.siteId,
+            primaryId: primary.id,
+            gid: primary.gid,
+            op: primary.op,
+            opRaw: primary.opRaw,
+            dir: primary.dir,
+            mun: primary.mun,
+            prov: primary.prov,
+            lat: site.lat,
+            lon: site.lon,
+            isMultiOp: site.isMultiOperator,
+            iconKey: site.iconKey,
+            operatorsCsv: site.operators.join('|'),
+            stationCount: site.members.length,
+            memberIdsPipe: `|${site.memberIds.join('|')}|`,
           },
         });
       }
 
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [radarPoint.lon, radarPoint.lat],
-        },
-        properties: {
-          kind: 'origin',
-          label: radarPoint.label ?? 'Punto seleccionado',
-        },
-      });
-    }
+      const collection: FeatureCollection<Point, AntennaFeatureProperties> = {
+        type: 'FeatureCollection',
+        features,
+      };
 
-    return {
-      type: 'FeatureCollection',
-      features,
-    };
-  }, [radarPoint, selectedAntenna, siteByMemberAntennaId]);
+      return {
+        antenasGeoJson: collection,
+        antenasById: byId,
+        sitesById: bySiteId,
+        multiIconKeys: Array.from(iconKeys),
+      };
+    }, [antenas]);
 
-  // Construcción memorizada de la regla de medición entre 2 puntos (Punto A, Punto B, segmento y etiqueta)
+  // Construcción memorizada de la regla de medición entre 2 puntos (Punto A, Punto B, segmento geodésico y etiqueta central)
   const measureGeoJson = useMemo<
     FeatureCollection<Point | LineString, MeasureFeatureProperties>
   >(() => {
@@ -667,13 +597,9 @@ export function AntenasMap(props: AntenasMapProps) {
   const antenasByIdRef = useRef(antenasById);
   const sitesByIdRef = useRef(sitesById);
   const multiIconKeysRef = useRef(multiIconKeys);
-  const radarGeoJsonRef = useRef(radarGeoJson);
   const measureGeoJsonRef = useRef(measureGeoJson);
   const selectedAntennaRef = useRef(selectedAntenna);
   const onSelectAntennaRef = useRef(onSelectAntenna);
-  const radarModeActiveRef = useRef(radarModeActive);
-  const radarPointRef = useRef(radarPoint);
-  const onRadarPointChangeRef = useRef(onRadarPointChange);
   const measureModeActiveRef = useRef(effectiveMeasureModeActive);
   const measurePointsRef = useRef(effectiveMeasurePoints);
   const onMeasurePointsChangeRef = useRef(handleMeasurePointsChange);
@@ -688,10 +614,6 @@ export function AntenasMap(props: AntenasMapProps) {
   }, [antenasGeoJson, antenasById, sitesById, multiIconKeys]);
 
   useEffect(() => {
-    radarGeoJsonRef.current = radarGeoJson;
-  }, [radarGeoJson]);
-
-  useEffect(() => {
     measureGeoJsonRef.current = measureGeoJson;
   }, [measureGeoJson]);
 
@@ -699,12 +621,6 @@ export function AntenasMap(props: AntenasMapProps) {
     selectedAntennaRef.current = selectedAntenna;
     onSelectAntennaRef.current = onSelectAntenna;
   }, [selectedAntenna, onSelectAntenna]);
-
-  useEffect(() => {
-    radarModeActiveRef.current = radarModeActive;
-    radarPointRef.current = radarPoint;
-    onRadarPointChangeRef.current = onRadarPointChange;
-  }, [radarModeActive, radarPoint, onRadarPointChange]);
 
   useEffect(() => {
     measureModeActiveRef.current = effectiveMeasureModeActive;
@@ -724,8 +640,46 @@ export function AntenasMap(props: AntenasMapProps) {
     isDarkStyleRef.current = currentStyleOption.isDark;
   }, [currentStyleOption.isDark]);
 
-  // Registro idempotente de fuentes y capas tras carga inicial o cambio de estilo OpenFreeMap:
-  // Se registra SIEMPRE PRIMERO la fuente principal de antenas y sus capas, y DESPUÉS el radar auxiliar aislado en try/catch.
+  // Aplicar bloqueo/desbloqueo de inclinación vertical 3D inmediatamente en el motor de MapLibre
+  useEffect(() => {
+    lock3dPitchRef.current = effectiveLock3dPitch;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    applyPitchLock(map, effectiveLock3dPitch);
+  }, [effectiveLock3dPitch]);
+
+  // Permitir cancelar o limpiar la medición de 2 puntos pulsando la tecla Escape
+  useEffect(() => {
+    if (!effectiveMeasureModeActive && effectiveMeasurePoints.length === 0) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      if (effectiveMeasurePoints.length > 0) {
+        handleMeasurePointsChange([]);
+      }
+      if (effectiveMeasureModeActive) {
+        handleToggleMeasureMode();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [
+    effectiveMeasureModeActive,
+    effectiveMeasurePoints.length,
+    handleMeasurePointsChange,
+    handleToggleMeasureMode,
+  ]);
+
+  // Registro idempotente de fuentes y capas tras carga inicial o cambio de estilo OpenFreeMap
   const ensureCustomSourcesAndLayers = useCallback((map: maplibregl.Map) => {
     if (!map.getStyle()) {
       return;
@@ -981,6 +935,8 @@ export function AntenasMap(props: AntenasMapProps) {
             'interpolate',
             ['linear'],
             ['zoom'],
+            0,
+            11,
             6,
             15,
             12,
@@ -1007,6 +963,8 @@ export function AntenasMap(props: AntenasMapProps) {
             'interpolate',
             ['linear'],
             ['zoom'],
+            0,
+            7,
             6,
             9.5,
             12,
@@ -1021,156 +979,7 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
 
-    // 2. Capas auxiliares de análisis radar RF y vector LOS (aisladas para no bloquear jamás las antenas)
-    try {
-      if (!map.getSource(RADAR_SOURCE_ID)) {
-        map.addSource(RADAR_SOURCE_ID, {
-          type: 'geojson',
-          data: radarGeoJsonRef.current,
-        });
-      }
-
-      const beforeAntenasLayer = map.getLayer(LAYER_CLUSTERS_HALO)
-        ? LAYER_CLUSTERS_HALO
-        : undefined;
-
-      if (!map.getLayer(LAYER_RADAR_FILL)) {
-        map.addLayer(
-          {
-            id: LAYER_RADAR_FILL,
-            type: 'fill',
-            source: RADAR_SOURCE_ID,
-            filter: ['==', ['get', 'kind'], 'coverage'],
-            paint: {
-              'fill-color': isDark ? '#38BDF8' : '#0284C7',
-              'fill-opacity': isDark ? 0.14 : 0.1,
-            },
-          },
-          beforeAntenasLayer,
-        );
-      }
-
-      if (!map.getLayer(LAYER_RADAR_OUTLINE)) {
-        map.addLayer(
-          {
-            id: LAYER_RADAR_OUTLINE,
-            type: 'line',
-            source: RADAR_SOURCE_ID,
-            filter: ['==', ['get', 'kind'], 'coverage'],
-            paint: {
-              'line-color': isDark ? '#38BDF8' : '#0284C7',
-              'line-width': 2,
-              'line-opacity': 0.85,
-              'line-dasharray': [3, 2],
-            },
-          },
-          beforeAntenasLayer,
-        );
-      }
-
-      if (!map.getLayer(LAYER_RADAR_LOS_CASING)) {
-        map.addLayer(
-          {
-            id: LAYER_RADAR_LOS_CASING,
-            type: 'line',
-            source: RADAR_SOURCE_ID,
-            filter: ['==', ['get', 'kind'], 'los'],
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': isDark
-                ? 'rgba(15, 23, 42, 0.85)'
-                : 'rgba(255, 255, 255, 0.9)',
-              'line-width': 4.5,
-            },
-          },
-          beforeAntenasLayer,
-        );
-      }
-
-      if (!map.getLayer(LAYER_RADAR_LOS_LINE)) {
-        map.addLayer(
-          {
-            id: LAYER_RADAR_LOS_LINE,
-            type: 'line',
-            source: RADAR_SOURCE_ID,
-            filter: ['==', ['get', 'kind'], 'los'],
-            layout: {
-              'line-cap': 'round',
-              'line-join': 'round',
-            },
-            paint: {
-              'line-color': isDark ? '#38BDF8' : '#0284C7',
-              'line-width': 2.4,
-              'line-dasharray': [2.2, 1.6],
-            },
-          },
-          beforeAntenasLayer,
-        );
-      }
-
-      if (!map.getLayer(LAYER_RADAR_LOS_LABEL)) {
-        map.addLayer(
-          {
-            id: LAYER_RADAR_LOS_LABEL,
-            type: 'symbol',
-            source: RADAR_SOURCE_ID,
-            filter: ['==', ['get', 'kind'], 'los'],
-            layout: {
-              'symbol-placement': 'line-center',
-              'text-field': ['get', 'distanceLabel'],
-              'text-font': ['Noto Sans Regular'],
-              'text-size': 11,
-              'text-offset': [0, -0.7],
-            },
-            paint: {
-              'text-color': isDark ? '#F8FAFC' : '#0F172A',
-              'text-halo-color': isDark ? '#0F172A' : '#FFFFFF',
-              'text-halo-width': 1.8,
-            },
-          },
-          beforeAntenasLayer,
-        );
-      }
-
-      if (!map.getLayer(LAYER_RADAR_ORIGIN_HALO)) {
-        map.addLayer({
-          id: LAYER_RADAR_ORIGIN_HALO,
-          type: 'circle',
-          source: RADAR_SOURCE_ID,
-          filter: ['==', ['get', 'kind'], 'origin'],
-          paint: {
-            'circle-radius': 13,
-            'circle-color': '#0EA5E9',
-            'circle-opacity': 0.26,
-          },
-        });
-      }
-
-      if (!map.getLayer(LAYER_RADAR_ORIGIN_POINT)) {
-        map.addLayer({
-          id: LAYER_RADAR_ORIGIN_POINT,
-          type: 'circle',
-          source: RADAR_SOURCE_ID,
-          filter: ['==', ['get', 'kind'], 'origin'],
-          paint: {
-            'circle-radius': 6.5,
-            'circle-color': '#0EA5E9',
-            'circle-stroke-width': 2.5,
-            'circle-stroke-color': '#FFFFFF',
-          },
-        });
-      }
-    } catch (err) {
-      console.warn(
-        '[AntenasMap] No se pudieron registrar las capas auxiliares de radar RF:',
-        err,
-      );
-    }
-
-    // 3. Capas de la regla de distancia entre 2 puntos (Punto A -> Punto B), aisladas en try/catch
+    // 2. Capas de la regla de distancia entre 2 puntos (Punto A -> Punto B), aisladas en try/catch
     try {
       if (!map.getSource(MEASURE_SOURCE_ID)) {
         map.addSource(MEASURE_SOURCE_ID, {
@@ -1273,14 +1082,15 @@ export function AntenasMap(props: AntenasMapProps) {
           layout: {
             'text-field': ['get', 'distanceLabel'],
             'text-font': ['Noto Sans Regular'],
-            'text-size': 12,
+            'text-size': 13,
             'text-offset': [0, -1.15],
             'text-allow-overlap': true,
+            'text-ignore-placement': true,
           },
           paint: {
             'text-color': isDark ? '#FAF5FF' : '#3B0764',
             'text-halo-color': isDark ? '#0F172A' : '#FFFFFF',
-            'text-halo-width': 2.2,
+            'text-halo-width': 2.5,
           },
         });
       }
@@ -1330,10 +1140,16 @@ export function AntenasMap(props: AntenasMapProps) {
       style: initialStyle.url,
       center: initialCenter,
       zoom: initialZoom,
-      minZoom: 3.5,
-      maxZoom: 19,
+      pitch: 0,
+      maxPitch: lock3dPitchRef.current ? 0 : 85,
+      pitchWithRotate: true,
+      minZoom: 0,
+      maxZoom: 22,
       attributionControl: false,
     });
+
+    map.setMinZoom(0);
+    applyPitchLock(map, lock3dPitchRef.current);
 
     map.addControl(
       new maplibregl.NavigationControl({
@@ -1371,6 +1187,8 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const handleStyleLoad = () => {
       hasLoadedOnceRef.current = true;
+      map.setMinZoom(0);
+      applyPitchLock(map, lock3dPitchRef.current);
       ensureCustomSourcesAndLayers(map);
       const antSource = map.getSource(ANTENAS_SOURCE_ID) as
         | maplibregl.GeoJSONSource
@@ -1381,19 +1199,6 @@ export function AntenasMap(props: AntenasMapProps) {
       ) {
         antSource.setData(antenasGeoJsonRef.current);
         lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
-      }
-      try {
-        const radSource = map.getSource(RADAR_SOURCE_ID) as
-          | maplibregl.GeoJSONSource
-          | undefined;
-        if (radSource) {
-          radSource.setData(radarGeoJsonRef.current);
-        }
-      } catch (err) {
-        console.warn(
-          '[AntenasMap] No se pudo actualizar la fuente de radar RF:',
-          err,
-        );
       }
       try {
         const measSource = map.getSource(MEASURE_SOURCE_ID) as
@@ -1476,7 +1281,7 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 5 m o círculo individual)
+      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 35 m o círculo individual)
       if (unclusteredLayers.length > 0) {
         const stationFeatures = map.queryRenderedFeatures(event.point, {
           layers: unclusteredLayers,
@@ -1557,25 +1362,14 @@ export function AntenasMap(props: AntenasMapProps) {
         }
       }
 
-      // 3. Clic en el fondo del mapa: fijar radar si modo radar legado está activo, o limpiar selección
-      if (radarModeActiveRef.current) {
-        onRadarPointChangeRef.current?.({
-          lat: Number(event.lngLat.lat.toFixed(6)),
-          lon: Number(event.lngLat.lng.toFixed(6)),
-          radiusKm: radarPointRef.current?.radiusKm ?? 2,
-          label: 'Punto seleccionado',
-        });
-        return;
-      }
-
+      // 3. Clic en el fondo del mapa: limpiar selección activa
       if (selectedAntennaRef.current) {
         onSelectAntennaRef.current(null);
       }
     };
 
     const handleMouseMove = (event: maplibregl.MapMouseEvent) => {
-      const isCrosshairActive =
-        measureModeActiveRef.current || radarModeActiveRef.current;
+      const isCrosshairActive = measureModeActiveRef.current;
       const interactiveLayers = getActiveUnclusteredLayers();
       if (map.getLayer(LAYER_CLUSTERS)) {
         interactiveLayers.push(LAYER_CLUSTERS);
@@ -1637,7 +1431,10 @@ export function AntenasMap(props: AntenasMapProps) {
             stationCount: Number(raw.stationCount ?? 1),
             memberIdsPipe: String(raw.memberIdsPipe ?? ''),
           };
-          popup.setHTML(buildPopupHtml(popupProps, matchedSite));
+          const primaryAnt =
+            matchedSite?.primary ??
+            antenasByIdRef.current.get(popupProps.primaryId);
+          popup.setHTML(buildPopupHtml(popupProps, matchedSite, primaryAnt));
         }
 
         popup.setLngLat([lon, lat]).addTo(map);
@@ -1723,25 +1520,6 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [antenasGeoJson, multiIconKeys]);
 
-  // Sincronización reactiva aislada del círculo de cobertura radar y enlace LOS
-  useEffect(() => {
-    radarGeoJsonRef.current = radarGeoJson;
-    const map = mapRef.current;
-    if (!map) {
-      return;
-    }
-    try {
-      const source = map.getSource(RADAR_SOURCE_ID) as
-        | maplibregl.GeoJSONSource
-        | undefined;
-      if (source) {
-        source.setData(radarGeoJson);
-      }
-    } catch (err) {
-      console.warn('[AntenasMap] No se pudo sincronizar radarGeoJson:', err);
-    }
-  }, [radarGeoJson]);
-
   // Sincronización reactiva aislada de la regla de distancia entre 2 puntos (Punto A -> Punto B)
   useEffect(() => {
     measureGeoJsonRef.current = measureGeoJson;
@@ -1776,15 +1554,16 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [selectedAntenna]);
 
-  // Cursor de retícula al activar/desactivar el modo medición o radar
+  // Cursor de retícula al activar/desactivar el modo medición
   useEffect(() => {
     const map = mapRef.current;
     if (!map) {
       return;
     }
-    map.getCanvas().style.cursor =
-      effectiveMeasureModeActive || radarModeActive ? 'crosshair' : '';
-  }, [effectiveMeasureModeActive, radarModeActive]);
+    map.getCanvas().style.cursor = effectiveMeasureModeActive
+      ? 'crosshair'
+      : '';
+  }, [effectiveMeasureModeActive]);
 
   // Desplazamiento de cámara cuando cambia `flyToTarget.token` (incluidos enlaces directos `#/?gid=...`)
   useEffect(() => {
@@ -1802,7 +1581,6 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     lastFlyTokenRef.current = flyToTarget.token;
-    setActiveRegionId(null);
 
     // Sincronizar tamaño real del lienzo por si acaba de montarse el panel lateral de detalle (`StationDetailDrawer`)
     map.resize();
@@ -1825,8 +1603,7 @@ export function AntenasMap(props: AntenasMapProps) {
   }, [flyToTarget]);
 
   const handleFlyToRegion = useCallback(
-    (lon: number, lat: number, zoom: number, presetId?: string) => {
-      setActiveRegionId(presetId ?? null);
+    (lon: number, lat: number, zoom: number) => {
       const map = mapRef.current;
       if (!map) {
         return;
@@ -1853,21 +1630,14 @@ export function AntenasMap(props: AntenasMapProps) {
       />
 
       <MapOverlays
-        antenas={antenas}
-        selectedAntenna={selectedAntenna}
         styleId={styleId}
         onStyleChange={onStyleChange}
-        radarPoint={radarPoint}
-        onRadarPointChange={onRadarPointChange}
-        radarModeActive={radarModeActive}
-        onToggleRadarMode={onToggleRadarMode}
         measurePoints={effectiveMeasurePoints}
         onMeasurePointsChange={handleMeasurePointsChange}
         measureModeActive={effectiveMeasureModeActive}
         onToggleMeasureMode={handleToggleMeasureMode}
-        activeOperators={activeOperators}
-        onToggleOperator={onToggleOperator}
-        activeRegionId={activeRegionId}
+        lock3dPitch={effectiveLock3dPitch}
+        onToggleLock3dPitch={handleToggleLock3dPitch}
         onFlyToRegion={handleFlyToRegion}
       />
     </div>

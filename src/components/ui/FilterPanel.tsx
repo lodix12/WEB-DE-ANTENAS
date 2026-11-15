@@ -13,11 +13,9 @@ import {
   type AntennaRecord,
   type OperatorKey,
 } from '../../types/antena';
-import type { MeasurePoint, RadarPoint } from '../../types/map';
 import { parseCoordinateInput } from '../../utils/export';
 import { SPAIN_REGION_PRESETS } from '../../utils/geo';
 import { ExportMenu } from './ExportMenu';
-import { NearestAntennasCard } from './NearestAntennasCard';
 
 export interface FilterPanelProps {
   derived: DerivedAntenasStructures | null;
@@ -33,6 +31,8 @@ export interface FilterPanelProps {
   onProvinceChange: (prov: string) => void;
   selectedMunicipality: string;
   onMunicipalityChange: (mun: string) => void;
+  selectedBand: string;
+  onBandChange: (band: string) => void;
   activeOperators: OperatorKey[];
   onToggleOperator: (op: OperatorKey) => void;
   onSelectAllOperators: () => void;
@@ -40,23 +40,7 @@ export interface FilterPanelProps {
   hasActiveFilters: boolean;
   onResetFilters: () => void;
 
-  selectedAntenna: AntennaRecord | null;
-  onSelectAntenna: (ant: AntennaRecord) => void;
   onFlyTo: (lat: number, lon: number, zoom?: number) => void;
-  onJumpToCoordinates: (lat: number, lon: number) => void;
-
-  radarPoint: RadarPoint | null;
-  onClearRadar: () => void;
-  radarRadiusKm: number;
-  onRadiusChange: (km: number) => void;
-  measurePoints: MeasurePoint[];
-  onClearMeasurement: () => void;
-  onResetMeasurePoints: () => void;
-  measureModeActive: boolean;
-  onToggleMeasureMode: () => void;
-  gpsLoading: boolean;
-  gpsError: string | null;
-  onRequestGps: () => void;
 }
 
 export function FilterPanel({
@@ -72,28 +56,15 @@ export function FilterPanel({
   onProvinceChange,
   selectedMunicipality,
   onMunicipalityChange,
+  selectedBand,
+  onBandChange,
   activeOperators,
   onToggleOperator,
   onSelectAllOperators,
   onClearAllOperators,
   hasActiveFilters,
   onResetFilters,
-  selectedAntenna,
-  onSelectAntenna,
   onFlyTo,
-  onJumpToCoordinates,
-  radarPoint,
-  onClearRadar,
-  radarRadiusKm,
-  onRadiusChange,
-  measurePoints,
-  onClearMeasurement,
-  onResetMeasurePoints,
-  measureModeActive,
-  onToggleMeasureMode,
-  gpsLoading,
-  gpsError,
-  onRequestGps,
 }: FilterPanelProps) {
   const parsedCoords = useMemo(
     () => parseCoordinateInput(searchQuery),
@@ -135,7 +106,7 @@ export function FilterPanel({
       className={`filter-sidebar ${collapsed ? 'is-collapsed' : ''} ${
         mobileOpen ? 'is-mobile-open' : ''
       }`}
-      aria-label="Panel de filtros y orientación RF"
+      aria-label="Panel de filtros cartográficos"
     >
       <div className="sidebar-header">
         <div className="sidebar-header-stats">
@@ -156,7 +127,7 @@ export function FilterPanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <ExportMenu
             antenas={filteredAntenas}
-            radarPoint={radarPoint}
+            radarPoint={null}
             align="right"
             idPrefix="map-sidebar-export"
           />
@@ -215,11 +186,11 @@ export function FilterPanel({
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && parsedCoords) {
                   e.preventDefault();
-                  onJumpToCoordinates(parsedCoords.lat, parsedCoords.lon);
+                  onFlyTo(parsedCoords.lat, parsedCoords.lon, 15);
                   onCloseMobile();
                 }
               }}
-              placeholder="Municipio, calle, Gis_ID o 40.4168, -3.7038"
+              placeholder="Municipio, calle, Gis_ID, 3500 MHz o 40.4168, -3.7038"
               autoComplete="off"
             />
             {searchQuery && (
@@ -247,12 +218,12 @@ export function FilterPanel({
                 id="coord-jump-action-btn"
                 className="btn btn-primary btn-sm"
                 onClick={() => {
-                  onJumpToCoordinates(parsedCoords.lat, parsedCoords.lon);
+                  onFlyTo(parsedCoords.lat, parsedCoords.lon, 15);
                   onCloseMobile();
                 }}
               >
                 <MapPin size={13} aria-hidden="true" />
-                <span>Ir y fijar radar</span>
+                <span>Ir a coordenadas</span>
               </button>
             </div>
           )}
@@ -381,39 +352,53 @@ export function FilterPanel({
           </div>
         </section>
 
-        {/* Radar de Cercanía y Orientación 4G/5G */}
-        <section className="panel-section">
-          <NearestAntennasCard
-            antenas={filteredAntenas}
-            selectedAntenna={selectedAntenna}
-            onSelectAntenna={(ant) => {
-              onSelectAntenna(ant);
-              onCloseMobile();
-            }}
-            onFlyToAntenna={(ant) => onFlyTo(ant.lat, ant.lon, 15.8)}
-            radarPoint={radarPoint}
-            onClearRadar={onClearRadar}
-            radarRadiusKm={radarRadiusKm}
-            onRadiusChange={onRadiusChange}
-            measurePoints={measurePoints}
-            onClearMeasurement={onClearMeasurement}
-            onResetMeasurePoints={() => {
-              onResetMeasurePoints();
-              onCloseMobile();
-            }}
-            measureModeActive={measureModeActive}
-            onToggleMeasureMode={() => {
-              onToggleMeasureMode();
-              onCloseMobile();
-            }}
-            gpsLoading={gpsLoading}
-            gpsError={gpsError}
-            onRequestGps={() => {
-              onRequestGps();
-              onCloseMobile();
-            }}
-          />
-        </section>
+        {/* Filtro por Banda de Frecuencia (MHz) */}
+        {derived && derived.availableBands.length > 0 && (
+          <section className="panel-section">
+            <div className="field-label">
+              <span>Banda de Frecuencia (MHz)</span>
+              {selectedBand && (
+                <button
+                  type="button"
+                  className="text-link-btn"
+                  onClick={() => onBandChange('')}
+                  id="bands-select-all-btn"
+                >
+                  Todas
+                </button>
+              )}
+            </div>
+
+            <div
+              className="band-pills-grid"
+              role="group"
+              aria-label="Filtrar por banda de frecuencia en MHz"
+            >
+              {derived.availableBands.map((item) => {
+                const isSelected = selectedBand === item.band;
+                return (
+                  <button
+                    key={item.band}
+                    type="button"
+                    id={`filter-band-${item.band.replace(/\s+/g, '-').toLowerCase()}`}
+                    className={`band-filter-pill ${
+                      isSelected ? 'is-active' : ''
+                    }`}
+                    onClick={() => onBandChange(isSelected ? '' : item.band)}
+                    aria-pressed={isSelected}
+                  >
+                    <span className="band-filter-pill-label mono">
+                      {item.band}
+                    </span>
+                    <span className="band-filter-pill-count mono">
+                      {item.count.toLocaleString('es-ES')}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
       </div>
     </aside>
   );

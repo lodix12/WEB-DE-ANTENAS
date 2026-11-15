@@ -28,7 +28,7 @@ jobs:
     name: Recolectar Censo Nacional (Infoantenas)
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_data != false)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 340
     steps:
       - name: Descargar repositorio (rama main)
         uses: actions/checkout@v4
@@ -41,8 +41,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Ejecutar recolector espacial de antenas de España
-        run: python3 scripts/fetch_antenas.py --output public/data/antenas.json --delay 1.0
+      - name: Ejecutar recolector espacial de antenas y bandas RF de España
+        run: python3 scripts/fetch_antenas.py --output public/data/antenas.json --delay 1.0 --preserve-from public/data/antenas.json --fetch-bands --max-band-seconds 14400
 
       - name: Confirmar y publicar cambios si el censo se ha actualizado
         run: |

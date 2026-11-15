@@ -31,11 +31,38 @@ function formatDuration(seconds: number): string {
   return `${mins} min ${secs} s`;
 }
 
+function describeBandRole(band: string): string {
+  const normalized = band.trim().toUpperCase();
+  if (normalized.startsWith('700')) {
+    return '5G NR (n28) / LTE B28 · Cobertura interior y rural de largo alcance';
+  }
+  if (normalized.startsWith('800')) {
+    return '4G LTE (B20) · Cobertura base nacional y penetración en edificios';
+  }
+  if (normalized.startsWith('900')) {
+    return '2G / 3G / 4G / 5G DSS (B8/n8) · Voz y cobertura extendida';
+  }
+  if (normalized.startsWith('1800')) {
+    return '4G LTE / 5G DSS (B3/n3) · Capacidad media urbana y suburbana';
+  }
+  if (normalized.startsWith('2100')) {
+    return '4G LTE / 5G DSS (B1/n1) · Capacidad multi-portadora';
+  }
+  if (normalized.startsWith('2600')) {
+    return '4G LTE+ (B7 / B38) · Alta densidad de tráfico urbano';
+  }
+  if (normalized.startsWith('3500')) {
+    return '5G NR C-Band (n78 · 3,4–3,8 GHz) · Ultra-capacidad y baja latencia';
+  }
+  return 'Concesión radioeléctrica declarada en ficha oficial MINETUR';
+}
+
 export function EstadisticasView() {
   const navigate = useNavigate();
   const { derived, isLoading, isError, error } = useAntenasData();
   const {
     setSelectedProvince,
+    setSelectedBand,
     selectAllOperators,
     toggleOperator,
     activeOperators,
@@ -85,6 +112,47 @@ export function EstadisticasView() {
     }).sort((a, b) => b.count - a.count);
   }, [derived]);
 
+  const bandBreakdownRows = useMemo(() => {
+    if (!derived || derived.availableBands.length === 0) return [];
+    const opMapByBand = new Map<string, Record<OperatorKey, number>>();
+    for (const item of derived.availableBands) {
+      opMapByBand.set(item.band, {
+        movistar: 0,
+        orange: 0,
+        vodafone: 0,
+        masmovil: 0,
+        digi: 0,
+        otros: 0,
+      });
+    }
+
+    const { antenas } = derived.dataset;
+    for (let i = 0; i < antenas.length; i++) {
+      const ant = antenas[i];
+      if (!ant.bandas || ant.bandas.length === 0) continue;
+      for (let b = 0; b < ant.bandas.length; b++) {
+        const counts = opMapByBand.get(ant.bandas[b]);
+        if (counts) {
+          counts[ant.op] = (counts[ant.op] ?? 0) + 1;
+        }
+      }
+    }
+
+    return derived.availableBands.map((item) => ({
+      band: item.band,
+      count: item.count,
+      role: describeBandRole(item.band),
+      byOperator: opMapByBand.get(item.band) ?? {
+        movistar: 0,
+        orange: 0,
+        vodafone: 0,
+        masmovil: 0,
+        digi: 0,
+        otros: 0,
+      },
+    }));
+  }, [derived]);
+
   const filteredProvinces = useMemo(() => {
     if (!derived) return [];
     const norm = normalizeSearchText(provQuery);
@@ -99,6 +167,7 @@ export function EstadisticasView() {
 
   function handleInspectProvinceOnMap(provincia: string) {
     selectAllOperators();
+    setSelectedBand('');
     setSelectedProvince(provincia);
     const centroid = derived?.provinceCentroids.get(provincia);
     if (centroid) {
@@ -108,12 +177,20 @@ export function EstadisticasView() {
   }
 
   function handleFilterSingleOperatorOnMap(targetOp: OperatorKey) {
+    setSelectedBand('');
     // Dejar activo únicamente el operador elegido
     for (const op of OPERATOR_ORDER) {
       const currentlyOn = activeOperators.includes(op);
       if (op === targetOp && !currentlyOn) toggleOperator(op);
       if (op !== targetOp && currentlyOn) toggleOperator(op);
     }
+    void navigate({ to: '/', search: {} });
+  }
+
+  function handleInspectBandOnMap(band: string) {
+    selectAllOperators();
+    setSelectedProvince('');
+    setSelectedBand(band);
     void navigate({ to: '/', search: {} });
   }
 
@@ -170,7 +247,7 @@ export function EstadisticasView() {
           </span>
           <span className="metric-sub">
             {vodafoneFused > 0
-              ? `${vodafoneFused.toLocaleString('es-ES')} declaraciones duplicadas de Vodafone (< 10 m) fusionadas`
+              ? `${vodafoneFused.toLocaleString('es-ES')} declaraciones duplicadas de Vodafone (< 35 m) fusionadas`
               : 'Emplazamientos únicos deduplicados'}
           </span>
         </div>
@@ -310,6 +387,159 @@ export function EstadisticasView() {
               );
             })}
           </div>
+        </div>
+      </section>
+
+      {/* Cobertura y Desglose por Banda de Frecuencia (MHz) */}
+      <section className="section-block" aria-labelledby="stats-bands-h2">
+        <div className="section-block-header">
+          <div>
+            <h2 id="stats-bands-h2" className="section-h2">
+              Cobertura y Desglose por Banda de Frecuencia (MHz)
+            </h2>
+            <p className="section-desc">
+              Sincronización incremental desde{' '}
+              <code>detalleEstacion.do</code> (MINETUR) y presencia por banda
+              comercial asignada (700 MHz a 3500 MHz).
+            </p>
+          </div>
+
+          <span className="band-tag">
+            {derived.bandsPopulatedCount.toLocaleString('es-ES')} /{' '}
+            {dataset.total.toLocaleString('es-ES')} sincronizadas (
+            {formatPercent(derived.bandsPopulatedCount, dataset.total)})
+          </span>
+        </div>
+
+        <div className="spectrum-sync-strip">
+          <div className="spectrum-sync-meta">
+            <span>
+              <strong>Progreso de sincronización de frecuencias:</strong>{' '}
+              <span className="mono">
+                {derived.bandsPopulatedCount.toLocaleString('es-ES')}
+              </span>{' '}
+              estaciones con ficha de espectro inspeccionada
+              {dataset.total > derived.bandsPopulatedCount ? (
+                <>
+                  {' '}
+                  ·{' '}
+                  <span className="mono">
+                    {(
+                      dataset.total - derived.bandsPopulatedCount
+                    ).toLocaleString('es-ES')}
+                  </span>{' '}
+                  en cola incremental
+                </>
+              ) : null}
+            </span>
+            {(crawlStats.bandRequestsCount ?? 0) > 0 && (
+              <span className="mono spectrum-sync-batch">
+                +{(crawlStats.bandRequestsCount ?? 0).toLocaleString('es-ES')}{' '}
+                fichas en último ciclo
+              </span>
+            )}
+          </div>
+          <div className="operator-bar-track" aria-hidden="true">
+            <div
+              className="operator-bar-fill"
+              style={{
+                width: `${
+                  dataset.total > 0
+                    ? Math.min(
+                        100,
+                        Math.max(
+                          (derived.bandsPopulatedCount / dataset.total) * 100,
+                          derived.bandsPopulatedCount > 0 ? 1.2 : 0,
+                        ),
+                      )
+                    : 0
+                }%`,
+                backgroundColor: 'var(--accent-primary)',
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="section-block-body">
+          {bandBreakdownRows.length > 0 ? (
+            <div className="spectrum-bands-list">
+              {bandBreakdownRows.map((row) => (
+                <div key={row.band} className="spectrum-band-row">
+                  <div className="spectrum-band-meta">
+                    <div className="spectrum-band-title-group">
+                      <span className="band-tag">{row.band}</span>
+                      <span className="spectrum-band-role">{row.role}</span>
+                      <button
+                        type="button"
+                        className="text-link-btn"
+                        onClick={() => handleInspectBandOnMap(row.band)}
+                        title={`Filtrar estaciones con banda ${row.band} en el mapa`}
+                      >
+                        Ver en mapa →
+                      </button>
+                    </div>
+
+                    <div className="operator-bar-numbers">
+                      <span
+                        style={{
+                          fontSize: 15,
+                          fontWeight: 700,
+                          color: 'var(--text-primary)',
+                        }}
+                      >
+                        {row.count.toLocaleString('es-ES')}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 12.5,
+                          color: 'var(--text-muted)',
+                          minWidth: 56,
+                          textAlign: 'right',
+                        }}
+                        title="Porcentaje sobre estaciones con bandas sincronizadas"
+                      >
+                        {formatPercent(
+                          row.count,
+                          Math.max(1, derived.bandsPopulatedCount),
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="stacked-bar" aria-label={`Reparto por operador en ${row.band}`}>
+                    {OPERATOR_ORDER.map((opKey) => {
+                      const c = row.byOperator[opKey] ?? 0;
+                      if (c <= 0 || row.count <= 0) return null;
+                      const pct = (c / row.count) * 100;
+                      const meta = OPERATOR_META[opKey];
+                      return (
+                        <div
+                          key={opKey}
+                          className="stacked-bar-seg"
+                          style={{
+                            width: `${pct}%`,
+                            backgroundColor: meta.color,
+                          }}
+                          title={`${meta.shortName}: ${c.toLocaleString('es-ES')} estaciones en ${row.band} (${formatPercent(c, row.count)})`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="callout-note">
+              <strong>Sincronización incremental en curso:</strong> Las bandas y
+              rangos de frecuencia en MHz se incorporan progresivamente en lotes
+              diarios consultando{' '}
+              <code>detalleEstacion.do?emplazamiento=&lt;Gis_ID&gt;</code> en el
+              Geoportal MINETUR. En cuanto haya estaciones sincronizadas, aquí
+              se mostrará el desglose nacional entre{' '}
+              <span className="mono">700 MHz</span> y{' '}
+              <span className="mono">3500 MHz</span>.
+            </div>
+          )}
         </div>
       </section>
 
@@ -582,14 +812,15 @@ export function EstadisticasView() {
             }}
           >
             <div className="callout-note">
-              <strong>Deduplicación espacial de Vodafone (&lt; 10 m):</strong>{' '}
+              <strong>Deduplicación espacial de Vodafone (&lt; 35 m):</strong>{' '}
               <span className="mono" style={{ fontWeight: 700 }}>
                 {vodafoneFused.toLocaleString('es-ES')}
               </span>{' '}
-              declaraciones duplicadas de Vodafone (&lt; 10 m) fusionadas en
+              declaraciones duplicadas de Vodafone (&lt; 35 m) fusionadas en
               emplazamientos únicos, contabilizadas como{' '}
               <strong>1 sola antena</strong> tanto en el censo nacional como en
-              las cuotas por operador y provincia.
+              las cuotas por operador y provincia. Las antenas de Telefónica
+              (Movistar) nunca se fusionan consigo mismas.
             </div>
           </div>
         )}

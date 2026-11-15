@@ -25,8 +25,12 @@ export interface AntennaRecord {
   mun: string;
   /** Provincia oficial normalizada */
   prov: string;
-  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (< 10 m en Vodafone) */
+  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (< 35 m en Vodafone) */
   mergedGids?: string[];
+  /** Bandas comerciales activas en MHz extraídas de detalleEstacion.do (ej. ["700 MHz", "800 MHz", "1800 MHz", "3500 MHz"]) */
+  bandas?: string[];
+  /** Rangos exactos de frecuencias asignadas en MHz en detalleEstacion.do (ej. ["935.10 - 949.90", "3460.00 - 3600.00"]) */
+  frecuencias?: string[];
 }
 
 export interface OperatorSummary {
@@ -50,8 +54,12 @@ export interface CrawlStats {
   zoomParam: number;
   delaySeconds: number;
   isPartialSeed?: boolean;
-  /** Declaraciones duplicadas de Vodafone (< 10 m) fusionadas en una única antena */
+  /** Declaraciones duplicadas de Vodafone (< 35 m) fusionadas en una única antena */
   vodafoneFusedDuplicates?: number;
+  /** Número de antenas del JSON que ya disponen de sus bandas/frecuencias extraídas */
+  bandsPopulatedCount?: number;
+  /** Peticiones a detalleEstacion.do realizadas en la última sincronización de bandas */
+  bandRequestsCount?: number;
 }
 
 export interface AntenasDataset {
@@ -187,12 +195,11 @@ export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
 ];
 
 export function getDetalleEstacionUrl(
-  antena: Pick<AntennaRecord, 'gid' | 'id'>,
+  antena: Pick<AntennaRecord, 'gid'>,
 ): string {
   const base = 'https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do';
   const params = new URLSearchParams({
     emplazamiento: antena.gid,
-    codEmplazamiento: antena.id,
   });
   return `${base}?${params.toString()}`;
 }

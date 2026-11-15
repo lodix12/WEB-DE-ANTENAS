@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { ExportMenu } from '../components/ui/ExportMenu';
 import {
+  compareBandLabels,
   useAntenasData,
   useFilteredAntenas,
 } from '../hooks/useAntenasData';
@@ -73,6 +74,8 @@ export function ExplorarView() {
     setSelectedProvince,
     selectedMunicipality,
     setSelectedMunicipality,
+    selectedBand,
+    setSelectedBand,
     activeOperators,
     toggleOperator,
     selectAllOperators,
@@ -101,6 +104,7 @@ export function ExplorarView() {
     selectedProvince,
     selectedMunicipality,
     activeOperators,
+    selectedBand,
   });
 
   const parsedCoords = useMemo(
@@ -236,7 +240,7 @@ export function ExplorarView() {
         columnHelper.accessor('dir', {
           id: 'dir',
           header: 'Dirección del Emplazamiento',
-          size: 260,
+          size: 250,
           sortFn: 'text',
           cell: (info) => (
             <span
@@ -250,6 +254,49 @@ export function ExplorarView() {
               {info.getValue() || '—'}
             </span>
           ),
+        }),
+        columnHelper.display({
+          id: 'bandas',
+          header: 'Bandas (MHz)',
+          size: 214,
+          enableSorting: false,
+          cell: (info) => {
+            const row = info.row.original;
+            if (!row.bandas || row.bandas.length === 0) {
+              return (
+                <span
+                  className="mono"
+                  style={{ color: 'var(--text-muted)', fontSize: 12 }}
+                  title={
+                    row.bandas === undefined
+                      ? 'Pendiente de sincronización incremental desde MINETUR'
+                      : 'Sin concesiones de banda detalladas en ficha oficial'
+                  }
+                >
+                  —
+                </span>
+              );
+            }
+            const sorted = [...row.bandas].sort(compareBandLabels);
+            const tooltipLines = [
+              `Bandas: ${sorted.join(', ')}`,
+              row.frecuencias && row.frecuencias.length > 0
+                ? `Frecuencias (MHz): ${row.frecuencias.join(' · ')}`
+                : '',
+            ].filter(Boolean);
+            return (
+              <div
+                className="table-bands-cell"
+                title={tooltipLines.join('\n')}
+              >
+                {sorted.map((band) => (
+                  <span key={band} className="table-band-pill mono">
+                    {band.replace(/\s*mhz$/i, '')}
+                  </span>
+                ))}
+              </div>
+            );
+          },
         }),
         columnHelper.display({
           id: 'coords',
@@ -425,7 +472,11 @@ export function ExplorarView() {
           </div>
         </div>
 
-        <div className="explorar-filters-row">
+        <div
+          className={`explorar-filters-row ${
+            (derived?.availableBands.length ?? 0) > 0 ? 'has-band-filter' : ''
+          }`}
+        >
           <div className="search-input-wrap">
             <span className="search-input-icon" aria-hidden="true">
               <Search size={14} />
@@ -442,7 +493,7 @@ export function ExplorarView() {
                   jumpToCoordinates(parsedCoords.lat, parsedCoords.lon);
                 }
               }}
-              placeholder="Filtrar por municipio, calle, código Gis_ID, razón social o coordenadas…"
+              placeholder="Filtrar por municipio, calle, Gis_ID, banda (3500 MHz), frecuencia o coordenadas…"
             />
             {searchQuery && (
               <button
@@ -490,6 +541,25 @@ export function ExplorarView() {
               </option>
             ))}
           </select>
+
+          {derived && derived.availableBands.length > 0 && (
+            <select
+              id="explorer-band-select"
+              aria-label="Filtrar por banda de frecuencia (MHz)"
+              className="select-control"
+              value={selectedBand}
+              onChange={(e) => setSelectedBand(e.target.value)}
+            >
+              <option value="">
+                Todas las bandas ({derived.availableBands.length})
+              </option>
+              {derived.availableBands.map((item) => (
+                <option key={item.band} value={item.band}>
+                  {item.band} ({item.count.toLocaleString('es-ES')})
+                </option>
+              ))}
+            </select>
+          )}
 
           {hasActiveFilters ? (
             <button

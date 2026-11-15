@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import {
-  Navigation,
   PanelLeftOpen,
   RefreshCw,
   Ruler,
@@ -27,6 +26,8 @@ export function MapaView() {
     setSelectedProvince,
     selectedMunicipality,
     setSelectedMunicipality,
+    selectedBand,
+    setSelectedBand,
     activeOperators,
     toggleOperator,
     selectAllOperators,
@@ -37,23 +38,11 @@ export function MapaView() {
     setSelectedAntenna,
     flyToTarget,
     triggerFlyTo,
-    radarPoint,
-    setRadarPoint,
-    radarRadiusKm,
-    setRadarRadiusKm,
-    radarModeActive,
-    toggleRadarMode,
     measurePoints,
     setMeasurePoints,
-    clearMeasurement,
-    setMeasureModeActive,
     measureModeActive,
     toggleMeasureMode,
-    gpsLoading,
-    gpsError,
-    requestGpsLocation,
     focusAntennaOnMap,
-    jumpToCoordinates,
   } = useWorkspace();
 
   const searchParams = useSearch({ from: '/' });
@@ -86,6 +75,7 @@ export function MapaView() {
     selectedProvince,
     selectedMunicipality,
     activeOperators,
+    selectedBand,
   });
 
   if (isError) {
@@ -153,31 +143,15 @@ export function MapaView() {
         onProvinceChange={setSelectedProvince}
         selectedMunicipality={selectedMunicipality}
         onMunicipalityChange={setSelectedMunicipality}
+        selectedBand={selectedBand}
+        onBandChange={setSelectedBand}
         activeOperators={activeOperators}
         onToggleOperator={toggleOperator}
         onSelectAllOperators={selectAllOperators}
         onClearAllOperators={clearAllOperators}
         hasActiveFilters={hasActiveFilters}
         onResetFilters={resetAllFilters}
-        selectedAntenna={selectedAntenna}
-        onSelectAntenna={setSelectedAntenna}
         onFlyTo={triggerFlyTo}
-        onJumpToCoordinates={(lat, lon) => jumpToCoordinates(lat, lon)}
-        radarPoint={radarPoint}
-        onClearRadar={() => setRadarPoint(null)}
-        radarRadiusKm={radarRadiusKm}
-        onRadiusChange={setRadarRadiusKm}
-        measurePoints={measurePoints}
-        onClearMeasurement={clearMeasurement}
-        onResetMeasurePoints={() => {
-          setMeasurePoints([]);
-          setMeasureModeActive(true);
-        }}
-        measureModeActive={measureModeActive}
-        onToggleMeasureMode={toggleMeasureMode}
-        gpsLoading={gpsLoading}
-        gpsError={gpsError}
-        onRequestGps={() => requestGpsLocation(true)}
       />
 
       <div className="map-stage">
@@ -191,7 +165,7 @@ export function MapaView() {
           >
             <PanelLeftOpen size={15} aria-hidden="true" />
             <span>
-              Filtros y Radar (
+              Filtros (
               <span className="mono">
                 {filteredAntenas.length.toLocaleString('es-ES')}
               </span>
@@ -218,17 +192,6 @@ export function MapaView() {
           </button>
 
           <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              type="button"
-              id="mobile-gps-btn"
-              className="btn btn-secondary btn-sm"
-              onClick={() => requestGpsLocation(true)}
-              disabled={gpsLoading}
-              title="Usar mi ubicación GPS"
-            >
-              <Navigation size={13} aria-hidden="true" />
-              <span>GPS</span>
-            </button>
             <button
               type="button"
               id="mobile-radar-mode-btn"
@@ -259,21 +222,9 @@ export function MapaView() {
             styleId={styleId}
             onStyleChange={setStyleId}
             flyToTarget={flyToTarget}
-            radarPoint={radarPoint}
-            onRadarPointChange={(point) => {
-              setRadarPoint(point);
-              if (point && radarModeActive) {
-                toggleRadarMode();
-              }
-            }}
-            radarModeActive={radarModeActive}
-            onToggleRadarMode={toggleRadarMode}
             measurePoints={measurePoints}
             onMeasurePointsChange={(pts) => {
               setMeasurePoints(pts);
-              if (pts.length >= 2 && measureModeActive) {
-                setMeasureModeActive(false);
-              }
             }}
             measureModeActive={measureModeActive}
             onToggleMeasureMode={toggleMeasureMode}
@@ -286,17 +237,8 @@ export function MapaView() {
       <StationDetailDrawer
         antenna={selectedAntenna}
         allAntenas={derived?.dataset.antenas ?? []}
-        radarPoint={radarPoint}
         onClose={() => setSelectedAntenna(null)}
         onSelectAntenna={(ant) => focusAntennaOnMap(ant)}
-        onSetRadarAtStation={(ant) => {
-          setRadarPoint({
-            lat: ant.lat,
-            lon: ant.lon,
-            label: `Estación #${ant.gid}`,
-            radiusKm: radarRadiusKm,
-          });
-        }}
       />
     </main>
   );

@@ -260,18 +260,25 @@ class FetchAntenasUnitTests(unittest.TestCase):
             resumed_dataset = resumed.crawl(region="sample")
             self.assertEqual(resumed_dataset["total"], dataset["total"])
 
-    def test_vodafone_duplicates_under_10m_fused_and_counted_as_one(self) -> None:
-        # 3 declaraciones de Vodafone en A Coruña a < 10 m (~0 m y ~5.5 m):
-        # "00144693" (con 2 ceros), "0144693" (con 1 cero y dirección completa),
+    def test_vodafone_duplicates_under_35m_fused_and_counted_as_one(self) -> None:
+        self.assertEqual(fa.DEFAULT_VODAFONE_FUSION_M, 35.0)
+        # 3 declaraciones de Vodafone en A Coruña a < 35 m (~0 m y ~28.0 m):
+        # "00144693" (con 2 ceros), "0144693" (con 1 cero a ~28 m y dirección completa),
         # "144693" (canónico sin ceros, sin dir para comprobar relleno de campos).
+        lat_base, lon_base = 42.897686, -8.704622
+        lat_28m = 42.897938  # ~28.02 m al norte
+        dist_28m = fa.haversine_m(lat_base, lon_base, lat_28m, lon_base)
+        self.assertGreater(dist_28m, 25.0)
+        self.assertLess(dist_28m, 35.0)
+
         records = [
             {
                 "id": "VODAFONE ESPAÑA, S.A. - 00144693",
                 "gid": "00144693",
                 "op": "vodafone",
                 "opRaw": "VODAFONE ESPAÑA, S.A.",
-                "lat": 42.897686,
-                "lon": -8.704622,
+                "lat": lat_base,
+                "lon": lon_base,
                 "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
                 "mun": "AMES",
                 "prov": "A CORUÑA",
@@ -281,8 +288,8 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 "gid": "0144693",
                 "op": "vodafone",
                 "opRaw": "VODAFONE ESPAÑA, S.A.",
-                "lat": 42.897720,  # ~3.8 m al norte
-                "lon": -8.704622,
+                "lat": lat_28m,
+                "lon": lon_base,
                 "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
                 "mun": "AMES",
                 "prov": "A CORUÑA",
@@ -292,8 +299,8 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 "gid": "144693",
                 "op": "vodafone",
                 "opRaw": "VODAFONE ESPAÑA, S.A.U.",
-                "lat": 42.897686,
-                "lon": -8.704622,
+                "lat": lat_base,
+                "lon": lon_base,
                 "dir": "",
                 "mun": "AMES",
                 "prov": "A CORUÑA",
@@ -321,10 +328,48 @@ class FetchAntenasUnitTests(unittest.TestCase):
 
         fused_ant = dataset["antenas"][0]
         self.assertEqual(fused_ant["gid"], "144693")
-        self.assertEqual(fused_ant["lat"], 42.897686)
-        self.assertEqual(fused_ant["lon"], -8.704622)
+        self.assertEqual(fused_ant["lat"], lat_base)
+        self.assertEqual(fused_ant["lon"], lon_base)
         self.assertEqual(fused_ant["dir"], "LG PG 78 PARC 9000 - ARUFE, S/N")
         self.assertEqual(fused_ant["mergedGids"], ["144693", "0144693", "00144693"])
+
+        # Verificación de malla espacial este-oeste en el extremo norte de España (lat = 43.8°):
+        # 0.00042° de longitud equivalen a ~33.7 m (< 35 m) y no deben perderse entre celdas.
+        north_lat = 43.800000
+        lon_w = -7.680100
+        lon_e = -7.679680  # ~33.7 m al este
+        ew_dist = fa.haversine_m(north_lat, lon_w, north_lat, lon_e)
+        self.assertGreater(ew_dist, 30.0)
+        self.assertLess(ew_dist, 35.0)
+        ew_fused, ew_dups = fa.fuse_vodafone_duplicates(
+            [
+                {
+                    "id": "VODAFONE ESPAÑA, S.A.U. - 150901",
+                    "gid": "150901",
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                    "lat": north_lat,
+                    "lon": lon_w,
+                    "dir": "CABO ESTACA DE BARES",
+                    "mun": "MAÑÓN",
+                    "prov": "A CORUÑA",
+                },
+                {
+                    "id": "VODAFONE ESPAÑA, S.A. - 0150901",
+                    "gid": "0150901",
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.",
+                    "lat": north_lat,
+                    "lon": lon_e,
+                    "dir": "CABO ESTACA DE BARES",
+                    "mun": "MAÑÓN",
+                    "prov": "A CORUÑA",
+                },
+            ]
+        )
+        self.assertEqual(ew_dups, 1)
+        self.assertEqual(len(ew_fused), 1)
+        self.assertEqual(ew_fused[0]["mergedGids"], ["150901", "0150901"])
 
         # Idempotencia al volver a pasar el dataset ya fusionado por build_dataset
         rebuilt = fa.build_dataset(
@@ -336,11 +381,13 @@ class FetchAntenasUnitTests(unittest.TestCase):
         self.assertEqual(rebuilt["crawlStats"]["vodafoneFusedDuplicates"], 2)
         self.assertEqual(rebuilt["antenas"][0]["mergedGids"], ["144693", "0144693", "00144693"])
 
-    def test_vodafone_stations_at_10m_or_more_are_not_fused(self) -> None:
-        # 0.000135 grados de latitud son ~15.01 metros (>= 10 m)
+    def test_vodafone_stations_at_35m_or_more_are_not_fused(self) -> None:
+        # 0.000342 grados de latitud son ~38.03 metros (>= 35 m)
         lat1, lon1 = 40.416800, -3.703800
-        lat2, lon2 = 40.416935, -3.703800
-        self.assertGreaterEqual(fa.haversine_m(lat1, lon1, lat2, lon2), 10.0)
+        lat2, lon2 = 40.417142, -3.703800
+        dist_m = fa.haversine_m(lat1, lon1, lat2, lon2)
+        self.assertGreaterEqual(dist_m, 35.0)
+        self.assertLess(dist_m, 40.0)
 
         records = [
             {
@@ -373,16 +420,24 @@ class FetchAntenasUnitTests(unittest.TestCase):
         self.assertNotIn("mergedGids", fused[0])
         self.assertNotIn("mergedGids", fused[1])
 
-    def test_other_operators_under_10m_remain_separate_in_dataset(self) -> None:
-        # Movistar + Orange + segunda Movistar a ~2 metros NO deben eliminarse
+    def test_telefonica_and_other_operators_under_35m_are_never_fused(self) -> None:
+        # Estaciones de Telefónica (movistar) a 0 m, ~15 m y ~30 m entre sí JAMÁS
+        # deben fusionarse entre ellas, ni tampoco con Orange o Vodafone.
+        base_lat, base_lon = 40.416800, -3.703800
+        lat_15m = 40.416935  # ~15.01 m
+        lat_30m = 40.417070  # ~30.02 m
+        self.assertAlmostEqual(fa.haversine_m(base_lat, base_lon, base_lat, base_lon), 0.0)
+        self.assertTrue(14.0 <= fa.haversine_m(base_lat, base_lon, lat_15m, base_lon) <= 16.0)
+        self.assertTrue(29.0 <= fa.haversine_m(base_lat, base_lon, lat_30m, base_lon) <= 31.0)
+
         records = [
             {
                 "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001",
                 "gid": "2800001",
                 "op": "movistar",
                 "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
-                "lat": 40.416800,
-                "lon": -3.703800,
+                "lat": base_lat,
+                "lon": base_lon,
                 "dir": "GRAN VIA 28",
                 "mun": "MADRID",
                 "prov": "MADRID",
@@ -392,18 +447,40 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 "gid": "2800002",
                 "op": "movistar",
                 "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
-                "lat": 40.416810,  # ~1.1 m
-                "lon": -3.703800,
+                "lat": base_lat,  # 0 m exactos respecto a 2800001
+                "lon": base_lon,
                 "dir": "GRAN VIA 28",
                 "mun": "MADRID",
                 "prov": "MADRID",
             },
             {
-                "id": "ORANGE ESPAGNE, S.A.U. - 2800003",
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800003",
                 "gid": "2800003",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": lat_15m,  # ~15 m
+                "lon": base_lon,
+                "dir": "GRAN VIA 30",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800004",
+                "gid": "2800004",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": lat_30m,  # ~30 m (< 35 m)
+                "lon": base_lon,
+                "dir": "GRAN VIA 32",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 2800005",
+                "gid": "2800005",
                 "op": "orange",
                 "opRaw": "ORANGE ESPAGNE, S.A.U.",
-                "lat": 40.416805,  # ~0.5 m
+                "lat": 40.416805,  # ~0.7 m
                 "lon": -3.703805,
                 "dir": "GRAN VIA 28",
                 "mun": "MADRID",
@@ -434,10 +511,499 @@ class FetchAntenasUnitTests(unittest.TestCase):
             },
         )
         self.assertEqual(dataset["crawlStats"]["vodafoneFusedDuplicates"], 0)
-        self.assertEqual(dataset["total"], 4)
-        self.assertEqual(dataset["operators"]["movistar"]["count"], 2)
+        self.assertEqual(dataset["total"], 6)
+        self.assertEqual(dataset["operators"]["movistar"]["count"], 4)
         self.assertEqual(dataset["operators"]["orange"]["count"], 1)
         self.assertEqual(dataset["operators"]["vodafone"]["count"], 1)
+        self.assertEqual(dataset["provinces"][0]["byOperator"]["movistar"], 4)
+        movistar_antenas = [a for a in dataset["antenas"] if a["op"] == "movistar"]
+        self.assertEqual(len(movistar_antenas), 4)
+        for ant in movistar_antenas:
+            self.assertNotIn("mergedGids", ant)
+
+    def test_classify_frequency_band_all_spanish_allocations(self) -> None:
+        cases = [
+            (758.0, 768.0, "700 MHz"),
+            (832.0, 842.0, "800 MHz"),
+            (935.10, 949.90, "900 MHz"),
+            (1452.0, 1472.0, "1500 MHz"),
+            (1805.10, 1825.10, "1800 MHz"),
+            (2155.0, 2170.0, "2100 MHz"),
+            (2620.0, 2640.0, "2600 MHz"),
+            (3460.0, 3600.0, "3500 MHz"),
+            (26500.0, 27500.0, "26 GHz"),
+            (450.0, 460.0, "455 MHz"),
+        ]
+        for min_mhz, max_mhz, expected in cases:
+            with self.subTest(min_mhz=min_mhz, max_mhz=max_mhz):
+                self.assertEqual(
+                    fa.classify_frequency_band(min_mhz, max_mhz),
+                    expected,
+                )
+
+        # Verificar orden numérico de bandas y frecuencias sin duplicados
+        bandas, frecuencias = fa.summarize_frequency_ranges(
+            [
+                (26500.0, 27500.0),
+                (3460.0, 3600.0),
+                (935.1, 949.9),
+                (935.10, 949.90),
+                (758.0, 768.0),
+                (2155.0, 2170.0),
+                (832.0, 842.0),
+                (2620.0, 2640.0),
+                (1805.1, 1825.1),
+            ]
+        )
+        self.assertEqual(
+            bandas,
+            [
+                "700 MHz",
+                "800 MHz",
+                "900 MHz",
+                "1800 MHz",
+                "2100 MHz",
+                "2600 MHz",
+                "3500 MHz",
+                "26 GHz",
+            ],
+        )
+        self.assertEqual(
+            frecuencias,
+            [
+                "758.00 - 768.00",
+                "832.00 - 842.00",
+                "935.10 - 949.90",
+                "1805.10 - 1825.10",
+                "2155.00 - 2170.00",
+                "2620.00 - 2640.00",
+                "3460.00 - 3600.00",
+                "26500.00 - 27500.00",
+            ],
+        )
+
+    def test_parse_detalle_estacion_html_extracts_caracteristicas_and_ignores_niveles_medidos(
+        self,
+    ) -> None:
+        sample_html = """
+        <html><body>
+        <table class="tablaDetalleEstacion">
+            <tr><td><h1>ESTACIONES DE TELEFON&Iacute;A M&Oacute;VIL</h1></td></tr>
+            <tr><td><h2>LOCALIZACI&Oacute;N</h2></td></tr>
+            <tr><td>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td><h3>C&oacute;digo</h3></td><td><h3>Direcci&oacute;n</h3></td></tr>
+                    <tr>
+                        <td><p>TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006</p></td>
+                        <td><p>CL EMILIO FERRARI, 11. MADRID, MADRID</p></td>
+                    </tr>
+                </table>
+            </td></tr>
+            <tr><tr><td><h2>CARACTERISTICAS T&Eacute;CNICAS</h2></td></tr>
+            <tr><tr><td>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr>
+                        <td><h3>Operador</h3></td>
+                        <td><h3>Referencia</h3></td>
+                        <td><h3>Banda Asignada (MHz)</h3></td>
+                    </tr>
+                    <tr>
+                        <td><p>TELEFONICA MOVILES ESPAÑA, S.A.U.</p></td>
+                        <td><p>M M -2200490</p></td>
+                        <td><p>935.10 - 949.90</p></td>
+                    </tr>
+                    <tr>
+                        <td><p>DS MOBILE NETWORKS, S.L.</p></td>
+                        <td><p>M M -2602235</p></td>
+                        <td><p>1845.10 - 1855.10</p></td>
+                    </tr>
+                    <tr>
+                        <td><p>TELEFONICA MOVILES ESPAÑA, S.A.U.</p></td>
+                        <td><p>M M -2205199</p></td>
+                        <td><p>3460.00 - 3600.00</p></td>
+                    </tr>
+                </table>
+            </td></tr>
+            <tr><td><h2>NIVELES MEDIDOS EN EL ENTORNO</h2></td></tr>
+            <tr><td>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr>
+                        <td><h3>Distancia (m)</h3></td>
+                        <td><h3>(*) Acimut (&ordm;)</h3></td>
+                        <td><h3>Valor Medido (&micro;W/cm<sup>2</sup>)</h3></td>
+                    </tr>
+                    <tr>
+                        <td><p>84.0</p></td>
+                        <td><p>120.0</p></td>
+                        <td><p>0.21966</p></td>
+                    </tr>
+                    <tr>
+                        <td><p>700.0 - 800.0</p></td>
+                        <td><p>165.0</p></td>
+                        <td><p>800.00 - 900.00</p></td>
+                    </tr>
+                </table>
+            </td></tr>
+        </table>
+        </body></html>
+        """
+        latin1_bytes = sample_html.encode("iso-8859-1")
+        decoded_html = fa.decode_detalle_estacion_payload(latin1_bytes)
+        rows = fa.parse_detalle_estacion_html(decoded_html)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            [(r["op"], r["frecuencia"], r["banda"]) for r in rows],
+            [
+                ("movistar", "935.10 - 949.90", "900 MHz"),
+                ("digi", "1845.10 - 1855.10", "1800 MHz"),
+                ("movistar", "3460.00 - 3600.00", "3500 MHz"),
+            ],
+        )
+
+        # Respuesta 200 válida sin filas de bandas (ej. código no válido o tabla vacía)
+        empty_html = """
+        <table class="tablaDetalleEstacion">
+            <tr><td><h2>LOCALIZACI&Oacute;N</h2></td></tr>
+            <tr><td><b>C&oacute;digo de emplazamiento no v&aacute;lido</b></td></tr>
+        </table>
+        """
+        self.assertEqual(fa.parse_detalle_estacion_html(empty_html), [])
+        self.assertEqual(
+            fa.build_detalle_estacion_url("2800006"),
+            "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do?emplazamiento=2800006",
+        )
+        self.assertEqual(
+            fa.build_detalle_estacion_url("A/B 12"),
+            "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do?emplazamiento=A%2FB%2012",
+        )
+
+    def test_enrich_bands_rate_limit_shared_gid_vodafone_merged_and_preservation(
+        self,
+    ) -> None:
+        clock = FakeClock()
+        fetched_gids: list[str] = []
+        transient_failed_once = False
+
+        html_by_gid: dict[str, str] = {
+            # Emplazamiento compartido por Movistar y DIGI -> 1 sola petición HTTP
+            "2800006": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>R1</td><td>3460.00 - 3600.00</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>R2</td><td>935.10 - 949.90</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>R3</td><td>935.10 - 949.90</td></tr>
+                    <tr><td>DS MOBILE NETWORKS, S.L.</td><td>D1</td><td>2110.00 - 2120.00</td></tr>
+                    <tr><td>DS MOBILE NETWORKS, S.L.</td><td>D2</td><td>1845.10 - 1855.10</td></tr>
+                </table>
+            """,
+            # Vodafone fusionado (144693 + 0144693) -> unión de ambos GIDs
+            "144693": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V1</td><td>842.00 - 852.00</td></tr>
+                </table>
+            """,
+            "0144693": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>VODAFONE ESPAÑA, S.A.</td><td>V2</td><td>1825.10 - 1845.10</td></tr>
+                    <tr><td>VODAFONE ESPAÑA, S.A.</td><td>V3</td><td>949.90 - 959.90</td></tr>
+                </table>
+            """,
+            # Único registro con ese GID y razón social histórica/atípica -> respaldo a todas las filas
+            "3309999": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>FILIAL REGIONAL CONCESIONARIA, S.L.</td><td>O1</td><td>758.00 - 768.00</td></tr>
+                </table>
+            """,
+            # Estación 200 válida sin filas de frecuencias -> [] (no debe repetirse en bucle)
+            "4108888": """
+                <table class="tablaDetalleEstacion">
+                    <tr><td><h2>LOCALIZACIÓN</h2></td></tr>
+                </table>
+            """,
+        }
+
+        def fake_detalle_fetch(gid: str) -> bytes:
+            nonlocal transient_failed_once
+            fetched_gids.append(gid)
+            if gid == "0144693" and not transient_failed_once:
+                transient_failed_once = True
+                raise urllib.error.URLError("transient reset")
+            return html_by_gid[gid].encode("iso-8859-1")
+
+        raw_records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "gid": "2800006",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.434322,
+                "lon": -3.642914,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "DS MOBILE NETWORKS, S.L. - 2800006",
+                "gid": "2800006",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "lat": 40.434322,
+                "lon": -3.642914,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                "gid": "144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 42.897686,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A. - 0144693",
+                "gid": "0144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.",
+                "lat": 42.897900,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 3309999",
+                "gid": "3309999",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 43.3619,
+                "lon": -5.8494,
+                "dir": "CL URÍA, 10",
+                "mun": "OVIEDO",
+                "prov": "ASTURIAS",
+            },
+            {
+                "id": "XFERA MOVILES, S.A.U. - 4108888",
+                "gid": "4108888",
+                "op": "masmovil",
+                "opRaw": "XFERA MOVILES, S.A.U.",
+                "lat": 37.3891,
+                "lon": -5.9845,
+                "dir": "AV CONSTITUCIÓN, 1",
+                "mun": "SEVILLA",
+                "prov": "SEVILLA",
+            },
+        ]
+
+        base_stats = {
+            "requestsCount": 2,
+            "durationSeconds": 2.0,
+            "gridBoxesVisited": 2,
+            "subdividedBoxes": 0,
+            "zoomParam": 7,
+            "delaySeconds": 1.0,
+        }
+        dataset = fa.build_dataset(raw_records, crawl_stats=base_stats)
+        self.assertEqual(dataset["total"], 5)  # 2 de Vodafone fusionadas en 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "antenas.json"
+            # Incluso si se pasa delay_seconds < 1.0, BandEnricher fuerza estrictamente >= 1.0 s
+            enricher = fa.BandEnricher(
+                delay_seconds=0.2,
+                checkpoint_path=out_path,
+                checkpoint_every=2,
+                fail_fast=True,
+                fetch_fn=fake_detalle_fetch,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertGreaterEqual(enricher.delay_seconds, 1.0)
+            enricher.enrich_dataset(dataset)
+
+            # 2800006 consultado 1 sola vez (el primero por ser compartido en MADRID)
+            self.assertEqual(fetched_gids[0], "2800006")
+            self.assertEqual(fetched_gids.count("2800006"), 1)
+            # 5 GIDs únicos + 1 reintento transitorio en 0144693 = 6 peticiones
+            self.assertEqual(enricher.requests_count, 6)
+            self.assertTrue(all(s >= 1.0 for s in clock.sleeps))
+            self.assertIn(2.0, clock.sleeps)
+
+            by_id = {a["id"]: a for a in dataset["antenas"]}
+
+            # Movistar y DIGI en 2800006 tienen cada uno exclusivamente sus propias bandas
+            mov = by_id["TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006"]
+            digi = by_id["DS MOBILE NETWORKS, S.L. - 2800006"]
+            self.assertEqual(mov["bandas"], ["900 MHz", "3500 MHz"])
+            self.assertEqual(mov["frecuencias"], ["935.10 - 949.90", "3460.00 - 3600.00"])
+            self.assertEqual(digi["bandas"], ["1800 MHz", "2100 MHz"])
+            self.assertEqual(digi["frecuencias"], ["1845.10 - 1855.10", "2110.00 - 2120.00"])
+
+            # Vodafone fusionado une frecuencias de 144693 y 0144693
+            voda = by_id["VODAFONE ESPAÑA, S.A.U. - 144693"]
+            self.assertEqual(voda["mergedGids"], ["144693", "0144693"])
+            self.assertEqual(voda["bandas"], ["800 MHz", "900 MHz", "1800 MHz"])
+            self.assertEqual(
+                voda["frecuencias"],
+                ["842.00 - 852.00", "949.90 - 959.90", "1825.10 - 1845.10"],
+            )
+
+            # Respaldo en GID único con razón social atípica
+            ora = by_id["ORANGE ESPAGNE, S.A.U. - 3309999"]
+            self.assertEqual(ora["bandas"], ["700 MHz"])
+            self.assertEqual(ora["frecuencias"], ["758.00 - 768.00"])
+
+            # Emplazamiento sin filas guarda [] (clave presente)
+            masm = by_id["XFERA MOVILES, S.A.U. - 4108888"]
+            self.assertEqual(masm["bandas"], [])
+            self.assertEqual(masm["frecuencias"], [])
+
+            self.assertEqual(dataset["crawlStats"]["bandsPopulatedCount"], 5)
+            self.assertEqual(dataset["crawlStats"]["bandRequestsCount"], 6)
+
+            # Segunda pasada incremental sobre out_path: 0 peticiones HTTP (incluyendo la de bandas=[])
+            saved_dataset = json.loads(out_path.read_text(encoding="utf-8"))
+            fa.enrich_dataset_bands(
+                saved_dataset,
+                fetch_fn=lambda *_: (_ for _ in ()).throw(
+                    AssertionError("No debe repetir peticiones HTTP para antenas ya enriquecidas")
+                ),
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertEqual(saved_dataset["crawlStats"]["bandRequestsCount"], 0)
+            self.assertEqual(saved_dataset["crawlStats"]["bandsPopulatedCount"], 5)
+
+            # Nuevo crawl diario (raw_records sin bandas) preservando desde out_path:
+            # conserva el 100% de bandas existentes y solo consulta una antena nueva añadida hoy.
+            new_day_records = list(raw_records) + [
+                {
+                    "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 0800555",
+                    "gid": "0800555",
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 41.3874,
+                    "lon": 2.1686,
+                    "dir": "PL CATALUNYA, 1",
+                    "mun": "BARCELONA",
+                    "prov": "BARCELONA",
+                }
+            ]
+            html_by_gid["0800555"] = """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>B1</td><td>2620.00 - 2640.00</td></tr>
+                </table>
+            """
+            rebuilt_day2 = fa.build_dataset(
+                new_day_records,
+                crawl_stats=base_stats,
+                preserve_from=out_path,
+            )
+            self.assertEqual(rebuilt_day2["total"], 6)
+            self.assertEqual(rebuilt_day2["crawlStats"]["bandsPopulatedCount"], 5)
+
+            fetched_day2: list[str] = []
+
+            def fake_day2_fetch(gid: str) -> str:
+                fetched_day2.append(gid)
+                return html_by_gid[gid]
+
+            fa.enrich_dataset_bands(
+                rebuilt_day2,
+                fetch_fn=fake_day2_fetch,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertEqual(fetched_day2, ["0800555"])
+            self.assertEqual(rebuilt_day2["crawlStats"]["bandsPopulatedCount"], 6)
+            self.assertEqual(rebuilt_day2["crawlStats"]["bandRequestsCount"], 1)
+
+    def test_max_band_requests_and_max_band_seconds_budget_limits(self) -> None:
+        clock = FakeClock()
+        records = [
+            {
+                "id": f"TELEFONICA MOVILES ESPAÑA, S.A.U. - 280100{i}",
+                "gid": f"280100{i}",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.40 + i * 0.01,
+                "lon": -3.70,
+                "dir": f"CL TEST, {i}",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            }
+            for i in range(5)
+        ]
+        dataset = fa.build_dataset(
+            records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 1.0,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 1.0,
+            },
+        )
+
+        def fake_html(gid: str) -> str:
+            return """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>T1</td><td>1805.10 - 1825.10</td></tr>
+                </table>
+            """
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt = Path(tmpdir) / "antenas.json"
+            # Lote 1 limitado por max_band_requests=2
+            fa.enrich_dataset_bands(
+                dataset,
+                max_band_requests=2,
+                checkpoint_path=ckpt,
+                fetch_fn=fake_html,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertEqual(dataset["crawlStats"]["bandsPopulatedCount"], 2)
+            self.assertEqual(dataset["crawlStats"]["bandRequestsCount"], 2)
+
+            # Lote 2 limitado por max_band_seconds=1.5 (permite 2 peticiones con 1.0s entre ellas y para antes de la 3ª)
+            fa.enrich_dataset_bands(
+                dataset,
+                max_band_seconds=1.5,
+                checkpoint_path=ckpt,
+                fetch_fn=fake_html,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertEqual(dataset["crawlStats"]["bandsPopulatedCount"], 4)
+            self.assertEqual(dataset["crawlStats"]["bandRequestsCount"], 2)
+
+            # Lote 3 completa la última pendiente
+            fa.enrich_dataset_bands(
+                dataset,
+                checkpoint_path=ckpt,
+                fetch_fn=fake_html,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+            )
+            self.assertEqual(dataset["crawlStats"]["bandsPopulatedCount"], 5)
+            self.assertEqual(dataset["crawlStats"]["bandRequestsCount"], 1)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,8 @@ export interface WorkspaceContextValue {
   setSelectedProvince: (prov: string) => void;
   selectedMunicipality: string;
   setSelectedMunicipality: (mun: string) => void;
+  selectedBand: string;
+  setSelectedBand: (band: string) => void;
   activeOperators: OperatorKey[];
   toggleOperator: (op: OperatorKey) => void;
   selectAllOperators: () => void;

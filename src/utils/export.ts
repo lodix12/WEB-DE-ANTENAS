@@ -109,6 +109,8 @@ function buildDateStamp(): string {
 }
 
 export interface ExportedAntennaJsonItem extends AntennaRecord {
+  bandas: string[];
+  frecuencias: string[];
   operador: string;
   fichaMinetur: string;
   distanciaMetros?: number;
@@ -139,6 +141,8 @@ export function buildCustomJsonExportPayload(
   const items: ExportedAntennaJsonItem[] = antenas.map((ant) => {
     const baseItem: ExportedAntennaJsonItem = {
       ...ant,
+      bandas: ant.bandas ? [...ant.bandas] : [],
+      frecuencias: ant.frecuencias ? [...ant.frecuencias] : [],
       operador: OPERATOR_META[ant.op].shortName,
       fichaMinetur: getDetalleEstacionUrl(ant),
     };
@@ -202,14 +206,12 @@ export function exportAntenasToJSON(
 }
 
 /**
- * Descarga las antenas filtradas en formato GeoJSON (.geojson) como opción
- * secundaria de compatibilidad para software SIG externo (QGIS / ArcGIS).
+ * Construye la FeatureCollection GeoJSON secundaria con bandas y frecuencias asignadas.
  */
-export function exportAntenasToGeoJSON(
+export function buildGeoJsonExportCollection(
   antenas: AntennaRecord[],
-  filenamePrefix = 'radiomapa-antenas-espana',
-): void {
-  const collection: FeatureCollection<Point> = {
+): FeatureCollection<Point> {
+  return {
     type: 'FeatureCollection',
     features: antenas.map((ant) => ({
       type: 'Feature',
@@ -227,10 +229,23 @@ export function exportAntenasToGeoJSON(
         direccion: ant.dir,
         municipio: ant.mun,
         provincia: ant.prov,
+        bandas: ant.bandas ? [...ant.bandas] : [],
+        frecuencias: ant.frecuencias ? [...ant.frecuencias] : [],
         fichaMinetur: getDetalleEstacionUrl(ant),
       },
     })),
   };
+}
+
+/**
+ * Descarga las antenas filtradas en formato GeoJSON (.geojson) como opción
+ * secundaria de compatibilidad para software SIG externo (QGIS / ArcGIS).
+ */
+export function exportAntenasToGeoJSON(
+  antenas: AntennaRecord[],
+  filenamePrefix = 'radiomapa-antenas-espana',
+): void {
+  const collection = buildGeoJsonExportCollection(antenas);
 
   const blob = new Blob([JSON.stringify(collection, null, 2)], {
     type: 'application/geo+json;charset=utf-8',
@@ -239,13 +254,12 @@ export function exportAntenasToGeoJSON(
 }
 
 /**
- * Descarga las antenas filtradas como archivo CSV compatible con Excel (UTF-8 con BOM).
+ * Construye el contenido CSV (UTF-8 sin BOM) con Bandas_MHz y Frecuencias_MHz.
  */
-export function exportAntenasToCSV(
+export function buildCsvExportContent(
   antenas: AntennaRecord[],
   radarPoint?: RadarPoint | null,
-  filenamePrefix = 'radiomapa-antenas-espana',
-): void {
+): string {
   const headers = [
     'Gis_ID',
     'Identificador_Oficial',
@@ -256,6 +270,8 @@ export function exportAntenasToCSV(
     'Direccion',
     'Latitud_WGS84',
     'Longitud_WGS84',
+    'Bandas_MHz',
+    'Frecuencias_MHz',
     ...(radarPoint
       ? ['Distancia_Metros', 'Acimut_Grados', 'Rumbo_Cardinal']
       : []),
@@ -276,6 +292,8 @@ export function exportAntenasToCSV(
       ant.dir,
       ant.lat.toFixed(6),
       ant.lon.toFixed(6),
+      (ant.bandas ?? []).join('; '),
+      (ant.frecuencias ?? []).join('; '),
     ];
 
     if (radarPoint) {
@@ -302,8 +320,19 @@ export function exportAntenasToCSV(
     lines.push(row.map(escapeCsvCell).join(','));
   }
 
+  return lines.join('\r\n');
+}
+
+/**
+ * Descarga las antenas filtradas como archivo CSV compatible con Excel (UTF-8 con BOM).
+ */
+export function exportAntenasToCSV(
+  antenas: AntennaRecord[],
+  radarPoint?: RadarPoint | null,
+  filenamePrefix = 'radiomapa-antenas-espana',
+): void {
   // Incluir BOM UTF-8 (\uFEFF) para correcta visualización de acentos y 'ñ' en Excel
-  const csvContent = `\uFEFF${lines.join('\r\n')}`;
+  const csvContent = `\uFEFF${buildCsvExportContent(antenas, radarPoint)}`;
   const blob = new Blob([csvContent], {
     type: 'text/csv;charset=utf-8',
   });

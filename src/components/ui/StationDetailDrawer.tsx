@@ -1,44 +1,64 @@
 import { useMemo, useState } from 'react';
 import {
   Check,
-  Compass,
   Copy,
-  Crosshair,
   ExternalLink,
   Layers,
+  Radio,
   X,
 } from 'lucide-react';
+import {
+  compareBandLabels,
+  compareFrequencyRanges,
+} from '../../hooks/useAntenasData';
 import {
   getDetalleEstacionUrl,
   OPERATOR_META,
   type AntennaRecord,
 } from '../../types/antena';
-import type { RadarPoint } from '../../types/map';
 import {
-  bearingToCardinal,
-  calculateBearingDeg,
   findNearestAntennas,
-  formatDistance,
   groupColocatedAntennasForMap,
-  haversineDistanceKm,
 } from '../../utils/geo';
+
+function formatFrequencyRangeEntry(raw: string): {
+  rangeLabel: string;
+  spanLabel: string | null;
+} {
+  const trimmed = raw.trim();
+  const rangeLabel = /[mg]hz$/i.test(trimmed) ? trimmed : `${trimmed} MHz`;
+  const match =
+    /^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)(?:\s*mhz)?$/i.exec(trimmed);
+  if (!match) {
+    return { rangeLabel, spanLabel: null };
+  }
+  const start = Number(match[1].replace(',', '.'));
+  const end = Number(match[2].replace(',', '.'));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return { rangeLabel, spanLabel: null };
+  }
+  const bw = Math.round((end - start) * 100) / 100;
+  return {
+    rangeLabel,
+    spanLabel: `${bw.toLocaleString('es-ES', {
+      minimumFractionDigits: Number.isInteger(bw) ? 0 : 1,
+      maximumFractionDigits: 2,
+    })} MHz`,
+  };
+}
 
 export interface StationDetailDrawerProps {
   antenna: AntennaRecord | null;
   allAntenas: AntennaRecord[];
-  radarPoint: RadarPoint | null;
   onClose: () => void;
   onSelectAntenna: (ant: AntennaRecord) => void;
-  onSetRadarAtStation: (ant: AntennaRecord) => void;
 }
 
 export function StationDetailDrawer({
   antenna,
   allAntenas,
-  radarPoint,
   onClose,
   onSelectAntenna,
-  onSetRadarAtStation,
 }: StationDetailDrawerProps) {
   const [copiedCoords, setCopiedCoords] = useState(false);
 
@@ -48,15 +68,15 @@ export function StationDetailDrawer({
       allAntenas,
       antenna.lat,
       antenna.lon,
-      40,
-      0.05,
+      200,
+      0.15,
     );
     const candidates: AntennaRecord[] = nearby.some(
       (item) => item.id === antenna.id,
     )
       ? nearby
       : [antenna, ...nearby];
-    const sites = groupColocatedAntennasForMap(candidates, 5);
+    const sites = groupColocatedAntennasForMap(candidates, 35);
     return (
       sites.find(
         (site) =>
@@ -80,26 +100,17 @@ export function StationDetailDrawer({
     return nearby.filter((item) => item.id !== antenna.id);
   }, [antenna, allAntenas]);
 
-  const radarVector = useMemo(() => {
-    if (!antenna || !radarPoint) return null;
-    const distanceKm = haversineDistanceKm(
-      radarPoint.lat,
-      radarPoint.lon,
-      antenna.lat,
-      antenna.lon,
-    );
-    const bearingDeg = calculateBearingDeg(
-      radarPoint.lat,
-      radarPoint.lon,
-      antenna.lat,
-      antenna.lon,
-    );
-    return {
-      distanceKm,
-      bearingDeg,
-      cardinal: bearingToCardinal(bearingDeg),
-    };
-  }, [antenna, radarPoint]);
+  const sortedBands = useMemo(() => {
+    if (!antenna?.bandas) return null;
+    return [...antenna.bandas].sort(compareBandLabels);
+  }, [antenna]);
+
+  const sortedFreqEntries = useMemo(() => {
+    if (!antenna?.frecuencias || antenna.frecuencias.length === 0) return [];
+    return [...antenna.frecuencias]
+      .sort(compareFrequencyRanges)
+      .map(formatFrequencyRangeEntry);
+  }, [antenna]);
 
   if (!antenna) return null;
 
@@ -162,16 +173,16 @@ export function StationDetailDrawer({
       </div>
 
       <div className="drawer-body">
-        {/* Operadores integrados en el mismo icono multicolor (< 5 m) */}
+        {/* Operadores integrados en el mismo icono multicolor (< 35 m) */}
         {integratedSite && (
           <section
             className="integrated-operators-card"
-            aria-label="Operadores integrados en este icono (< 5 m)"
+            aria-label="Operadores integrados en este icono (< 35 m)"
           >
             <div className="integrated-operators-head">
               <span className="integrated-operators-title">
                 <Layers size={13} aria-hidden="true" />
-                <span>Operadores integrados en este icono (&lt; 5 m)</span>
+                <span>Operadores integrados en este icono (&lt; 35 m)</span>
               </span>
               <span className="colocation-count-pill">
                 {integratedSite.operators.length} oper.
@@ -223,59 +234,111 @@ export function StationDetailDrawer({
           </section>
         )}
 
-        {/* Vector desde Radar Point (si está activo) */}
-        {radarVector && (
-          <div className="rf-vector-strip">
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.04em',
-                  color: 'var(--accent-primary)',
-                }}
-              >
-                Vector desde tu punto de medición
-              </div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: 'var(--text-secondary)',
-                  marginTop: 2,
-                }}
-              >
-                Apunta la antena exterior rumbo{' '}
-                <strong className="mono">{radarVector.cardinal}</strong>
-              </div>
-            </div>
-            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div
-                className="mono"
-                style={{
-                  fontSize: 15,
-                  fontWeight: 700,
-                  color: 'var(--text-primary)',
-                }}
-              >
-                {formatDistance(radarVector.distanceKm)}
-              </div>
-              <div
-                className="mono"
-                style={{
-                  fontSize: 11.5,
-                  color: 'var(--accent-primary)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-              >
-                <Compass size={12} aria-hidden="true" />
-                {Math.round(radarVector.bearingDeg)}°
-              </div>
-            </div>
+        {/* Bandas y Frecuencias Asignadas (MHz) */}
+        <section
+          className="station-bands-card"
+          aria-label="Bandas y Frecuencias Asignadas (MHz)"
+        >
+          <div className="station-bands-head">
+            <span className="station-bands-title">
+              <Radio size={13} aria-hidden="true" />
+              <span>Bandas y Frecuencias Asignadas (MHz)</span>
+            </span>
+            <span className="colocation-count-pill">
+              {sortedBands && sortedBands.length > 0
+                ? `${sortedBands.length} ${sortedBands.length === 1 ? 'banda' : 'bandas'}`
+                : sortedBands !== null
+                  ? 'Sin detalle'
+                  : 'Sinc. incremental'}
+            </span>
           </div>
-        )}
+
+          {sortedBands && sortedBands.length > 0 ? (
+            <div className="station-bands-content">
+              <div
+                className="station-band-chips"
+                aria-label="Bandas comerciales activas"
+              >
+                {sortedBands.map((band) => (
+                  <span key={band} className="station-band-chip mono">
+                    {band}
+                  </span>
+                ))}
+              </div>
+
+              {sortedFreqEntries.length > 0 && (
+                <div
+                  className="station-freq-table"
+                  role="table"
+                  aria-label="Rangos exactos de frecuencias asignadas en MHz"
+                >
+                  <div className="station-freq-thead" role="row">
+                    <span role="columnheader">Rango Asignado (MHz)</span>
+                    <span role="columnheader">Bloque</span>
+                  </div>
+                  {sortedFreqEntries.map((entry) => (
+                    <div
+                      key={entry.rangeLabel}
+                      className="station-freq-row"
+                      role="row"
+                    >
+                      <span className="mono station-freq-range" role="cell">
+                        {entry.rangeLabel}
+                      </span>
+                      <span className="mono station-freq-span" role="cell">
+                        {entry.spanLabel ?? '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : sortedBands !== null ? (
+            <div className="station-bands-content">
+              <p className="station-bands-empty">
+                Sin concesiones de banda detalladas en ficha oficial
+              </p>
+              {sortedFreqEntries.length > 0 && (
+                <div
+                  className="station-freq-table"
+                  role="table"
+                  aria-label="Rangos exactos de frecuencias asignadas en MHz"
+                >
+                  {sortedFreqEntries.map((entry) => (
+                    <div
+                      key={entry.rangeLabel}
+                      className="station-freq-row"
+                      role="row"
+                    >
+                      <span className="mono station-freq-range" role="cell">
+                        {entry.rangeLabel}
+                      </span>
+                      <span className="mono station-freq-span" role="cell">
+                        {entry.spanLabel ?? '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="station-bands-pending">
+              <p>
+                Frecuencias en cola de sincronización incremental desde MINETUR.
+                Puedes consultarlas en tiempo real en la ficha oficial{' '}
+                <a
+                  href={mineturUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mono"
+                >
+                  detalleEstacion.do?emplazamiento={antenna.gid}
+                </a>
+                .
+              </p>
+            </div>
+          )}
+        </section>
 
         {/* Metadatos Oficiales */}
         <div className="detail-kv-list">
@@ -306,8 +369,8 @@ export function StationDetailDrawer({
           {antenna.mergedGids && antenna.mergedGids.length > 1 && (
             <div className="detail-kv-row">
               <span className="detail-kv-label">
-                Declaraciones Fusionadas (&lt; 10 m · {antenna.mergedGids.length}{' '}
-                expedientes)
+                Declaraciones Fusionadas (&lt; 35 m) ·{' '}
+                {antenna.mergedGids.length} expedientes
               </span>
               <div className="merged-gids-wrap">
                 {antenna.mergedGids.map((gid) => (
@@ -343,16 +406,6 @@ export function StationDetailDrawer({
                       <span>Copiar</span>
                     </>
                   )}
-                </button>
-                <button
-                  type="button"
-                  id="set-radar-station-btn"
-                  className="btn btn-subtle btn-sm"
-                  onClick={() => onSetRadarAtStation(antenna)}
-                  title="Centrar el radar de cercanía en este emplazamiento"
-                >
-                  <Crosshair size={12} aria-hidden="true" />
-                  <span>Radar</span>
                 </button>
               </div>
             </div>

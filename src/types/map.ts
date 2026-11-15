@@ -63,4 +63,8 @@ export interface AntenasMapProps {
   activeOperators: OperatorKey[];
   /** Alternar visibilidad de un operador desde la leyenda */
   onToggleOperator?: (op: OperatorKey) => void;
+  /** Si el movimiento 3D / inclinación vertical del mapa está bloqueado (por defecto true al cargar) */
+  lock3dPitch?: boolean;
+  /** Alternar bloqueo de movimiento 3D / inclinación vertical del mapa */
+  onToggleLock3dPitch?: () => void;
 }
