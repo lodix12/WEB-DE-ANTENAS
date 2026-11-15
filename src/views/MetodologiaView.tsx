@@ -363,29 +363,29 @@ export function MetodologiaView() {
         </div>
       </section>
 
-      {/* 4. Recolección Automática cada 24h y Descarga Directa */}
+      {/* 4. Recolección Automática cada 24h y Esquema JSON Propio */}
       <section className="section-block" aria-labelledby="pipeline-24h-h2">
         <div className="section-block-header">
           <div>
             <h2 id="pipeline-24h-h2" className="section-h2">
-              Recolección Automática cada 24 Horas y Datos Abiertos
+              Recolección Automática cada 24 Horas y Esquema JSON Propio
             </h2>
             <p className="section-desc">
-              Cómo se construye y mantiene actualizado el archivo estático{' '}
-              <code>data/antenas.json</code> sin necesidad de servidores
-              intermedios.
+              Cómo el recolector diario genera nuestro archivo estático con
+              esquema JSON propio (<code>data/antenas.json</code>), importado
+              directamente por la web sin cargar GeoJSON desde el navegador.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <a
               href={rawJsonUrl}
-              download="antenas-espana-infoantenas.json"
+              download="antenas-espana-radiomapa.json"
               id="download-raw-json-btn"
               className="btn btn-primary btn-sm"
             >
               <Download size={13} aria-hidden="true" />
-              <span>Descargar data/antenas.json</span>
+              <span>Descargar JSON propio (data/antenas.json)</span>
             </a>
             <a
               href="https://geoportal.minetur.gob.es/VCTEL/vcne.do"
@@ -402,33 +402,54 @@ export function MetodologiaView() {
         <div className="section-block-body">
           <ul className="prose-list" style={{ marginTop: 0 }}>
             <li>
-              <strong>Barrido espacial completo por coordenadas:</strong> Cada
-              madrugada (`04:00 UTC`), un flujo automatizado de GitHub Actions
-              ejecuta <code>scripts/fetch_antenas.py</code> recorriendo mallas de
+              <strong>Barrido diario fuera de línea (GitHub Actions · 24 h):</strong>{' '}
+              Cada madrugada (`04:00 UTC`), un flujo automatizado ejecuta{' '}
+              <code>scripts/fetch_antenas.py</code> recorriendo mallas de
               coordenadas (`bbox`) sobre la Península Ibérica, Islas Baleares,
-              Islas Canarias, Ceuta y Melilla.
+              Islas Canarias, Ceuta y Melilla en el Geoportal oficial.
             </li>
             <li>
-              <strong>Subdivisión adaptativa Quadtree:</strong> El servidor
-              GeoJSON de Infoantenas limita cada respuesta a un máximo de{' '}
-              <code>1.000</code> estaciones por celda. Cuando una celda en áreas
+              <strong>Subdivisión adaptativa Quadtree:</strong> El Geoportal
+              oficial limita cada celda espacial a un máximo de{' '}
+              <code>1.000</code> estaciones. Cuando una celda en áreas
               metropolitanas densas (Madrid, Barcelona, Valencia, Málaga,
-              Sevilla) alcanza ese umbral, el algoritmo la subdivide
+              Sevilla) alcanza ese umbral, el recolector la subdivide
               recursivamente en 4 subcuadrantes con solape de seguridad de{' '}
               <code>0,0001°</code> para garantizar pérdida cero de estaciones.
             </li>
             <li>
-              <strong>Respeto estricto al servidor público:</strong> El crawler
-              aplica una pausa mínima de <code>1,0 s</code> entre peticiones
-              consecutivas, decodifica correctamente caracteres españoles
-              (`ISO-8859-1` a `UTF-8`), normaliza operadores y provincias INE, y
-              elimina cualquier duplicado mediante su clave única oficial.
+              <strong>
+                Transformación e importación en esquema JSON propio (
+                <code>public/data/antenas.json</code>):
+              </strong>{' '}
+              El recolector aplica una pausa mínima de <code>1,0 s</code> entre
+              peticiones, decodifica <code>ISO-8859-1</code> →{' '}
+              <code>UTF-8</code>, elimina duplicados por clave oficial, normaliza
+              operadores y provincias INE, y consolida todas las estaciones en un{' '}
+              <strong>esquema JSON propio compacto</strong> (
+              <code>AntenasDataset</code>: metadatos, estadísticas agregadas y
+              registros ligeros{' '}
+              <code>{'{ id, gid, op, opRaw, lat, lon, dir, mun, prov }'}</code>).
+            </li>
+            <li>
+              <strong>
+                Carga exclusiva de nuestro JSON propio en el navegador:
+              </strong>{' '}
+              El frontend estático importa únicamente{' '}
+              <code>data/antenas.json</code> (validando su esquema propio) y{' '}
+              <strong>
+                jamás realiza peticiones al endpoint GeoJSON de MINETUR desde el
+                navegador del usuario
+              </strong>
+              , garantizando respuesta instantánea, independencia frente a
+              caídas externas y exportación directa en JSON propio (
+              <code>.json</code>) y CSV (<code>.csv</code>).
             </li>
             <li>
               <strong>Transparencia y verificación:</strong>{' '}
               {derived
-                ? `La versión actualmente cargada contiene ${derived.dataset.total.toLocaleString('es-ES')} estaciones únicas y fue generada el ${formatDateTimeEs(derived.dataset.updatedAt)}.`
-                : 'Puedes descargar el archivo JSON íntegro con el botón superior para tus propios estudios SIG o análisis de telecomunicaciones.'}
+                ? `El JSON propio actualmente importado contiene ${derived.dataset.total.toLocaleString('es-ES')} estaciones únicas y fue generado el ${formatDateTimeEs(derived.dataset.updatedAt)}.`
+                : 'Puedes descargar el archivo JSON propio íntegro con el botón superior para tus propias aplicaciones o análisis de telecomunicaciones.'}
             </li>
           </ul>
         </div>

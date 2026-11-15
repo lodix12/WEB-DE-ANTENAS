@@ -48,7 +48,7 @@
 
   /* Dimensiones globales */
   --header-height: 58px;
-  --sidebar-width: 384px;
+  --sidebar-width: 368px;
   --drawer-width: 396px;
   --radius-xs: 4px;
   --radius-sm: 6px;
@@ -514,6 +514,7 @@ code {
 
 .select-control {
   width: 100%;
+  min-width: 0;
   height: 35px;
   padding: 0 10px;
   border-radius: var(--radius-sm);
@@ -521,7 +522,15 @@ code {
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 13px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+.filter-sidebar .select-control {
+  font-size: 12.5px;
+  padding: 0 8px;
 }
 
 .select-control:disabled {
@@ -720,10 +729,16 @@ code {
   padding-bottom: 0;
 }
 
-.form-grid-2 {
+.form-grid-2,
+.field-row-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 8px;
+}
+
+.form-grid-2 > *,
+.field-row-2 > * {
+  min-width: 0;
 }
 
 .region-presets-row {
@@ -761,7 +776,7 @@ code {
 
 .sidebar-reopen-btn {
   position: absolute;
-  top: 12px;
+  top: 54px;
   left: 12px;
   z-index: 15;
   box-shadow: var(--shadow-md);
@@ -1710,8 +1725,16 @@ code {
 }
 
 /* ==========================================================================
-   Diseño Responsivo (Tablet y Móvil)
+   Diseño Responsivo (Portátil Compacto, Tablet y Móvil)
    ========================================================================== */
+
+@media (max-width: 1360px) {
+  :root,
+  [data-theme='light'],
+  [data-theme='dark'] {
+    --sidebar-width: 348px;
+  }
+}
 
 @media (max-width: 1024px) {
   .dataset-live-date,

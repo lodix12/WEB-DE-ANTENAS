@@ -283,8 +283,7 @@ export function FilterPanel({
                 onChange={(e) => handleProvinceSelect(e.target.value)}
               >
                 <option value="">
-                  Todas las provincias (
-                  {derived?.provincesByAlpha.length ?? 52})
+                  Todas ({derived?.provincesByAlpha.length ?? 52} prov.)
                 </option>
                 {derived?.provincesByAlpha.map((p) => (
                   <option key={p.provincia} value={p.provincia}>
@@ -305,7 +304,7 @@ export function FilterPanel({
               >
                 <option value="">
                   {selectedProvince
-                    ? `Todos (${municipalities.length})`
+                    ? `Todos (${municipalities.length} mun.)`
                     : 'Elige provincia'}
                 </option>
                 {municipalities.map((m) => (

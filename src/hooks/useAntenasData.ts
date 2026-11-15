@@ -38,17 +38,105 @@ export interface DerivedAntenasStructures {
   searchIndex: string[];
 }
 
-async function fetchAntenasDataset(): Promise<AntenasDataset> {
-  const baseUrl = import.meta.env.BASE_URL || './';
-  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const response = await fetch(`${normalizedBase}data/antenas.json`);
-  if (!response.ok) {
+const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Valida que el contenido cargado corresponda exclusivamente al esquema JSON
+ * propio compacto de RadioMapa (`AntenasDataset` en `data/antenas.json`) y
+ * rechaza explícitamente cualquier colección o entidad GeoJSON (`FeatureCollection`).
+ */
+export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
+  if (!isPlainRecord(raw)) {
     throw new Error(
-      `No se pudo cargar el censo de estaciones (HTTP ${response.status})`,
+      'Formato inválido: se esperaba un objeto con el esquema JSON propio de RadioMapa (data/antenas.json).',
     );
   }
-  return (await response.json()) as AntenasDataset;
+
+  if (
+    raw.type === 'FeatureCollection' ||
+    raw.type === 'Feature' ||
+    Array.isArray(raw.features)
+  ) {
+    throw new Error(
+      'Formato GeoJSON (FeatureCollection) no admitido: RadioMapa requiere importar exclusivamente su esquema JSON propio (data/antenas.json) y no carga desde GeoJSON.',
+    );
+  }
+
+  if (
+    typeof raw.updatedAt !== 'string' ||
+    typeof raw.sourceUrl !== 'string' ||
+    typeof raw.total !== 'number' ||
+    !Number.isFinite(raw.total) ||
+    !isPlainRecord(raw.crawlStats) ||
+    !isPlainRecord(raw.operators) ||
+    !Array.isArray(raw.provinces) ||
+    !Array.isArray(raw.antenas)
+  ) {
+    throw new Error(
+      'Esquema JSON inválido: faltan propiedades obligatorias del formato propio AntenasDataset (updatedAt, sourceUrl, total, crawlStats, operators, provinces, antenas).',
+    );
+  }
+
+  const antenasList = raw.antenas;
+  for (let i = 0; i < antenasList.length; i++) {
+    const item: unknown = antenasList[i];
+    if (!isPlainRecord(item)) {
+      throw new Error(
+        `Registro inválido en antenas[${i}]: se esperaba un registro compacto del JSON propio de RadioMapa.`,
+      );
+    }
+    if (item.type === 'Feature' || 'geometry' in item) {
+      throw new Error(
+        `Entidad GeoJSON detectada en antenas[${i}]: RadioMapa exige registros compactos del JSON propio ({ id, gid, op, lat, lon, ... }) y no admite GeoJSON.`,
+      );
+    }
+    if (
+      typeof item.id !== 'string' ||
+      typeof item.gid !== 'string' ||
+      typeof item.op !== 'string' ||
+      !VALID_OPERATORS.has(item.op) ||
+      typeof item.opRaw !== 'string' ||
+      typeof item.lat !== 'number' ||
+      !Number.isFinite(item.lat) ||
+      typeof item.lon !== 'number' ||
+      !Number.isFinite(item.lon) ||
+      typeof item.dir !== 'string' ||
+      typeof item.mun !== 'string' ||
+      typeof item.prov !== 'string'
+    ) {
+      throw new Error(
+        `Registro incompleto en antenas[${i}]: debe cumplir el esquema compacto propio { id, gid, op, opRaw, lat, lon, dir, mun, prov }.`,
+      );
+    }
+  }
+
+  return raw as unknown as AntenasDataset;
 }
+
+/**
+ * Importa exclusivamente el archivo estático con esquema JSON propio (`data/antenas.json`).
+ * El navegador jamás consulta el endpoint GeoJSON externo de MINETUR.
+ */
+export async function importAntenasJsonDataset(): Promise<AntenasDataset> {
+  const baseUrl = import.meta.env.BASE_URL || './';
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const response = await fetch(`${normalizedBase}data/antenas.json`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `No se pudo importar el censo en JSON propio (HTTP ${response.status})`,
+    );
+  }
+  const raw: unknown = await response.json();
+  return parseCustomAntenasJson(raw);
+}
+
+export const fetchAntenasDataset = importAntenasJsonDataset;
 
 export function buildDerivedAntenasStructures(
   dataset: AntenasDataset,
@@ -167,7 +255,7 @@ export function buildDerivedAntenasStructures(
 export function useAntenasData() {
   const query = useQuery({
     queryKey: ['antenas-dataset'],
-    queryFn: fetchAntenasDataset,
+    queryFn: importAntenasJsonDataset,
     staleTime: Infinity,
     gcTime: Infinity,
     retry: 2,

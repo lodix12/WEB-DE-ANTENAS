@@ -108,8 +108,102 @@ function buildDateStamp(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+export interface ExportedAntennaJsonItem extends AntennaRecord {
+  operador: string;
+  fichaMinetur: string;
+  distanciaMetros?: number;
+  acimutGrados?: number;
+  rumboCardinal?: string;
+}
+
+export interface CustomAntenasJsonExport {
+  updatedAt: string;
+  source: 'RadioMapa España';
+  total: number;
+  radarPoint?: {
+    lat: number;
+    lon: number;
+    label?: string;
+    radiusKm?: number;
+  };
+  antenas: ExportedAntennaJsonItem[];
+}
+
 /**
- * Descarga las antenas filtradas en formato estándar RFC 7946 GeoJSON (.geojson).
+ * Construye el objeto de exportación en el esquema JSON propio limpio de RadioMapa.
+ */
+export function buildCustomJsonExportPayload(
+  antenas: AntennaRecord[],
+  radarPoint?: RadarPoint | null,
+): CustomAntenasJsonExport {
+  const items: ExportedAntennaJsonItem[] = antenas.map((ant) => {
+    const baseItem: ExportedAntennaJsonItem = {
+      ...ant,
+      operador: OPERATOR_META[ant.op].shortName,
+      fichaMinetur: getDetalleEstacionUrl(ant),
+    };
+
+    if (radarPoint) {
+      const distKm = haversineDistanceKm(
+        radarPoint.lat,
+        radarPoint.lon,
+        ant.lat,
+        ant.lon,
+      );
+      const bearing = calculateBearingDeg(
+        radarPoint.lat,
+        radarPoint.lon,
+        ant.lat,
+        ant.lon,
+      );
+      baseItem.distanciaMetros = Math.round(distKm * 1000);
+      baseItem.acimutGrados = Math.round(bearing);
+      baseItem.rumboCardinal = bearingToCardinal(bearing);
+    }
+
+    return baseItem;
+  });
+
+  const payload: CustomAntenasJsonExport = {
+    updatedAt: new Date().toISOString(),
+    source: 'RadioMapa España',
+    total: items.length,
+    ...(radarPoint
+      ? {
+          radarPoint: {
+            lat: radarPoint.lat,
+            lon: radarPoint.lon,
+            ...(radarPoint.label !== undefined ? { label: radarPoint.label } : {}),
+            ...(radarPoint.radiusKm !== undefined
+              ? { radiusKm: radarPoint.radiusKm }
+              : {}),
+          },
+        }
+      : {}),
+    antenas: items,
+  };
+
+  return payload;
+}
+
+/**
+ * Descarga las antenas filtradas en el esquema JSON propio de RadioMapa (.json).
+ */
+export function exportAntenasToJSON(
+  antenas: AntennaRecord[],
+  radarPoint?: RadarPoint | null,
+  filenamePrefix = 'radiomapa-antenas-espana',
+): void {
+  const payload = buildCustomJsonExportPayload(antenas, radarPoint);
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: 'application/json;charset=utf-8',
+  });
+  triggerBlobDownload(blob, `${filenamePrefix}-${buildDateStamp()}.json`);
+}
+
+/**
+ * Descarga las antenas filtradas en formato GeoJSON (.geojson) como opción
+ * secundaria de compatibilidad para software SIG externo (QGIS / ArcGIS).
  */
 export function exportAntenasToGeoJSON(
   antenas: AntennaRecord[],

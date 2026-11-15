@@ -15,9 +15,9 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 - **Ficha Técnica de Estación y Detección de Co-emplazamiento (`< 100 m`)**:
   - Inspección completa de operador comercial, razón social concesionaria, `Gis_ID`, dirección postal, coordenadas copiables en un clic, vector de línea de vista y detección automática de **mástiles o azoteas compartidas** con otros operadores a menos de 100 metros.
   - Enlace directo al expediente oficial `detalleEstacion.do` del Ministerio para consultar las **bandas activas en MHz** (`700–3500 MHz`) y los **niveles certificados de exposición radioeléctrica (`µW/cm²`)**, además de accesos rápidos a **Google Street View** y **OpenStreetMap**.
-- **Explorador Virtualizado de Datos (`/explorar`)**:
+- **Explorador Virtualizado de Datos (`/explorar`) y Exportación Abierta**:
   - Tabla de alta densidad capaz de desplazar y ordenar más de **65.000 filas a 60 FPS** sin paginación gracias a `@tanstack/react-table` v9 + `@tanstack/react-virtual`.
-  - Filtros en cascada por provincia y municipio, filtrado por operador, ordenación instantánea por distancia/acimut y exportación directa a **CSV (Excel UTF-8)** y **GeoJSON (RFC 7946)**.
+  - Filtros en cascada por provincia y municipio, filtrado por operador, ordenación instantánea por distancia/acimut y exportación directa en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y opción secundaria SIG (`GeoJSON` para QGIS/ArcGIS).
 - **Estadísticas Territoriales (`/estadisticas`) y Guía RF (`/metodologia`)**:
   - Cuotas nacionales por operador y razón social, desglose de las 52 provincias y ciudades autónomas con barras multi-operador apiladas, guía completa de bandas móviles en España (`n28`, `B20`, `B8`, `B3`, `B1`, `B7`, `n78`) y referencia normativa del **Real Decreto 1066/2001**.
 
@@ -29,25 +29,58 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | :--- | :--- | :--- |
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
 | **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/explorar`, `#/estadisticas`, `#/metodologia` sin errores 404 en GitHub Pages |
-| **Estado Asíncrono** | `@tanstack/react-query` v5 | Caché en memoria (`staleTime: Infinity`) e índices `O(1)` derivados |
+| **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `data/antenas.json` (con validación de esquema propio), caché en memoria e índices `O(1)` |
 | **Tabla + Virtualización** | `@tanstack/react-table` v9 + `@tanstack/react-virtual` | Ordenación reactiva y renderizado virtual de 65.000+ estaciones |
-| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap | Teselas vectoriales libres, capas GeoJSON en GPU y línea de vista RF |
-| **Pipeline de Datos** | Python 3.12 (`scripts/fetch_antenas.py`) | Barrido iterativo por coordenadas con subdivisión *quadtree* adaptativa |
+| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap | Teselas vectoriales libres, renderizado WebGL en GPU desde el JSON propio y línea de vista RF |
+| **Pipeline de Datos** | Python 3.12 (`scripts/fetch_antenas.py`) | Barrido iterativo *quadtree* que transforma e importa las estaciones en el esquema JSON propio `public/data/antenas.json` |
 | **CI/CD y Hosting** | GitHub Actions + GitHub Pages | Sincronización automática cada 24 h (`04:00 UTC`) y despliegue estático |
 
 ---
 
-## Recolector Iterativo por Coordenadas (`scripts/fetch_antenas.py`)
+## Esquema JSON Propio y Recolector Diario (`scripts/fetch_antenas.py` → `public/data/antenas.json`)
 
-El endpoint público `infoantenasGeoJSON.do` del Geoportal MINETUR limita cada respuesta espacial a un máximo de `1.000` estaciones por caja delimitadora (`bbox`). Para obtener el censo íntegro de España sin omisiones ni sobrecargar el servidor oficial:
+**El frontend estático carga únicamente nuestro archivo JSON propio (`data/antenas.json`)** y jamás realiza peticiones al endpoint GeoJSON de MINETUR desde el navegador del usuario (rechazando explícitamente cualquier `FeatureCollection` cruda en tiempo de validación).
+
+Para construir y mantener al día `public/data/antenas.json`, el recolector diario `scripts/fetch_antenas.py` (ejecutado en GitHub Actions cada 24 h) consulta por lotes las celdas del Geoportal oficial salvando su límite de `1.000` registros por caja delimitadora (`bbox`):
 
 1. **Malla Territorial Completa**: Recorre de noroeste (NO) a sureste (SE) la Península Ibérica, Islas Baleares, Islas Canarias, Ceuta y Melilla.
 2. **Subdivisión Adaptativa Quadtree**: Cuando una celda alcanza el tope de `1.000` registros (áreas metropolitanas densas), el script la subdivide recursivamente en 4 cuadrantes con un solape de seguridad de `0.0001°`.
-3. **Pausa de Cortesía y Resiliencia**: Garantiza una espera mínima de `1.0 s` entre peticiones HTTP consecutivas, reintentos con *backoff* exponencial, puntos de control (*checkpoints*) reanudables y decodificación estricta `ISO-8859-1 → UTF-8` para conservar eñes y tildes.
-4. **Deduplicación y Salida Compacta**: Consolida todas las estaciones por su identificador oficial único, normaliza los 52 códigos provinciales INE y genera `public/data/antenas.json`.
+3. **Pausa de Cortesía y Decodificación**: Garantiza una espera mínima de `1.0 s` entre peticiones HTTP consecutivas, reintentos con *backoff* exponencial, *checkpoints* reanudables y decodificación estricta `ISO-8859-1 → UTF-8` para conservar eñes y tildes.
+4. **Transformación a Esquema JSON Propio (`AntenasDataset`)**: Elimina duplicados por clave oficial única, normaliza operadores y los 52 códigos provinciales INE, y exporta el censo compacto en `public/data/antenas.json`:
+
+```json
+{
+  "updatedAt": "2026-11-15T04:00:00Z",
+  "sourceUrl": "https://geoportal.minetur.gob.es/VCTEL/vcne.do",
+  "total": 69834,
+  "crawlStats": {
+    "requestsCount": 239,
+    "durationSeconds": 550.14,
+    "gridBoxesVisited": 239,
+    "subdividedBoxes": 43,
+    "zoomParam": 7,
+    "delaySeconds": 1.0
+  },
+  "operators": { "...": "..." },
+  "provinces": [ { "provincia": "MADRID", "count": 7588, "byOperator": { "...": 0 } } ],
+  "antenas": [
+    {
+      "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001",
+      "gid": "2800001",
+      "op": "movistar",
+      "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+      "lat": 40.4168,
+      "lon": -3.7038,
+      "dir": "CL GRAN VIA, 28",
+      "mun": "MADRID",
+      "prov": "MADRID"
+    }
+  ]
+}
+```
 
 ```bash
-# Prueba rápida de validación (2 celdas de muestra)
+# Prueba rápida de validación (2 celdas de muestra → JSON propio)
 python3 scripts/fetch_antenas.py --region sample --output public/data/antenas.json
 
 # Barrido completo de toda España (respeta >= 1.0 s por petición)

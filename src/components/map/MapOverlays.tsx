@@ -207,9 +207,12 @@ export function MapOverlays({
             className="map-region-bar"
             aria-label="Saltos rápidos por región de España"
           >
-            <span className="map-region-bar-label">
+            <span
+              className="map-region-bar-label"
+              title="Saltos rápidos por región"
+            >
               <Compass size={13} aria-hidden="true" />
-              Regiones
+              <span className="map-region-bar-label-text">Regiones</span>
             </span>
             {SPAIN_REGION_PRESETS.map((preset) => {
               const isCurrent = activeRegionId === preset.id;

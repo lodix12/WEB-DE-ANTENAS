@@ -503,8 +503,10 @@ export function EstadisticasView() {
               Estado del Pipeline de Sincronización Geográfica
             </h2>
             <p className="section-desc">
-              Métricas operativas de la última ejecución del recolector espacial
-              contra el Geoportal de Infoantenas.
+              Métricas de la última ejecución diaria de{' '}
+              <code>scripts/fetch_antenas.py</code> para generar nuestro archivo
+              JSON propio estático (<code>data/antenas.json</code>), único
+              origen cargado por la web.
             </p>
           </div>
           <a
@@ -525,7 +527,7 @@ export function EstadisticasView() {
               {crawlStats.requestsCount.toLocaleString('es-ES')}
             </span>
             <span className="metric-sub">
-              Consultas GeoJSON por caja delimitadora (bbox)
+              Barrido del recolector por caja delimitadora (bbox) → JSON propio
             </span>
           </div>
 

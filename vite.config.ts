@@ -2,6 +2,7 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
+  // Rutas relativas para que el bundle funcione igual en raíz (`/`) que bajo subruta (`/WEB-DE-ANTENAS/`)
   base: './',
   plugins: [react()],
   server: {
@@ -14,6 +15,10 @@ export default defineConfig({
     port: 4173,
     allowedHosts: true,
   },
+  // MapLibre GL JS v6.18.0 instancia su Web Worker como módulo ES (`{ type: 'module' }`)
+  worker: {
+    format: 'es',
+  },
   build: {
     target: 'es2022',
     sourcemap: false,
@@ -21,7 +26,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('maplibre-gl')) {
+          // Mantener el chunk principal de MapLibre separado sin absorber jamás el entry del worker
+          if (id.includes('maplibre-gl') && !id.includes('worker')) {
             return 'maplibre'
           }
           if (id.includes('@tanstack/')) {
@@ -32,3 +38,4 @@ export default defineConfig({
     },
   },
 })
+

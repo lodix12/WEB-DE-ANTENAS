@@ -22,12 +22,16 @@ const rootRoute = createRootRoute({
 const mapaRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  validateSearch: (search: Record<string, unknown>): MapaRouteSearch => ({
-    gid:
-      typeof search.gid === 'string' && search.gid.trim().length > 0
-        ? search.gid.trim()
-        : undefined,
-  }),
+  validateSearch: (search: Record<string, unknown>): MapaRouteSearch => {
+    const raw = search.gid;
+    if (typeof raw === 'string' && raw.trim().length > 0) {
+      return { gid: raw.trim() };
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return { gid: String(raw) };
+    }
+    return { gid: undefined };
+  },
   component: MapaView,
 });
 

@@ -5,6 +5,7 @@ import type { RadarPoint } from '../../types/map';
 import {
   exportAntenasToCSV,
   exportAntenasToGeoJSON,
+  exportAntenasToJSON,
 } from '../../utils/export';
 
 export interface ExportMenuProps {
@@ -68,6 +69,28 @@ export function ExportMenu({
           <button
             type="button"
             role="menuitem"
+            id={`${idPrefix}-json-btn`}
+            className="export-option"
+            onClick={() => {
+              exportAntenasToJSON(antenas, radarPoint);
+              setOpen(false);
+            }}
+          >
+            <span className="export-option-title">
+              <span>JSON Propio (.json)</span>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--accent-primary)' }}>
+                {countFormatted}
+              </span>
+            </span>
+            <span className="export-option-desc">
+              Esquema compacto nativo de RadioMapa para integraciones y datos abiertos
+              {radarPoint ? ' (incluye distancia y acimut)' : ''}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
             id={`${idPrefix}-csv-btn`}
             className="export-option"
             onClick={() => {
@@ -98,13 +121,13 @@ export function ExportMenu({
             }}
           >
             <span className="export-option-title">
-              <span>Cartografía GeoJSON (.geojson)</span>
-              <span className="mono" style={{ fontSize: 11, color: 'var(--accent-primary)' }}>
-                RFC 7946
+              <span>GeoJSON (.geojson)</span>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                SIG externo
               </span>
             </span>
             <span className="export-option-desc">
-              Geometrías WGS84 listas para QGIS, ArcGIS o MapLibre
+              Opción secundaria de compatibilidad para QGIS o ArcGIS
             </span>
           </button>
         </div>

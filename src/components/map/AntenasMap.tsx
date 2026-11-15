@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type {
   Feature,
@@ -23,6 +24,17 @@ import {
 } from '../../utils/geo';
 import { MapOverlays } from './MapOverlays';
 import '../../styles/map.css';
+
+// Configuración explícita del Web Worker ESM de MapLibre GL JS v6.18.0:
+// - En `vite dev`, `maplibreWorkerUrl` arranca con `/` (ej. `/node_modules/...`).
+// - En `vite build` con `base: './'`, Vite resuelve `maplibreWorkerUrl` vía `import.meta.url`
+//   a una URL absoluta válida bajo cualquier subruta (ej. `https://.../WEB-DE-ANTENAS/assets/...`).
+// `new URL(maplibreWorkerUrl, window.location.href).href` resuelve ambos casos de forma determinista.
+if (typeof window !== 'undefined') {
+  maplibregl.setWorkerUrl(
+    new URL(maplibreWorkerUrl, window.location.href).href,
+  );
+}
 
 const ANTENAS_SOURCE_ID = 'antenas-source';
 const RADAR_SOURCE_ID = 'radar-source';
@@ -138,9 +150,14 @@ export function AntenasMap(props: AntenasMapProps) {
   const hoveredIdRef = useRef<string | null>(null);
   const appliedStyleIdRef = useRef<AntenasMapProps['styleId']>(styleId);
   const lastFlyTokenRef = useRef<number | string | null>(null);
+  const hasLoadedOnceRef = useRef(false);
+  const lastAppliedGeoJsonRef = useRef<FeatureCollection<
+    Point,
+    AntennaFeatureProperties
+  > | null>(null);
 
-  const [activeRegionId, setActiveRegionId] = useState<string | null>(
-    'peninsula',
+  const [activeRegionId, setActiveRegionId] = useState<string | null>(() =>
+    flyToTarget ? null : 'peninsula',
   );
 
   const currentStyleOption = useMemo(
@@ -150,7 +167,8 @@ export function AntenasMap(props: AntenasMapProps) {
     [styleId],
   );
 
-  // Conversión memorizada de las 65.000+ estaciones a GeoJSON FeatureCollection
+  // Transformación memorizada en memoria de los registros `AntennaRecord[]` procedentes de nuestro
+  // censo JSON propio (`data/antenas.json`, 69.834 estaciones) a geometrías puntuales para el motor WebGL de MapLibre
   const { antenasGeoJson, antenasById } = useMemo(() => {
     const byId = new Map<string, AntennaRecord>();
     const features: Feature<Point, AntennaFeatureProperties>[] = [];
@@ -190,7 +208,7 @@ export function AntenasMap(props: AntenasMapProps) {
     return { antenasGeoJson: collection, antenasById: byId };
   }, [antenas]);
 
-  // Construcción memorizada de capas de radar RF (círculo de cobertura, pin central y vector LOS)
+  // Construcción memorizada en memoria de geometrías auxiliares de radar RF (cobertura, pin central y vector LOS)
   const radarGeoJson = useMemo<
     FeatureCollection<Polygon | Point | LineString, RadarFeatureProperties>
   >(() => {
@@ -275,6 +293,7 @@ export function AntenasMap(props: AntenasMapProps) {
   const radarModeActiveRef = useRef(radarModeActive);
   const radarPointRef = useRef(radarPoint);
   const onRadarPointChangeRef = useRef(onRadarPointChange);
+  const flyToTargetRef = useRef(flyToTarget);
   const isDarkStyleRef = useRef(currentStyleOption.isDark);
 
   useEffect(() => {
@@ -298,10 +317,15 @@ export function AntenasMap(props: AntenasMapProps) {
   }, [radarModeActive, radarPoint, onRadarPointChange]);
 
   useEffect(() => {
+    flyToTargetRef.current = flyToTarget;
+  }, [flyToTarget]);
+
+  useEffect(() => {
     isDarkStyleRef.current = currentStyleOption.isDark;
   }, [currentStyleOption.isDark]);
 
-  // Registro idempotente de fuentes y capas tras carga inicial o cambio de estilo OpenFreeMap
+  // Registro idempotente de fuentes y capas tras carga inicial o cambio de estilo OpenFreeMap:
+  // Se registra SIEMPRE PRIMERO la fuente principal de antenas y sus capas, y DESPUÉS el radar auxiliar aislado en try/catch.
   const ensureCustomSourcesAndLayers = useCallback((map: maplibregl.Map) => {
     if (!map.getStyle()) {
       return;
@@ -309,99 +333,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const isDark = isDarkStyleRef.current;
 
-    // 1. Fuente GeoJSON de análisis radar RF y vector de línea de vista (LOS)
-    if (!map.getSource(RADAR_SOURCE_ID)) {
-      map.addSource(RADAR_SOURCE_ID, {
-        type: 'geojson',
-        data: radarGeoJsonRef.current,
-      });
-    }
-
-    if (!map.getLayer(LAYER_RADAR_FILL)) {
-      map.addLayer({
-        id: LAYER_RADAR_FILL,
-        type: 'fill',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'coverage'],
-        paint: {
-          'fill-color': isDark ? '#38BDF8' : '#0284C7',
-          'fill-opacity': isDark ? 0.14 : 0.1,
-        },
-      });
-    }
-
-    if (!map.getLayer(LAYER_RADAR_OUTLINE)) {
-      map.addLayer({
-        id: LAYER_RADAR_OUTLINE,
-        type: 'line',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'coverage'],
-        paint: {
-          'line-color': isDark ? '#38BDF8' : '#0284C7',
-          'line-width': 2,
-          'line-opacity': 0.85,
-          'line-dasharray': [3, 2],
-        },
-      });
-    }
-
-    if (!map.getLayer(LAYER_RADAR_LOS_CASING)) {
-      map.addLayer({
-        id: LAYER_RADAR_LOS_CASING,
-        type: 'line',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'los'],
-        layout: {
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.9)',
-          'line-width': 4.5,
-        },
-      });
-    }
-
-    if (!map.getLayer(LAYER_RADAR_LOS_LINE)) {
-      map.addLayer({
-        id: LAYER_RADAR_LOS_LINE,
-        type: 'line',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'los'],
-        layout: {
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': isDark ? '#38BDF8' : '#0284C7',
-          'line-width': 2.4,
-          'line-dasharray': [2.2, 1.6],
-        },
-      });
-    }
-
-    if (!map.getLayer(LAYER_RADAR_LOS_LABEL)) {
-      map.addLayer({
-        id: LAYER_RADAR_LOS_LABEL,
-        type: 'symbol',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'los'],
-        layout: {
-          'symbol-placement': 'line-center',
-          'text-field': ['get', 'distanceLabel'],
-          'text-font': ['Noto Sans Regular'],
-          'text-size': 11,
-          'text-offset': [0, -0.7],
-        },
-        paint: {
-          'text-color': isDark ? '#F8FAFC' : '#0F172A',
-          'text-halo-color': isDark ? '#0F172A' : '#FFFFFF',
-          'text-halo-width': 1.8,
-        },
-      });
-    }
-
-    // 2. Fuente GeoJSON clusterizada de 65.000+ estaciones móviles
+    // 1. Fuente principal clusterizada de las 69.834 estaciones móviles (procedentes de `data/antenas.json`)
     if (!map.getSource(ANTENAS_SOURCE_ID)) {
       map.addSource(ANTENAS_SOURCE_ID, {
         type: 'geojson',
@@ -410,6 +342,7 @@ export function AntenasMap(props: AntenasMapProps) {
         clusterMaxZoom: 12,
         clusterRadius: 46,
       });
+      lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
     }
 
     if (!map.getLayer(LAYER_CLUSTERS_HALO)) {
@@ -623,34 +556,153 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
 
-    // 3. Pin central del punto de radar encima de las antenas para máxima visibilidad
-    if (!map.getLayer(LAYER_RADAR_ORIGIN_HALO)) {
-      map.addLayer({
-        id: LAYER_RADAR_ORIGIN_HALO,
-        type: 'circle',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'origin'],
-        paint: {
-          'circle-radius': 13,
-          'circle-color': '#0EA5E9',
-          'circle-opacity': 0.26,
-        },
-      });
-    }
+    // 2. Capas auxiliares de análisis radar RF y vector LOS (aisladas para no bloquear jamás las antenas)
+    try {
+      if (!map.getSource(RADAR_SOURCE_ID)) {
+        map.addSource(RADAR_SOURCE_ID, {
+          type: 'geojson',
+          data: radarGeoJsonRef.current,
+        });
+      }
 
-    if (!map.getLayer(LAYER_RADAR_ORIGIN_POINT)) {
-      map.addLayer({
-        id: LAYER_RADAR_ORIGIN_POINT,
-        type: 'circle',
-        source: RADAR_SOURCE_ID,
-        filter: ['==', ['get', 'kind'], 'origin'],
-        paint: {
-          'circle-radius': 6.5,
-          'circle-color': '#0EA5E9',
-          'circle-stroke-width': 2.5,
-          'circle-stroke-color': '#FFFFFF',
-        },
-      });
+      const beforeAntenasLayer = map.getLayer(LAYER_CLUSTERS_HALO)
+        ? LAYER_CLUSTERS_HALO
+        : undefined;
+
+      if (!map.getLayer(LAYER_RADAR_FILL)) {
+        map.addLayer(
+          {
+            id: LAYER_RADAR_FILL,
+            type: 'fill',
+            source: RADAR_SOURCE_ID,
+            filter: ['==', ['get', 'kind'], 'coverage'],
+            paint: {
+              'fill-color': isDark ? '#38BDF8' : '#0284C7',
+              'fill-opacity': isDark ? 0.14 : 0.1,
+            },
+          },
+          beforeAntenasLayer,
+        );
+      }
+
+      if (!map.getLayer(LAYER_RADAR_OUTLINE)) {
+        map.addLayer(
+          {
+            id: LAYER_RADAR_OUTLINE,
+            type: 'line',
+            source: RADAR_SOURCE_ID,
+            filter: ['==', ['get', 'kind'], 'coverage'],
+            paint: {
+              'line-color': isDark ? '#38BDF8' : '#0284C7',
+              'line-width': 2,
+              'line-opacity': 0.85,
+              'line-dasharray': [3, 2],
+            },
+          },
+          beforeAntenasLayer,
+        );
+      }
+
+      if (!map.getLayer(LAYER_RADAR_LOS_CASING)) {
+        map.addLayer(
+          {
+            id: LAYER_RADAR_LOS_CASING,
+            type: 'line',
+            source: RADAR_SOURCE_ID,
+            filter: ['==', ['get', 'kind'], 'los'],
+            layout: {
+              'line-cap': 'round',
+              'line-join': 'round',
+            },
+            paint: {
+              'line-color': isDark
+                ? 'rgba(15, 23, 42, 0.85)'
+                : 'rgba(255, 255, 255, 0.9)',
+              'line-width': 4.5,
+            },
+          },
+          beforeAntenasLayer,
+        );
+      }
+
+      if (!map.getLayer(LAYER_RADAR_LOS_LINE)) {
+        map.addLayer(
+          {
+            id: LAYER_RADAR_LOS_LINE,
+            type: 'line',
+            source: RADAR_SOURCE_ID,
+            filter: ['==', ['get', 'kind'], 'los'],
+            layout: {
+              'line-cap': 'round',
+              'line-join': 'round',
+            },
+            paint: {
+              'line-color': isDark ? '#38BDF8' : '#0284C7',
+              'line-width': 2.4,
+              'line-dasharray': [2.2, 1.6],
+            },
+          },
+          beforeAntenasLayer,
+        );
+      }
+
+      if (!map.getLayer(LAYER_RADAR_LOS_LABEL)) {
+        map.addLayer(
+          {
+            id: LAYER_RADAR_LOS_LABEL,
+            type: 'symbol',
+            source: RADAR_SOURCE_ID,
+            filter: ['==', ['get', 'kind'], 'los'],
+            layout: {
+              'symbol-placement': 'line-center',
+              'text-field': ['get', 'distanceLabel'],
+              'text-font': ['Noto Sans Regular'],
+              'text-size': 11,
+              'text-offset': [0, -0.7],
+            },
+            paint: {
+              'text-color': isDark ? '#F8FAFC' : '#0F172A',
+              'text-halo-color': isDark ? '#0F172A' : '#FFFFFF',
+              'text-halo-width': 1.8,
+            },
+          },
+          beforeAntenasLayer,
+        );
+      }
+
+      if (!map.getLayer(LAYER_RADAR_ORIGIN_HALO)) {
+        map.addLayer({
+          id: LAYER_RADAR_ORIGIN_HALO,
+          type: 'circle',
+          source: RADAR_SOURCE_ID,
+          filter: ['==', ['get', 'kind'], 'origin'],
+          paint: {
+            'circle-radius': 13,
+            'circle-color': '#0EA5E9',
+            'circle-opacity': 0.26,
+          },
+        });
+      }
+
+      if (!map.getLayer(LAYER_RADAR_ORIGIN_POINT)) {
+        map.addLayer({
+          id: LAYER_RADAR_ORIGIN_POINT,
+          type: 'circle',
+          source: RADAR_SOURCE_ID,
+          filter: ['==', ['get', 'kind'], 'origin'],
+          paint: {
+            'circle-radius': 6.5,
+            'circle-color': '#0EA5E9',
+            'circle-stroke-width': 2.5,
+            'circle-stroke-color': '#FFFFFF',
+          },
+        });
+      }
+    } catch (err) {
+      console.warn(
+        '[AntenasMap] No se pudieron registrar las capas auxiliares de radar RF:',
+        err,
+      );
     }
   }, []);
 
@@ -666,11 +718,32 @@ export function AntenasMap(props: AntenasMapProps) {
       OPENFREEMAP_STYLES.find((opt) => opt.id === appliedStyleIdRef.current) ??
       OPENFREEMAP_STYLES[0];
 
+    // Si ya existe un objetivo de cámara al montar (ej. enlace profundo `#/?gid=GALR0453B` o salto desde tabla),
+    // arrancamos directamente sobre esas coordenadas para que el centro inicial de Península nunca lo pise.
+    const initialTarget = flyToTargetRef.current;
+    const hasInitialTarget = Boolean(
+      initialTarget &&
+        Number.isFinite(initialTarget.lat) &&
+        Number.isFinite(initialTarget.lon),
+    );
+    const initialCenter: [number, number] =
+      hasInitialTarget && initialTarget
+        ? [initialTarget.lon, initialTarget.lat]
+        : [peninsulaPreset.lon, peninsulaPreset.lat];
+    const initialZoom =
+      hasInitialTarget && initialTarget
+        ? (initialTarget.zoom ?? 15)
+        : peninsulaPreset.zoom;
+
+    if (hasInitialTarget && initialTarget) {
+      lastFlyTokenRef.current = initialTarget.token;
+    }
+
     const map = new maplibregl.Map({
       container,
       style: initialStyle.url,
-      center: [peninsulaPreset.lon, peninsulaPreset.lat],
-      zoom: peninsulaPreset.zoom,
+      center: initialCenter,
+      zoom: initialZoom,
       minZoom: 3.5,
       maxZoom: 19,
       attributionControl: false,
@@ -705,7 +778,25 @@ export function AntenasMap(props: AntenasMapProps) {
     popupRef.current = popup;
 
     const handleStyleLoad = () => {
+      hasLoadedOnceRef.current = true;
       ensureCustomSourcesAndLayers(map);
+      const antSource = map.getSource(ANTENAS_SOURCE_ID) as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      if (antSource && lastAppliedGeoJsonRef.current !== antenasGeoJsonRef.current) {
+        antSource.setData(antenasGeoJsonRef.current);
+        lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
+      }
+      try {
+        const radSource = map.getSource(RADAR_SOURCE_ID) as
+          | maplibregl.GeoJSONSource
+          | undefined;
+        if (radSource) {
+          radSource.setData(radarGeoJsonRef.current);
+        }
+      } catch (err) {
+        console.warn('[AntenasMap] No se pudo actualizar la fuente de radar RF:', err);
+      }
     };
 
     const handleStyleData = () => {
@@ -879,6 +970,14 @@ export function AntenasMap(props: AntenasMapProps) {
       popup.remove();
     };
 
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            map.resize();
+          })
+        : null;
+    resizeObserver?.observe(container);
+
     map.on('load', handleStyleLoad);
     map.on('style.load', handleStyleLoad);
     map.on('styledata', handleStyleData);
@@ -887,12 +986,16 @@ export function AntenasMap(props: AntenasMapProps) {
     map.getCanvas().addEventListener('mouseleave', handleCanvasLeave);
 
     return () => {
+      resizeObserver?.disconnect();
       map.getCanvas().removeEventListener('mouseleave', handleCanvasLeave);
       popup.remove();
       map.remove();
       mapRef.current = null;
       popupRef.current = null;
       hoveredIdRef.current = null;
+      hasLoadedOnceRef.current = false;
+      lastAppliedGeoJsonRef.current = null;
+      lastFlyTokenRef.current = null;
     };
   }, [ensureCustomSourcesAndLayers]);
 
@@ -906,13 +1009,15 @@ export function AntenasMap(props: AntenasMapProps) {
 
     appliedStyleIdRef.current = styleId;
     hoveredIdRef.current = null;
+    lastAppliedGeoJsonRef.current = null;
     popupRef.current?.remove();
 
     map.setStyle(currentStyleOption.url, { diff: false });
   }, [styleId, currentStyleOption.url, currentStyleOption.isDark]);
 
-  // Sincronización reactiva del dataset filtrado de antenas
+  // Sincronización reactiva en memoria del dataset filtrado de antenas hacia el motor WebGL
   useEffect(() => {
+    antenasGeoJsonRef.current = antenasGeoJson;
     const map = mapRef.current;
     if (!map) {
       return;
@@ -920,22 +1025,28 @@ export function AntenasMap(props: AntenasMapProps) {
     const source = map.getSource(ANTENAS_SOURCE_ID) as
       | maplibregl.GeoJSONSource
       | undefined;
-    if (source) {
+    if (source && lastAppliedGeoJsonRef.current !== antenasGeoJson) {
       source.setData(antenasGeoJson);
+      lastAppliedGeoJsonRef.current = antenasGeoJson;
     }
   }, [antenasGeoJson]);
 
-  // Sincronización reactiva del círculo de cobertura radar y enlace LOS
+  // Sincronización reactiva aislada del círculo de cobertura radar y enlace LOS
   useEffect(() => {
+    radarGeoJsonRef.current = radarGeoJson;
     const map = mapRef.current;
     if (!map) {
       return;
     }
-    const source = map.getSource(RADAR_SOURCE_ID) as
-      | maplibregl.GeoJSONSource
-      | undefined;
-    if (source) {
-      source.setData(radarGeoJson);
+    try {
+      const source = map.getSource(RADAR_SOURCE_ID) as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      if (source) {
+        source.setData(radarGeoJson);
+      }
+    } catch (err) {
+      console.warn('[AntenasMap] No se pudo sincronizar radarGeoJson:', err);
     }
   }, [radarGeoJson]);
 
@@ -963,10 +1074,15 @@ export function AntenasMap(props: AntenasMapProps) {
     map.getCanvas().style.cursor = radarModeActive ? 'crosshair' : '';
   }, [radarModeActive]);
 
-  // Desplazamiento animado de cámara cuando cambia `flyToTarget.token`
+  // Desplazamiento de cámara cuando cambia `flyToTarget.token` (incluidos enlaces directos `#/?gid=...`)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !flyToTarget) {
+    if (
+      !map ||
+      !flyToTarget ||
+      !Number.isFinite(flyToTarget.lat) ||
+      !Number.isFinite(flyToTarget.lon)
+    ) {
       return;
     }
     if (lastFlyTokenRef.current === flyToTarget.token) {
@@ -975,6 +1091,18 @@ export function AntenasMap(props: AntenasMapProps) {
 
     lastFlyTokenRef.current = flyToTarget.token;
     setActiveRegionId(null);
+
+    // Sincronizar tamaño real del lienzo por si acaba de montarse el panel lateral de detalle (`StationDetailDrawer`)
+    map.resize();
+
+    if (!hasLoadedOnceRef.current) {
+      // Si el enlace profundo se resuelve durante la carga inicial del mapa, colocamos la cámara directamente
+      map.jumpTo({
+        center: [flyToTarget.lon, flyToTarget.lat],
+        zoom: flyToTarget.zoom ?? 15,
+      });
+      return;
+    }
 
     map.flyTo({
       center: [flyToTarget.lon, flyToTarget.lat],
