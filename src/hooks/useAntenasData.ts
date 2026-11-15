@@ -1,16 +1,19 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  OPERATOR_META,
   OPERATOR_ORDER,
   type AntenasDataset,
   type AntennaRecord,
   type OperatorKey,
+  type OperatorSummary,
   type ProvinceSummary,
 } from '../types/antena';
 import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
+import { haversineDistanceKm } from '../utils/geo';
 
 export interface MunicipalityOption {
   mun: string;
@@ -31,7 +34,7 @@ export interface DerivedAntenasStructures {
   operatorCounts: Record<OperatorKey, number>;
   /** Centroide medio aproximado por provincia para navegación rápida */
   provinceCentroids: Map<string, { lat: number; lon: number }>;
-  /** Búsqueda O(1) por id o Gis_ID */
+  /** Búsqueda O(1) por id o Gis_ID (incluyendo mergedGids fusionados) */
   byId: Map<string, AntennaRecord>;
   byGid: Map<string, AntennaRecord>;
   /** Índice pre-normalizado sin tildes alineado con dataset.antenas */
@@ -112,6 +115,15 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
         `Registro incompleto en antenas[${i}]: debe cumplir el esquema compacto propio { id, gid, op, opRaw, lat, lon, dir, mun, prov }.`,
       );
     }
+    if (
+      item.mergedGids !== undefined &&
+      (!Array.isArray(item.mergedGids) ||
+        !item.mergedGids.every((gid): gid is string => typeof gid === 'string'))
+    ) {
+      throw new Error(
+        `Campo mergedGids inválido en antenas[${i}]: se esperaba un array de strings.`,
+      );
+    }
   }
 
   return raw as unknown as AntenasDataset;
@@ -138,9 +150,325 @@ export async function importAntenasJsonDataset(): Promise<AntenasDataset> {
 
 export const fetchAntenasDataset = importAntenasJsonDataset;
 
-export function buildDerivedAntenasStructures(
+function countRedundantLeadingZeros(gid: string): number {
+  if (gid.length <= 1) return 0;
+  let zeros = 0;
+  while (zeros < gid.length - 1 && gid.charCodeAt(zeros) === 48) {
+    zeros++;
+  }
+  return zeros;
+}
+
+function compareVodafoneCanonical(a: AntennaRecord, b: AntennaRecord): number {
+  const aGid = a.gid.trim();
+  const bGid = b.gid.trim();
+
+  const aEmpty = aGid.length === 0 ? 1 : 0;
+  const bEmpty = bGid.length === 0 ? 1 : 0;
+  if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+
+  const aZeros = countRedundantLeadingZeros(aGid);
+  const bZeros = countRedundantLeadingZeros(bGid);
+  if (aZeros !== bZeros) return aZeros - bZeros;
+
+  const aHasDir = a.dir.trim().length > 0 ? 1 : 0;
+  const bHasDir = b.dir.trim().length > 0 ? 1 : 0;
+  const aHasMun = a.mun.trim().length > 0 ? 1 : 0;
+  const bHasMun = b.mun.trim().length > 0 ? 1 : 0;
+  const aProv = a.prov.trim();
+  const bProv = b.prov.trim();
+  const aHasProv = aProv.length > 0 && aProv !== 'SIN PROVINCIA' ? 1 : 0;
+  const bHasProv = bProv.length > 0 && bProv !== 'SIN PROVINCIA' ? 1 : 0;
+
+  const aComp = aHasDir + aHasMun + aHasProv;
+  const bComp = bHasDir + bHasMun + bHasProv;
+  if (aComp !== bComp) return bComp - aComp;
+
+  if (aHasDir !== bHasDir) return bHasDir - aHasDir;
+  if (aHasMun !== bHasMun) return bHasMun - aHasMun;
+  if (aHasProv !== bHasProv) return bHasProv - aHasProv;
+
+  if (aGid !== bGid) return aGid < bGid ? -1 : 1;
+  const aId = a.id.trim();
+  const bId = b.id.trim();
+  if (aId !== bId) return aId < bId ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Fusiona de forma pura e idempotente declaraciones duplicadas de Vodafone a
+ * estrictamente `< maxDistanceMeters` metros (por defecto 10 m) usando malla
+ * espacial + Union-Find y recalcula totales por operador y provincia si hubo fusiones.
+ */
+export function fuseVodafoneAntennasInDataset(
   dataset: AntenasDataset,
+  maxDistanceMeters = 10,
+): AntenasDataset {
+  const { antenas } = dataset;
+  if (maxDistanceMeters <= 0 || antenas.length <= 1) {
+    return dataset;
+  }
+
+  const vodaIndices: number[] = [];
+  for (let i = 0; i < antenas.length; i++) {
+    if (antenas[i].op === 'vodafone') {
+      vodaIndices.push(i);
+    }
+  }
+
+  const n = vodaIndices.length;
+  if (n <= 1) {
+    return dataset;
+  }
+
+  const parent = new Int32Array(n);
+  for (let k = 0; k < n; k++) {
+    parent[k] = k;
+  }
+
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) {
+      root = parent[root];
+    }
+    let cur = x;
+    while (cur !== root) {
+      const next = parent[cur];
+      parent[cur] = root;
+      cur = next;
+    }
+    return root;
+  };
+
+  const cellDeg = Math.max(0.0002, maxDistanceMeters / 70000);
+  const maxDistKm = maxDistanceMeters / 1000;
+  const grid = new Map<number, number[]>();
+  let fusionsCount = 0;
+
+  for (let k = 0; k < n; k++) {
+    const ant = antenas[vodaIndices[k]];
+    const cx = Math.floor(ant.lat / cellDeg);
+    const cy = Math.floor(ant.lon / cellDeg);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      const rowBase = (cx + dx) * 4_000_000;
+      for (let dy = -1; dy <= 1; dy++) {
+        const bucket = grid.get(rowBase + (cy + dy));
+        if (!bucket) continue;
+        for (let b = 0; b < bucket.length; b++) {
+          const otherK = bucket[b];
+          const rootA = find(k);
+          const rootB = find(otherK);
+          if (rootA === rootB) continue;
+          const otherAnt = antenas[vodaIndices[otherK]];
+          if (
+            haversineDistanceKm(ant.lat, ant.lon, otherAnt.lat, otherAnt.lon) <
+            maxDistKm
+          ) {
+            parent[rootB] = rootA;
+            fusionsCount++;
+          }
+        }
+      }
+    }
+
+    const cellKey = cx * 4_000_000 + cy;
+    const existing = grid.get(cellKey);
+    if (existing) {
+      existing.push(k);
+    } else {
+      grid.set(cellKey, [k]);
+    }
+  }
+
+  if (fusionsCount === 0) {
+    return dataset;
+  }
+
+  const components = new Map<number, AntennaRecord[]>();
+  for (let k = 0; k < n; k++) {
+    const root = find(k);
+    const ant = antenas[vodaIndices[k]];
+    const list = components.get(root);
+    if (list) {
+      list.push(ant);
+    } else {
+      components.set(root, [ant]);
+    }
+  }
+
+  const mergedByRoot = new Map<number, AntennaRecord>();
+  for (const [root, members] of components.entries()) {
+    if (members.length === 1) {
+      mergedByRoot.set(root, members[0]);
+      continue;
+    }
+
+    const sortedMembers = [...members].sort(compareVodafoneCanonical);
+    const merged: AntennaRecord = { ...sortedMembers[0] };
+
+    for (let m = 1; m < sortedMembers.length; m++) {
+      const cand = sortedMembers[m];
+      if (!merged.dir.trim() && cand.dir.trim()) {
+        merged.dir = cand.dir;
+      }
+      if (!merged.mun.trim() && cand.mun.trim()) {
+        merged.mun = cand.mun;
+      }
+      const curProv = merged.prov.trim();
+      const candProv = cand.prov.trim();
+      if (
+        (!curProv || curProv === 'SIN PROVINCIA') &&
+        candProv &&
+        candProv !== 'SIN PROVINCIA'
+      ) {
+        merged.prov = cand.prov;
+      } else if (!curProv && candProv) {
+        merged.prov = cand.prov;
+      }
+    }
+
+    const seenGids = new Set<string>();
+    const mergedGids: string[] = [];
+    for (let m = 0; m < sortedMembers.length; m++) {
+      const member = sortedMembers[m];
+      const mgid = member.gid.trim();
+      if (mgid && !seenGids.has(mgid)) {
+        seenGids.add(mgid);
+        mergedGids.push(mgid);
+      }
+      if (member.mergedGids) {
+        for (let g = 0; g < member.mergedGids.length; g++) {
+          const eg = member.mergedGids[g].trim();
+          if (eg && !seenGids.has(eg)) {
+            seenGids.add(eg);
+            mergedGids.push(eg);
+          }
+        }
+      }
+    }
+
+    if (mergedGids.length > 0) {
+      merged.mergedGids = mergedGids;
+    }
+    mergedByRoot.set(root, merged);
+  }
+
+  const emittedRoots = new Set<number>();
+  const fusedAntenas: AntennaRecord[] = [];
+  let vodaCursor = 0;
+
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+    if (ant.op !== 'vodafone') {
+      fusedAntenas.push(ant);
+      continue;
+    }
+    const root = find(vodaCursor++);
+    if (!emittedRoots.has(root)) {
+      emittedRoots.add(root);
+      const mergedRec = mergedByRoot.get(root);
+      if (mergedRec) {
+        fusedAntenas.push(mergedRec);
+      }
+    }
+  }
+
+  const opCounts: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    masmovil: 0,
+    digi: 0,
+    otros: 0,
+  };
+  const opEntities: Record<OperatorKey, Set<string>> = {
+    movistar: new Set<string>(),
+    orange: new Set<string>(),
+    vodafone: new Set<string>(),
+    masmovil: new Set<string>(),
+    digi: new Set<string>(),
+    otros: new Set<string>(),
+  };
+  const provMap = new Map<
+    string,
+    { count: number; byOperator: Partial<Record<OperatorKey, number>> }
+  >();
+
+  for (let i = 0; i < fusedAntenas.length; i++) {
+    const ant = fusedAntenas[i];
+    opCounts[ant.op] = (opCounts[ant.op] ?? 0) + 1;
+    if (ant.opRaw) {
+      opEntities[ant.op].add(ant.opRaw);
+    }
+    if (ant.prov) {
+      let provEntry = provMap.get(ant.prov);
+      if (!provEntry) {
+        provEntry = { count: 0, byOperator: {} };
+        provMap.set(ant.prov, provEntry);
+      }
+      provEntry.count += 1;
+      provEntry.byOperator[ant.op] = (provEntry.byOperator[ant.op] ?? 0) + 1;
+    }
+  }
+
+  const updatedOperators = {} as Record<OperatorKey, OperatorSummary>;
+  for (const opKey of OPERATOR_ORDER) {
+    const prev = dataset.operators?.[opKey];
+    const entities = Array.from(opEntities[opKey]).sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+    updatedOperators[opKey] = {
+      key: opKey,
+      name: prev?.name ?? OPERATOR_META[opKey].name,
+      count: opCounts[opKey],
+      legalEntities:
+        entities.length > 0
+          ? entities
+          : opCounts[opKey] > 0 && prev?.legalEntities
+            ? prev.legalEntities
+            : [],
+    };
+  }
+
+  const updatedProvinces: ProvinceSummary[] = Array.from(provMap.entries())
+    .map(([provincia, stats]) => {
+      const orderedByOp: Partial<Record<OperatorKey, number>> = {};
+      for (const opKey of OPERATOR_ORDER) {
+        const count = stats.byOperator[opKey] ?? 0;
+        if (count > 0) {
+          orderedByOp[opKey] = count;
+        }
+      }
+      return {
+        provincia,
+        count: stats.count,
+        byOperator: orderedByOp,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.provincia.localeCompare(b.provincia, 'es'),
+    );
+
+  return {
+    ...dataset,
+    total: fusedAntenas.length,
+    crawlStats: {
+      ...dataset.crawlStats,
+      vodafoneFusedDuplicates:
+        (dataset.crawlStats.vodafoneFusedDuplicates ?? 0) + fusionsCount,
+    },
+    operators: updatedOperators,
+    provinces: updatedProvinces,
+    antenas: fusedAntenas,
+  };
+}
+
+export function buildDerivedAntenasStructures(
+  inputDataset: AntenasDataset,
 ): DerivedAntenasStructures {
+  const dataset = fuseVodafoneAntennasInDataset(inputDataset);
   const { antenas } = dataset;
 
   const operatorCounts: Record<OperatorKey, number> = {
@@ -193,9 +521,24 @@ export function buildDerivedAntenasStructures(
       }
     }
 
+    const extraGids =
+      ant.mergedGids && ant.mergedGids.length > 0
+        ? ant.mergedGids.join(' ')
+        : '';
     searchIndex[i] = normalizeSearchText(
-      `${ant.gid} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op}`,
+      `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op}`,
     );
+  }
+
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+    if (!ant.mergedGids) continue;
+    for (let g = 0; g < ant.mergedGids.length; g++) {
+      const mgid = ant.mergedGids[g];
+      if (mgid && !byGid.has(mgid)) {
+        byGid.set(mgid, ant);
+      }
+    }
   }
 
   // Usar dataset.provinces si viene poblado, o construir desde provAccum como respaldo

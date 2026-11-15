@@ -4,7 +4,7 @@ import type {
   OpenFreeMapStyleOption,
   OperatorKey,
 } from '../types/antena';
-import type { FlyToTarget, RadarPoint } from '../types/map';
+import type { FlyToTarget, MeasurePoint, RadarPoint } from '../types/map';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -40,6 +40,14 @@ export interface WorkspaceContextValue {
   radarModeActive: boolean;
   setRadarModeActive: (active: boolean) => void;
   toggleRadarMode: () => void;
+
+  /* Medición de distancia entre 2 puntos en el mapa */
+  measurePoints: MeasurePoint[];
+  setMeasurePoints: (points: MeasurePoint[]) => void;
+  clearMeasurement: () => void;
+  measureModeActive: boolean;
+  setMeasureModeActive: (active: boolean) => void;
+  toggleMeasureMode: () => void;
 
   /* Geolocalización GPS */
   gpsLoading: boolean;

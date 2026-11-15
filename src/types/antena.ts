@@ -25,6 +25,8 @@ export interface AntennaRecord {
   mun: string;
   /** Provincia oficial normalizada */
   prov: string;
+  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (< 10 m en Vodafone) */
+  mergedGids?: string[];
 }
 
 export interface OperatorSummary {
@@ -48,6 +50,8 @@ export interface CrawlStats {
   zoomParam: number;
   delaySeconds: number;
   isPartialSeed?: boolean;
+  /** Declaraciones duplicadas de Vodafone (< 10 m) fusionadas en una única antena */
+  vodafoneFusedDuplicates?: number;
 }
 
 export interface AntenasDataset {
@@ -122,8 +126,8 @@ export const OPERATOR_META: Record<OperatorKey, OperatorMeta> = {
     key: 'digi',
     name: 'DIGI Spain',
     shortName: 'DIGI',
-    color: '#0284C7',
-    softBg: 'rgba(2, 132, 199, 0.12)',
+    color: '#7C3AED',
+    softBg: 'rgba(124, 58, 237, 0.14)',
     description: 'DS Mobile Networks, S.L.',
   },
   otros: {

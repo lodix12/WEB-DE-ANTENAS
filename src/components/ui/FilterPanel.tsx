@@ -13,7 +13,7 @@ import {
   type AntennaRecord,
   type OperatorKey,
 } from '../../types/antena';
-import type { RadarPoint } from '../../types/map';
+import type { MeasurePoint, RadarPoint } from '../../types/map';
 import { parseCoordinateInput } from '../../utils/export';
 import { SPAIN_REGION_PRESETS } from '../../utils/geo';
 import { ExportMenu } from './ExportMenu';
@@ -49,8 +49,11 @@ export interface FilterPanelProps {
   onClearRadar: () => void;
   radarRadiusKm: number;
   onRadiusChange: (km: number) => void;
-  radarModeActive: boolean;
-  onToggleRadarMode: () => void;
+  measurePoints: MeasurePoint[];
+  onClearMeasurement: () => void;
+  onResetMeasurePoints: () => void;
+  measureModeActive: boolean;
+  onToggleMeasureMode: () => void;
   gpsLoading: boolean;
   gpsError: string | null;
   onRequestGps: () => void;
@@ -83,8 +86,11 @@ export function FilterPanel({
   onClearRadar,
   radarRadiusKm,
   onRadiusChange,
-  radarModeActive,
-  onToggleRadarMode,
+  measurePoints,
+  onClearMeasurement,
+  onResetMeasurePoints,
+  measureModeActive,
+  onToggleMeasureMode,
   gpsLoading,
   gpsError,
   onRequestGps,
@@ -389,9 +395,15 @@ export function FilterPanel({
             onClearRadar={onClearRadar}
             radarRadiusKm={radarRadiusKm}
             onRadiusChange={onRadiusChange}
-            radarModeActive={radarModeActive}
-            onToggleRadarMode={() => {
-              onToggleRadarMode();
+            measurePoints={measurePoints}
+            onClearMeasurement={onClearMeasurement}
+            onResetMeasurePoints={() => {
+              onResetMeasurePoints();
+              onCloseMobile();
+            }}
+            measureModeActive={measureModeActive}
+            onToggleMeasureMode={() => {
+              onToggleMeasureMode();
               onCloseMobile();
             }}
             gpsLoading={gpsLoading}

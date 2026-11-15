@@ -4,11 +4,13 @@ import {
   ChevronDown,
   ChevronUp,
   Compass,
-  Crosshair,
   Layers,
   Loader2,
   LocateFixed,
   Radio,
+  RotateCcw,
+  Ruler,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -19,7 +21,7 @@ import {
   type OpenFreeMapStyleOption,
   type OperatorKey,
 } from '../../types/antena';
-import type { RadarPoint } from '../../types/map';
+import type { MeasurePoint, RadarPoint } from '../../types/map';
 import {
   SPAIN_REGION_PRESETS,
   bearingToCardinal,
@@ -29,6 +31,7 @@ import {
 } from '../../utils/geo';
 
 const RADAR_RADIUS_OPTIONS_KM = [1, 2, 5, 10] as const;
+const EMPTY_MEASURE_POINTS: MeasurePoint[] = [];
 
 export interface MapOverlaysProps {
   antenas: AntennaRecord[];
@@ -39,6 +42,10 @@ export interface MapOverlaysProps {
   onRadarPointChange?: (point: RadarPoint | null) => void;
   radarModeActive?: boolean;
   onToggleRadarMode?: () => void;
+  measurePoints?: MeasurePoint[];
+  onMeasurePointsChange?: (points: MeasurePoint[]) => void;
+  measureModeActive?: boolean;
+  onToggleMeasureMode?: () => void;
   activeOperators: OperatorKey[];
   onToggleOperator?: (op: OperatorKey) => void;
   activeRegionId: string | null;
@@ -59,6 +66,10 @@ export function MapOverlays({
   onRadarPointChange,
   radarModeActive = false,
   onToggleRadarMode,
+  measurePoints = EMPTY_MEASURE_POINTS,
+  onMeasurePointsChange,
+  measureModeActive,
+  onToggleMeasureMode,
   activeOperators,
   onToggleOperator,
   activeRegionId,
@@ -70,6 +81,9 @@ export function MapOverlays({
   const [geoError, setGeoError] = useState<string | null>(null);
 
   const stylePopoverRef = useRef<HTMLDivElement | null>(null);
+
+  const toggleMeasureAction = onToggleMeasureMode ?? onToggleRadarMode;
+  const isMeasureActive = measureModeActive ?? radarModeActive;
 
   const currentStyle = useMemo(
     () =>
@@ -120,6 +134,42 @@ export function MapOverlays({
       cardinal: bearingToCardinal(bearingDeg),
     };
   }, [radarPoint, selectedAntenna]);
+
+  const measureMetrics = useMemo(() => {
+    if (measurePoints.length < 2) {
+      return null;
+    }
+    const [pA, pB] = measurePoints;
+    const distanceKm = haversineDistanceKm(pA.lat, pA.lon, pB.lat, pB.lon);
+    const distanceMeters = distanceKm * 1000;
+    const bearingDeg = calculateBearingDeg(pA.lat, pA.lon, pB.lat, pB.lon);
+
+    let primaryLabel: string;
+    let secondaryLabel: string | null = null;
+
+    if (distanceMeters < 100) {
+      primaryLabel = `${distanceMeters.toLocaleString('es-ES', {
+        minimumFractionDigits: distanceMeters < 10 ? 2 : 1,
+        maximumFractionDigits: distanceMeters < 10 ? 2 : 1,
+      })} m`;
+    } else if (distanceKm < 1) {
+      primaryLabel = `${Math.round(distanceMeters).toLocaleString('es-ES')} m`;
+      secondaryLabel = `${distanceKm.toLocaleString('es-ES', {
+        minimumFractionDigits: 3,
+        maximumFractionDigits: 3,
+      })} km`;
+    } else {
+      primaryLabel = formatDistance(distanceKm);
+      secondaryLabel = `${Math.round(distanceMeters).toLocaleString('es-ES')} m`;
+    }
+
+    return {
+      primaryLabel,
+      secondaryLabel,
+      bearingDeg,
+      cardinal: bearingToCardinal(bearingDeg),
+    };
+  }, [measurePoints]);
 
   useEffect(() => {
     if (!styleMenuOpen) {
@@ -251,16 +301,16 @@ export function MapOverlays({
               <span className="map-tool-btn-label">Mi ubicación</span>
             </button>
 
-            {onToggleRadarMode && (
+            {toggleMeasureAction && (
               <button
                 id="map-toggle-radar-btn"
                 type="button"
-                className={`map-tool-btn${radarModeActive ? ' is-active' : ''}`}
-                onClick={onToggleRadarMode}
-                aria-pressed={radarModeActive}
-                title="Activar medición haciendo clic en cualquier punto del mapa"
+                className={`map-tool-btn${isMeasureActive ? ' is-active' : ''}`}
+                onClick={toggleMeasureAction}
+                aria-pressed={isMeasureActive}
+                title="Medir distancia seleccionando 2 puntos en el mapa (Punto A y Punto B)"
               >
-                <Crosshair size={15} aria-hidden="true" />
+                <Ruler size={15} aria-hidden="true" />
                 <span className="map-tool-btn-label">Medir en mapa</span>
               </button>
             )}
@@ -333,13 +383,166 @@ export function MapOverlays({
           </div>
         </div>
 
-        {/* Banner indicador del modo medición RF o punto de cobertura activo */}
-        {(radarModeActive || radarPoint) && (
+        {/* Tarjeta flotante de medición de distancia entre 2 puntos (Punto A y Punto B) */}
+        {(isMeasureActive || measurePoints.length > 0) && (
+          <div
+            className="map-measure-banner"
+            role="status"
+            aria-live="polite"
+          >
+            {measurePoints.length === 0 && (
+              <div className="map-measure-row">
+                <span className="map-measure-pulse" aria-hidden="true" />
+                <span className="map-measure-step-text">
+                  <strong>Selecciona el Punto A en el mapa</strong> · Haz clic
+                  sobre cualquier ubicación o antena
+                </span>
+                {toggleMeasureAction && (
+                  <button
+                    id="map-cancel-measure-btn"
+                    type="button"
+                    className="map-radar-close-btn"
+                    onClick={toggleMeasureAction}
+                  >
+                    <X size={12} aria-hidden="true" />
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            )}
+
+            {measurePoints.length === 1 && (
+              <div className="map-measure-row">
+                <span className="map-measure-pin-badge">A</span>
+                <span className="map-measure-step-text">
+                  <strong>Punto A fijado</strong> · Selecciona el Punto B en el
+                  mapa
+                </span>
+                <span className="map-measure-coord-chip">
+                  {measurePoints[0].label
+                    ? `${measurePoints[0].label} (${measurePoints[0].lat.toFixed(5)}, ${measurePoints[0].lon.toFixed(5)})`
+                    : `${measurePoints[0].lat.toFixed(5)}, ${measurePoints[0].lon.toFixed(5)}`}
+                </span>
+                {onMeasurePointsChange && (
+                  <button
+                    id="map-clear-measure-a-btn"
+                    type="button"
+                    className="map-radar-close-btn"
+                    onClick={() => onMeasurePointsChange([])}
+                    title="Borrar Punto A"
+                  >
+                    <Trash2 size={12} aria-hidden="true" />
+                    Borrar
+                  </button>
+                )}
+                <button
+                  id="map-close-measure-1-btn"
+                  type="button"
+                  className="map-radar-close-btn"
+                  onClick={() => {
+                    onMeasurePointsChange?.([]);
+                    if (isMeasureActive) {
+                      toggleMeasureAction?.();
+                    }
+                  }}
+                >
+                  <X size={12} aria-hidden="true" />
+                  Cerrar
+                </button>
+              </div>
+            )}
+
+            {measurePoints.length >= 2 && measureMetrics && (
+              <div className="map-measure-result">
+                <div className="map-measure-row">
+                  <span className="map-measure-label-tag">
+                    <Ruler size={13} aria-hidden="true" />
+                    Distancia A → B
+                  </span>
+                  <span className="map-measure-distance-main">
+                    {measureMetrics.primaryLabel}
+                  </span>
+                  {measureMetrics.secondaryLabel && (
+                    <span className="map-measure-distance-sub">
+                      ({measureMetrics.secondaryLabel})
+                    </span>
+                  )}
+                  <span
+                    className="map-measure-bearing-pill"
+                    title="Acimut geodésico desde Punto A hacia Punto B"
+                  >
+                    Rumbo {Math.round(measureMetrics.bearingDeg)}° ·{' '}
+                    {measureMetrics.cardinal}
+                  </span>
+
+                  <div className="map-measure-actions">
+                    <button
+                      id="map-new-measure-btn"
+                      type="button"
+                      className="map-measure-action-btn"
+                      onClick={() => {
+                        onMeasurePointsChange?.([]);
+                        if (!isMeasureActive) {
+                          toggleMeasureAction?.();
+                        }
+                      }}
+                      title="Borrar puntos actuales y seleccionar nuevos Punto A y Punto B"
+                    >
+                      <RotateCcw size={12} aria-hidden="true" />
+                      Nueva medición
+                    </button>
+                    <button
+                      id="map-close-measure-btn"
+                      type="button"
+                      className="map-radar-close-btn"
+                      onClick={() => {
+                        onMeasurePointsChange?.([]);
+                        if (isMeasureActive) {
+                          toggleMeasureAction?.();
+                        }
+                      }}
+                      title="Cerrar herramienta de medición"
+                    >
+                      <X size={12} aria-hidden="true" />
+                      Cerrar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="map-measure-endpoints">
+                  <span className="map-measure-endpoint-item">
+                    <span className="map-measure-pin-badge is-sm">A</span>
+                    <span className="map-measure-coord-mono">
+                      {measurePoints[0].label
+                        ? `${measurePoints[0].label} (${measurePoints[0].lat.toFixed(5)}, ${measurePoints[0].lon.toFixed(5)})`
+                        : `${measurePoints[0].lat.toFixed(5)}, ${measurePoints[0].lon.toFixed(5)}`}
+                    </span>
+                  </span>
+                  <span className="map-measure-arrow" aria-hidden="true">
+                    →
+                  </span>
+                  <span className="map-measure-endpoint-item">
+                    <span className="map-measure-pin-badge is-sm">B</span>
+                    <span className="map-measure-coord-mono">
+                      {measurePoints[1].label
+                        ? `${measurePoints[1].label} (${measurePoints[1].lat.toFixed(5)}, ${measurePoints[1].lon.toFixed(5)})`
+                        : `${measurePoints[1].lat.toFixed(5)}, ${measurePoints[1].lon.toFixed(5)}`}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Banner indicador del punto de cobertura GPS / Radar RF activo */}
+        {(radarPoint ||
+          (radarModeActive && onToggleMeasureMode !== undefined)) && (
           <div className="map-radar-banner" role="status" aria-live="polite">
             <span className="map-radar-pulse" aria-hidden="true" />
             <span className="map-radar-banner-text">
               {radarModeActive && !radarPoint
-                ? 'Modo medición activo · Haz clic en cualquier punto del mapa para fijar el radar de cobertura'
+                ? 'Modo radar activo · Haz clic en el mapa para fijar el centro de cobertura'
                 : radarModeActive
                   ? `${radarPoint?.label ?? 'Punto activo'} · Haz clic en el mapa para reubicar o en una antena para trazar enlace`
                   : `${radarPoint?.label ?? 'Radar de cobertura'} (${radarPoint?.lat.toFixed(4)}, ${radarPoint?.lon.toFixed(4)})`}
@@ -391,18 +594,20 @@ export function MapOverlays({
               </button>
             )}
 
-            {radarModeActive && onToggleRadarMode && (
-              <button
-                id="map-exit-radar-mode-btn"
-                type="button"
-                className="map-radar-close-btn"
-                onClick={onToggleRadarMode}
-                title="Desactivar modo medición en mapa"
-              >
-                <X size={12} aria-hidden="true" />
-                Salir
-              </button>
-            )}
+            {radarModeActive &&
+              onToggleMeasureMode !== undefined &&
+              onToggleRadarMode && (
+                <button
+                  id="map-exit-radar-mode-btn"
+                  type="button"
+                  className="map-radar-close-btn"
+                  onClick={onToggleRadarMode}
+                  title="Desactivar modo radar en mapa"
+                >
+                  <X size={12} aria-hidden="true" />
+                  Salir
+                </button>
+              )}
           </div>
         )}
 
@@ -485,6 +690,62 @@ export function MapOverlays({
                 </button>
               );
             })}
+
+            <div
+              className="map-legend-multi-note"
+              title="Las estaciones de distintos operadores situadas a menos de 5 metros se agrupan en un único marcador multicolor con los colores de cada operador integrado"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                className="map-legend-multi-icon"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 12 L12 2 A10 10 0 0 1 22 12 Z"
+                  fill={OPERATOR_META.movistar.color}
+                />
+                <path
+                  d="M12 12 L22 12 A10 10 0 0 1 12 22 Z"
+                  fill={OPERATOR_META.orange.color}
+                />
+                <path
+                  d="M12 12 L12 22 A10 10 0 0 1 2 12 Z"
+                  fill={OPERATOR_META.vodafone.color}
+                />
+                <path
+                  d="M12 12 L2 12 A10 10 0 0 1 12 2 Z"
+                  fill={OPERATOR_META.masmovil.color}
+                />
+                <line
+                  x1="12"
+                  y1="2"
+                  x2="12"
+                  y2="22"
+                  stroke="#FFFFFF"
+                  strokeWidth="1.6"
+                />
+                <line
+                  x1="2"
+                  y1="12"
+                  x2="22"
+                  y2="12"
+                  stroke="#FFFFFF"
+                  strokeWidth="1.6"
+                />
+                <circle cx="12" cy="12" r="2.2" fill="#FFFFFF" />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  fill="none"
+                  stroke="#FFFFFF"
+                  strokeWidth="2"
+                />
+              </svg>
+              <span>Icono multicolor: operadores a &lt; 5 m</span>
+            </div>
           </div>
         )}
       </aside>

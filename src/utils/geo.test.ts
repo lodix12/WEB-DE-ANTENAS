@@ -7,6 +7,7 @@ import {
   createCirclePolygonGeoJSON,
   findNearestAntennas,
   formatDistance,
+  groupColocatedAntennasForMap,
   haversineDistanceKm,
 } from './geo';
 
@@ -250,3 +251,214 @@ describe('createCirclePolygonGeoJSON', () => {
     expect(ids).toContain('ceuta-melilla');
   });
 });
+
+describe('groupColocatedAntennasForMap', () => {
+  const baseLat = 40.4168;
+  const baseLon = -3.7038;
+
+  it('groups 2 or 3 antennas of distinct operators within < 5 m into 1 multi-operator MapSiteEntry in canonical OPERATOR_ORDER', () => {
+    // 0.000034° de latitud ≈ 3.78 m (< 5 m)
+    const offset3_8m = 0.000034;
+
+    const vodafone: AntennaRecord = {
+      id: 'VODAFONE ESPAÑA, S.A.U. - 2809003',
+      gid: '2809003',
+      op: 'vodafone',
+      opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+      lat: baseLat + offset3_8m,
+      lon: baseLon,
+      dir: 'Torre Compartida, 1',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const orange: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - 2809002',
+      gid: '2809002',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'Torre Compartida, 1',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const movistar: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2809001',
+      gid: '2809001',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'Torre Compartida, 1',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+
+    const distMeters =
+      haversineDistanceKm(orange.lat, orange.lon, vodafone.lat, vodafone.lon) *
+      1000;
+    expect(distMeters).toBeGreaterThan(3.5);
+    expect(distMeters).toBeLessThan(5);
+
+    // Pasamos los registros desordenados para verificar el orden canónico de salida
+    const sites = groupColocatedAntennasForMap([vodafone, orange, movistar], 5);
+
+    expect(sites).toHaveLength(1);
+    const site = sites[0];
+    expect(site.isMultiOperator).toBe(true);
+    expect(site.operators).toEqual(['movistar', 'orange', 'vodafone']);
+    expect(site.iconKey).toBe('multi:movistar|orange|vodafone');
+    expect(site.members.map((m) => m.op)).toEqual([
+      'movistar',
+      'orange',
+      'vodafone',
+    ]);
+    expect(site.primary.id).toBe(movistar.id);
+    expect(site.siteId).toBe(
+      `site:${movistar.id}||${orange.id}||${vodafone.id}`,
+    );
+    expect(site.lat).toBeCloseTo(
+      (movistar.lat + orange.lat + vodafone.lat) / 3,
+      7,
+    );
+    expect(site.lon).toBeCloseTo(baseLon, 7);
+  });
+
+  it('keeps antennas of distinct operators at >= 5 m (~6.2 m) as separate individual entries', () => {
+    // 0.000056° de latitud ≈ 6.23 m (>= 5 m)
+    const offset6_2m = 0.000056;
+
+    const movistar: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2809101',
+      gid: '2809101',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'Azotea Norte',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const digi: AntennaRecord = {
+      id: 'DS MOBILE NETWORKS, S.L. - 2809102',
+      gid: '2809102',
+      op: 'digi',
+      opRaw: 'DS MOBILE NETWORKS, S.L.',
+      lat: baseLat + offset6_2m,
+      lon: baseLon,
+      dir: 'Azotea Sur',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+
+    const distMeters =
+      haversineDistanceKm(movistar.lat, movistar.lon, digi.lat, digi.lon) *
+      1000;
+    expect(distMeters).toBeGreaterThanOrEqual(5);
+
+    const sites = groupColocatedAntennasForMap([movistar, digi], 5);
+
+    expect(sites).toHaveLength(2);
+    expect(sites[0].isMultiOperator).toBe(false);
+    expect(sites[0].operators).toEqual(['movistar']);
+    expect(sites[1].isMultiOperator).toBe(false);
+    expect(sites[1].operators).toEqual(['digi']);
+  });
+
+  it('automatically transitions a shared site to isMultiOperator: false when filtered down to 1 active operator', () => {
+    const movistar: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2809201',
+      gid: '2809201',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'C/ Alcalá, 50',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const orange: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - 2809202',
+      gid: '2809202',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'C/ Alcalá, 50',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+
+    const combined = groupColocatedAntennasForMap([movistar, orange], 5);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].isMultiOperator).toBe(true);
+
+    // Al filtrar solo Orange en el mapa, pasa a marcador individual de Orange
+    const onlyOrange = groupColocatedAntennasForMap([orange], 5);
+    expect(onlyOrange).toHaveLength(1);
+    expect(onlyOrange[0].isMultiOperator).toBe(false);
+    expect(onlyOrange[0].operators).toEqual(['orange']);
+    expect(onlyOrange[0].iconKey).toBe('single:orange');
+  });
+
+  it('keeps same-operator non-Vodafone records (< 5 m) separate while defensively fusing residual Vodafone (< 10 m) into 1 entry', () => {
+    const movA: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2809301',
+      gid: '2809301',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'Av. América, 10',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const movB: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2809302',
+      gid: '2809302',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat + 0.000018, // ~2 m
+      lon: baseLon,
+      dir: 'Av. América, 10',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+
+    const movSites = groupColocatedAntennasForMap([movA, movB], 5);
+    expect(movSites).toHaveLength(2);
+    expect(movSites.every((s) => !s.isMultiOperator)).toBe(true);
+
+    // Dos declaraciones de Vodafone a ~7.5 m (< 10 m) se representan como 1 sola antena
+    const vodA: AntennaRecord = {
+      id: 'VODAFONE ESPAÑA, S.A.U. - 2809401',
+      gid: '2809401',
+      op: 'vodafone',
+      opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+      lat: 41.387,
+      lon: 2.17,
+      dir: 'Diagonal, 100',
+      mun: 'Barcelona',
+      prov: 'Barcelona',
+    };
+    const vodB: AntennaRecord = {
+      id: 'VODAFONE ESPAÑA, S.A.U. - 2809402',
+      gid: '2809402',
+      op: 'vodafone',
+      opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+      lat: 41.387 + 0.000067, // ~7.45 m (< 10 m)
+      lon: 2.17,
+      dir: 'Diagonal, 100',
+      mun: 'Barcelona',
+      prov: 'Barcelona',
+    };
+
+    const vodSites = groupColocatedAntennasForMap([vodB, vodA], 5);
+    expect(vodSites).toHaveLength(1);
+    expect(vodSites[0].isMultiOperator).toBe(false);
+    expect(vodSites[0].operators).toEqual(['vodafone']);
+    expect(vodSites[0].primary.mergedGids).toEqual(['2809401', '2809402']);
+    expect(vodSites[0].memberIds).toEqual([vodB.id, vodA.id]);
+  });
+});
+

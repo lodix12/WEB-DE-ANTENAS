@@ -1,13 +1,16 @@
 import { useMemo } from 'react';
-import { Compass, Crosshair, Navigation, X } from 'lucide-react';
+import { Compass, Navigation, Ruler, X } from 'lucide-react';
 import {
   OPERATOR_META,
   type AntennaRecord,
 } from '../../types/antena';
-import type { RadarPoint } from '../../types/map';
+import type { MeasurePoint, RadarPoint } from '../../types/map';
 import {
+  bearingToCardinal,
+  calculateBearingDeg,
   findNearestAntennas,
   formatDistance,
+  haversineDistanceKm,
 } from '../../utils/geo';
 
 const RADIUS_OPTIONS_KM = [0.5, 1, 2, 5, 10] as const;
@@ -21,8 +24,11 @@ export interface NearestAntennasCardProps {
   onClearRadar: () => void;
   radarRadiusKm: number;
   onRadiusChange: (radiusKm: number) => void;
-  radarModeActive: boolean;
-  onToggleRadarMode: () => void;
+  measurePoints: MeasurePoint[];
+  onClearMeasurement: () => void;
+  onResetMeasurePoints: () => void;
+  measureModeActive: boolean;
+  onToggleMeasureMode: () => void;
   gpsLoading: boolean;
   gpsError: string | null;
   onRequestGps: () => void;
@@ -37,8 +43,11 @@ export function NearestAntennasCard({
   onClearRadar,
   radarRadiusKm,
   onRadiusChange,
-  radarModeActive,
-  onToggleRadarMode,
+  measurePoints,
+  onClearMeasurement,
+  onResetMeasurePoints,
+  measureModeActive,
+  onToggleMeasureMode,
   gpsLoading,
   gpsError,
   onRequestGps,
@@ -56,18 +65,38 @@ export function NearestAntennasCard({
     );
   }, [antenas, radarPoint, activeRadius]);
 
+  const measurementSummary = useMemo(() => {
+    if (measurePoints.length < 2) return null;
+    const [ptA, ptB] = measurePoints;
+    const distKm = haversineDistanceKm(ptA.lat, ptA.lon, ptB.lat, ptB.lon);
+    const distMeters = Math.round(distKm * 1000);
+    const bearingDeg = calculateBearingDeg(ptA.lat, ptA.lon, ptB.lat, ptB.lon);
+    return {
+      ptA,
+      ptB,
+      distKm,
+      distMeters,
+      formatted: formatDistance(distKm),
+      bearingDeg: Math.round(bearingDeg),
+      cardinal: bearingToCardinal(bearingDeg),
+    };
+  }, [measurePoints]);
+
   return (
     <div className="radar-box">
       <div className="field-label">
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
           <Compass size={13} aria-hidden="true" />
-          Radar de Cercanía y Orientación 4G/5G
+          Medición y Radar 4G/5G
         </span>
-        {radarPoint && (
+        {(radarPoint || measurePoints.length > 0) && (
           <button
             type="button"
             className="text-link-btn"
-            onClick={onClearRadar}
+            onClick={() => {
+              if (measurePoints.length > 0) onClearMeasurement();
+              if (radarPoint) onClearRadar();
+            }}
             id="radar-clear-btn"
           >
             Limpiar
@@ -91,16 +120,93 @@ export function NearestAntennasCard({
           type="button"
           id="radar-map-pick-btn"
           className={`btn btn-sm ${
-            radarModeActive ? 'btn-active' : 'btn-secondary'
+            measureModeActive ? 'btn-active' : 'btn-secondary'
           }`}
-          onClick={onToggleRadarMode}
+          onClick={onToggleMeasureMode}
         >
-          <Crosshair size={13} aria-hidden="true" />
+          <Ruler size={13} aria-hidden="true" />
           <span>
-            {radarModeActive ? 'Haz clic en mapa…' : 'Medir en mapa'}
+            {measureModeActive
+              ? measurePoints.length === 1
+                ? 'Marca Punto B…'
+                : 'Marca Punto A…'
+              : 'Medir en mapa'}
           </span>
         </button>
       </div>
+
+      {(measureModeActive || measurePoints.length > 0) && (
+        <div
+          className="radar-hint-banner"
+          role="status"
+          style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+        >
+          {measurementSummary ? (
+            <>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Distancia A → B:
+                </span>
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: 'var(--accent-primary)',
+                  }}
+                >
+                  {measurementSummary.formatted}
+                </span>
+              </div>
+              <div
+                className="mono"
+                style={{ fontSize: 11, color: 'var(--text-secondary)' }}
+              >
+                {measurementSummary.distMeters.toLocaleString('es-ES')} m · Rumbo{' '}
+                {measurementSummary.bearingDeg}° {measurementSummary.cardinal}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                <button
+                  type="button"
+                  className="btn btn-subtle btn-sm"
+                  onClick={onResetMeasurePoints}
+                  style={{ flex: 1 }}
+                >
+                  Nueva medición
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-subtle btn-sm"
+                  onClick={onClearMeasurement}
+                >
+                  Cerrar
+                </button>
+              </div>
+            </>
+          ) : measurePoints.length === 1 ? (
+            <span>
+              <strong>Punto A fijado</strong> (
+              <span className="mono">
+                {measurePoints[0].lat.toFixed(5)},{' '}
+                {measurePoints[0].lon.toFixed(5)}
+              </span>
+              ). Haz clic en el segundo punto del mapa para calcular la distancia.
+            </span>
+          ) : (
+            <span>
+              Selecciona <strong>2 puntos en el mapa</strong> (Punto A y Punto B)
+              para calcular la distancia exacta entre ambos.
+            </span>
+          )}
+        </div>
+      )}
 
       <div>
         <div
@@ -112,7 +218,7 @@ export function NearestAntennasCard({
             justifyContent: 'space-between',
           }}
         >
-          <span>Radio de búsqueda</span>
+          <span>Radio de búsqueda GPS</span>
           <span className="mono">
             {activeRadius < 1
               ? `${activeRadius * 1000} m`
@@ -137,13 +243,6 @@ export function NearestAntennasCard({
           })}
         </div>
       </div>
-
-      {radarModeActive && (
-        <div className="radar-hint-banner" role="status">
-          Haz clic en cualquier punto del mapa para calcular distancias y el
-          acimut exacto hacia las antenas cercanas.
-        </div>
-      )}
 
       {gpsError && (
         <div className="radar-error-msg" role="alert">

@@ -7,6 +7,7 @@ import {
 } from '../utils/export';
 import {
   buildDerivedAntenasStructures,
+  fuseVodafoneAntennasInDataset,
   importAntenasJsonDataset,
   parseCustomAntenasJson,
 } from './useAntenasData';
@@ -258,4 +259,165 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
     expect(typeof withRadar.antenas[1].acimutGrados).toBe('number');
     expect(withRadar.antenas[1].rumboCardinal).toBeTruthy();
   });
+
+  it('acepta mergedGids opcional en parseCustomAntenasJson y rechaza tipos inválidos', () => {
+    const sample = createSampleCustomDataset();
+    sample.antenas[0] = {
+      ...sample.antenas[0],
+      mergedGids: ['2800001', '02800001'],
+    };
+
+    const parsed = parseCustomAntenasJson(sample);
+    expect(parsed.antenas[0].mergedGids).toEqual(['2800001', '02800001']);
+
+    const invalid = {
+      ...sample,
+      antenas: [{ ...sample.antenas[0], mergedGids: [12345] }],
+    };
+    expect(() => parseCustomAntenasJson(invalid)).toThrow(/mergedGids/i);
+  });
+
+  it('fusiona antenas de Vodafone a < 10 m en 1 sola antena, actualiza estadísticas e indexa mergedGids', () => {
+    const base = createSampleCustomDataset();
+    // Añadimos 3 declaraciones duplicadas de Vodafone en Madrid a < 10 m (~0 m y ~4 m)
+    // y una Movistar co-ubicada a ~2 m que debe mantenerse intacta.
+    const unfusedDataset: AntenasDataset = {
+      ...base,
+      total: 6,
+      operators: {
+        ...base.operators,
+        vodafone: {
+          key: 'vodafone',
+          name: 'Vodafone España',
+          count: 3,
+          legalEntities: ['VODAFONE ESPAÑA, S.A.', 'VODAFONE ESPAÑA, S.A.U.'],
+        },
+      },
+      provinces: [
+        {
+          provincia: 'MADRID',
+          count: 5,
+          byOperator: { movistar: 1, orange: 1, vodafone: 3 },
+        },
+        {
+          provincia: 'ÁLAVA',
+          count: 1,
+          byOperator: { movistar: 1 },
+        },
+      ],
+      antenas: [
+        ...base.antenas,
+        {
+          id: 'VODAFONE ESPAÑA, S.A. - 00144693',
+          gid: '00144693',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.',
+          lat: 40.416802,
+          lon: -3.703802,
+          dir: 'GRAN VIA 28',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A. - 0144693',
+          gid: '0144693',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.',
+          lat: 40.416835, // ~3.9 m
+          lon: -3.703802,
+          dir: 'GRAN VIA 28',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 144693',
+          gid: '144693',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.416802,
+          lon: -3.703802,
+          dir: '',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+    };
+
+    const derived = buildDerivedAntenasStructures(unfusedDataset);
+
+    // 3 Vodafone fusionadas en 1 sola antena -> total = 3 (base) + 1 (Vodafone) = 4
+    expect(derived.dataset.total).toBe(4);
+    expect(derived.dataset.antenas).toHaveLength(4);
+    expect(derived.operatorCounts.vodafone).toBe(1);
+    expect(derived.operatorCounts.movistar).toBe(2);
+    expect(derived.operatorCounts.orange).toBe(1);
+    expect(derived.dataset.operators.vodafone.count).toBe(1);
+    expect(derived.dataset.crawlStats.vodafoneFusedDuplicates).toBe(2);
+
+    const madridSummary = derived.provincesByCount.find(
+      (p) => p.provincia === 'MADRID',
+    );
+    expect(madridSummary?.count).toBe(3);
+    expect(madridSummary?.byOperator.vodafone).toBe(1);
+    expect(madridSummary?.byOperator.movistar).toBe(1);
+    expect(madridSummary?.byOperator.orange).toBe(1);
+
+    // Búsqueda O(1) en byGid y searchIndex por cualquiera de los GIDs integrados
+    const canonicalVoda = derived.byGid.get('144693');
+    expect(canonicalVoda).toBeDefined();
+    expect(canonicalVoda?.gid).toBe('144693');
+    expect(canonicalVoda?.dir).toBe('GRAN VIA 28');
+    expect(canonicalVoda?.mergedGids).toEqual(['144693', '0144693', '00144693']);
+    expect(derived.byGid.get('0144693')).toBe(canonicalVoda);
+    expect(derived.byGid.get('00144693')).toBe(canonicalVoda);
+
+    const vodaIdx = derived.dataset.antenas.findIndex(
+      (a) => a.op === 'vodafone',
+    );
+    expect(derived.searchIndex[vodaIdx]).toContain('144693');
+    expect(derived.searchIndex[vodaIdx]).toContain('0144693');
+    expect(derived.searchIndex[vodaIdx]).toContain('00144693');
+
+    // Idempotencia: un dataset ya fusionado no realiza fusiones adicionales
+    const secondPass = fuseVodafoneAntennasInDataset(derived.dataset);
+    expect(secondPass).toBe(derived.dataset);
+  });
+
+  it('mantiene separadas antenas de Vodafone situadas a >= 10 m', () => {
+    const base = createSampleCustomDataset();
+    const separateVodafone: AntenasDataset = {
+      ...base,
+      total: 5,
+      antenas: [
+        ...base.antenas,
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 281001',
+          gid: '281001',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'SOL 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 281002',
+          gid: '281002',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.416935, // ~15 m (>= 10 m)
+          lon: -3.7038,
+          dir: 'SOL 3',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+    };
+
+    const derived = buildDerivedAntenasStructures(separateVodafone);
+    expect(derived.operatorCounts.vodafone).toBe(2);
+    expect(derived.dataset.antenas).toHaveLength(5);
+  });
 });
+

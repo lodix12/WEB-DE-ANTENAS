@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import {
-  Crosshair,
   Navigation,
   PanelLeftOpen,
   RefreshCw,
+  Ruler,
   SlidersHorizontal,
 } from 'lucide-react';
 import { AntenasMap } from '../components/map/AntenasMap';
@@ -43,6 +43,12 @@ export function MapaView() {
     setRadarRadiusKm,
     radarModeActive,
     toggleRadarMode,
+    measurePoints,
+    setMeasurePoints,
+    clearMeasurement,
+    setMeasureModeActive,
+    measureModeActive,
+    toggleMeasureMode,
     gpsLoading,
     gpsError,
     requestGpsLocation,
@@ -161,8 +167,14 @@ export function MapaView() {
         onClearRadar={() => setRadarPoint(null)}
         radarRadiusKm={radarRadiusKm}
         onRadiusChange={setRadarRadiusKm}
-        radarModeActive={radarModeActive}
-        onToggleRadarMode={toggleRadarMode}
+        measurePoints={measurePoints}
+        onClearMeasurement={clearMeasurement}
+        onResetMeasurePoints={() => {
+          setMeasurePoints([]);
+          setMeasureModeActive(true);
+        }}
+        measureModeActive={measureModeActive}
+        onToggleMeasureMode={toggleMeasureMode}
         gpsLoading={gpsLoading}
         gpsError={gpsError}
         onRequestGps={() => requestGpsLocation(true)}
@@ -221,13 +233,13 @@ export function MapaView() {
               type="button"
               id="mobile-radar-mode-btn"
               className={`btn btn-sm ${
-                radarModeActive ? 'btn-active' : 'btn-secondary'
+                measureModeActive ? 'btn-active' : 'btn-secondary'
               }`}
-              onClick={toggleRadarMode}
-              title="Medir punto en mapa"
+              onClick={toggleMeasureMode}
+              title="Seleccionar 2 puntos en el mapa para medir distancia"
             >
-              <Crosshair size={13} aria-hidden="true" />
-              <span>Radar</span>
+              <Ruler size={13} aria-hidden="true" />
+              <span>Medir</span>
             </button>
           </div>
         </div>
@@ -256,6 +268,15 @@ export function MapaView() {
             }}
             radarModeActive={radarModeActive}
             onToggleRadarMode={toggleRadarMode}
+            measurePoints={measurePoints}
+            onMeasurePointsChange={(pts) => {
+              setMeasurePoints(pts);
+              if (pts.length >= 2 && measureModeActive) {
+                setMeasureModeActive(false);
+              }
+            }}
+            measureModeActive={measureModeActive}
+            onToggleMeasureMode={toggleMeasureMode}
             activeOperators={activeOperators}
             onToggleOperator={toggleOperator}
           />

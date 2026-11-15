@@ -8,7 +8,6 @@ import { NotFoundView, RootLayout } from './components/ui/RootLayout';
 import { EstadisticasView } from './views/EstadisticasView';
 import { ExplorarView } from './views/ExplorarView';
 import { MapaView } from './views/MapaView';
-import { MetodologiaView } from './views/MetodologiaView';
 
 export interface MapaRouteSearch {
   gid?: string;
@@ -47,17 +46,10 @@ const estadisticasRoute = createRoute({
   component: EstadisticasView,
 });
 
-const metodologiaRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/metodologia',
-  component: MetodologiaView,
-});
-
 const routeTree = rootRoute.addChildren([
   mapaRoute,
   explorarRoute,
   estadisticasRoute,
-  metodologiaRoute,
 ]);
 
 export const router = createRouter({

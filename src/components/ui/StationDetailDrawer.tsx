@@ -5,6 +5,7 @@ import {
   Copy,
   Crosshair,
   ExternalLink,
+  Layers,
   X,
 } from 'lucide-react';
 import {
@@ -18,6 +19,7 @@ import {
   calculateBearingDeg,
   findNearestAntennas,
   formatDistance,
+  groupColocatedAntennasForMap,
   haversineDistanceKm,
 } from '../../utils/geo';
 
@@ -39,6 +41,31 @@ export function StationDetailDrawer({
   onSetRadarAtStation,
 }: StationDetailDrawerProps) {
   const [copiedCoords, setCopiedCoords] = useState(false);
+
+  const integratedSite = useMemo(() => {
+    if (!antenna || allAntenas.length === 0) return null;
+    const nearby = findNearestAntennas(
+      allAntenas,
+      antenna.lat,
+      antenna.lon,
+      40,
+      0.05,
+    );
+    const candidates: AntennaRecord[] = nearby.some(
+      (item) => item.id === antenna.id,
+    )
+      ? nearby
+      : [antenna, ...nearby];
+    const sites = groupColocatedAntennasForMap(candidates, 5);
+    return (
+      sites.find(
+        (site) =>
+          site.isMultiOperator &&
+          (site.memberIds.includes(antenna.id) ||
+            site.members.some((member) => member.id === antenna.id)),
+      ) ?? null
+    );
+  }, [antenna, allAntenas]);
 
   const colocatedStations = useMemo(() => {
     if (!antenna || allAntenas.length === 0) return [];
@@ -135,6 +162,67 @@ export function StationDetailDrawer({
       </div>
 
       <div className="drawer-body">
+        {/* Operadores integrados en el mismo icono multicolor (< 5 m) */}
+        {integratedSite && (
+          <section
+            className="integrated-operators-card"
+            aria-label="Operadores integrados en este icono (< 5 m)"
+          >
+            <div className="integrated-operators-head">
+              <span className="integrated-operators-title">
+                <Layers size={13} aria-hidden="true" />
+                <span>Operadores integrados en este icono (&lt; 5 m)</span>
+              </span>
+              <span className="colocation-count-pill">
+                {integratedSite.operators.length} oper.
+              </span>
+            </div>
+            <p className="integrated-operators-sub">
+              Selecciona cada operador integrado para consultar su{' '}
+              <span className="mono">Gis_ID</span> y abrir su ficha oficial
+              MINETUR:
+            </p>
+            <div
+              className="integrated-op-tabs"
+              role="tablist"
+              aria-label="Seleccionar operador integrado en este emplazamiento"
+            >
+              {integratedSite.members.map((member) => {
+                const mMeta = OPERATOR_META[member.op];
+                const isSelectedMember = member.id === antenna.id;
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelectedMember}
+                    className={`integrated-op-chip${isSelectedMember ? ' is-active' : ''}`}
+                    style={
+                      isSelectedMember
+                        ? {
+                            borderColor: mMeta.color,
+                            backgroundColor: mMeta.softBg,
+                          }
+                        : undefined
+                    }
+                    onClick={() => onSelectAntenna(member)}
+                  >
+                    <span
+                      className="operator-dot"
+                      style={{ backgroundColor: mMeta.color }}
+                      aria-hidden="true"
+                    />
+                    <span>{mMeta.shortName}</span>
+                    <span className="integrated-op-gid mono">
+                      #{member.gid}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         {/* Vector desde Radar Point (si está activo) */}
         {radarVector && (
           <div className="rf-vector-strip">
@@ -214,6 +302,22 @@ export function StationDetailDrawer({
               {antenna.gid} — {antenna.id}
             </span>
           </div>
+
+          {antenna.mergedGids && antenna.mergedGids.length > 1 && (
+            <div className="detail-kv-row">
+              <span className="detail-kv-label">
+                Declaraciones Fusionadas (&lt; 10 m · {antenna.mergedGids.length}{' '}
+                expedientes)
+              </span>
+              <div className="merged-gids-wrap">
+                {antenna.mergedGids.map((gid) => (
+                  <span key={gid} className="merged-gid-chip mono">
+                    #{gid}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="detail-kv-row">
             <span className="detail-kv-label">Coordenadas Exactas (WGS84)</span>

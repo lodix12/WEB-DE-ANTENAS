@@ -810,17 +810,229 @@ class InfoantenasCrawler:
         return build_dataset(self.records_by_id, crawl_stats=crawl_stats)
 
 
+EARTH_RADIUS_M = 6_371_008.8
+VODAFONE_DEDUP_DISTANCE_M = 10.0
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia geodésica Haversine en metros entre dos coordenadas WGS84."""
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlon / 2.0) ** 2
+    )
+    return 2.0 * EARTH_RADIUS_M * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
+def _redundant_leading_zeros(gid: str) -> int:
+    if len(gid) <= 1:
+        return 0
+    stripped = gid.lstrip("0")
+    if not stripped:
+        return len(gid) - 1
+    return len(gid) - len(stripped)
+
+
+def _vodafone_canonical_sort_key(
+    rec: dict[str, Any],
+) -> tuple[int, int, int, int, int, int, str, str]:
+    gid = str(rec.get("gid") or "").strip()
+    rec_id = str(rec.get("id") or "").strip()
+    has_dir = bool(str(rec.get("dir") or "").strip())
+    has_mun = bool(str(rec.get("mun") or "").strip())
+    prov_str = str(rec.get("prov") or "").strip()
+    has_prov = bool(prov_str and prov_str != "SIN PROVINCIA")
+    completeness = int(has_dir) + int(has_mun) + int(has_prov)
+    return (
+        0 if gid else 1,
+        _redundant_leading_zeros(gid),
+        -completeness,
+        0 if has_dir else 1,
+        0 if has_mun else 1,
+        0 if has_prov else 1,
+        gid,
+        rec_id,
+    )
+
+
+def fuse_vodafone_duplicates(
+    records: list[dict[str, Any]],
+    max_distance_m: float = VODAFONE_DEDUP_DISTANCE_M,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Fusiona declaraciones duplicadas de Vodafone (`op == "vodafone"`) situadas a
+    estrictamente `< max_distance_m` metros usando malla espacial (`cell_deg = 0.0002`,
+    ~22 m) + Union-Find.
+
+    Conserva 1 única estación canónica por componente conexa (manteniendo sus
+    coordenadas reales WGS84 `lat`, `lon` para garantizar que ningún par de
+    representantes distintos quede jamás a `< max_distance_m`), rellena `mergedGids`
+    cuando se fusionan `> 1` declaraciones y devuelve `(registros_fusionados, duplicados_eliminados)`.
+    """
+    if max_distance_m <= 0.0 or len(records) <= 1:
+        return [dict(r) for r in records], 0
+
+    voda_records: list[dict[str, Any]] = []
+    voda_pos_by_record_idx: dict[int, int] = {}
+    for rec_idx, rec in enumerate(records):
+        if rec.get("op") == "vodafone":
+            voda_pos_by_record_idx[rec_idx] = len(voda_records)
+            voda_records.append(rec)
+
+    n_voda = len(voda_records)
+    if n_voda <= 1:
+        return [dict(r) for r in records], 0
+
+    parent = list(range(n_voda))
+
+    def find(x: int) -> int:
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        cur = x
+        while cur != root:
+            nxt = parent[cur]
+            parent[cur] = root
+            cur = nxt
+        return root
+
+    def union(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    cell_deg = max(0.0002, max_distance_m / 70_000.0)
+    grid: dict[tuple[int, int], list[int]] = {}
+
+    for k, rec in enumerate(voda_records):
+        lat = float(rec["lat"])
+        lon = float(rec["lon"])
+        cx = math.floor(lat / cell_deg)
+        cy = math.floor(lon / cell_deg)
+
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                bucket = grid.get((cx + dx, cy + dy))
+                if not bucket:
+                    continue
+                for other_k in bucket:
+                    if find(k) == find(other_k):
+                        continue
+                    other_rec = voda_records[other_k]
+                    if (
+                        haversine_m(
+                            lat,
+                            lon,
+                            float(other_rec["lat"]),
+                            float(other_rec["lon"]),
+                        )
+                        < max_distance_m
+                    ):
+                        union(k, other_k)
+
+        grid.setdefault((cx, cy), []).append(k)
+
+    components: dict[int, list[dict[str, Any]]] = {}
+    for k, rec in enumerate(voda_records):
+        components.setdefault(find(k), []).append(rec)
+
+    merged_by_root: dict[int, dict[str, Any]] = {}
+    fused_duplicates = 0
+
+    for root, comp_members in components.items():
+        if len(comp_members) == 1:
+            single = dict(comp_members[0])
+            if isinstance(single.get("mergedGids"), list):
+                single["mergedGids"] = list(single["mergedGids"])
+            merged_by_root[root] = single
+            continue
+
+        fused_duplicates += len(comp_members) - 1
+        sorted_members = sorted(comp_members, key=_vodafone_canonical_sort_key)
+        merged_rec = dict(sorted_members[0])
+
+        for member in sorted_members[1:]:
+            if not str(merged_rec.get("dir") or "").strip() and str(
+                member.get("dir") or ""
+            ).strip():
+                merged_rec["dir"] = member["dir"]
+            if not str(merged_rec.get("mun") or "").strip() and str(
+                member.get("mun") or ""
+            ).strip():
+                merged_rec["mun"] = member["mun"]
+            cur_prov = str(merged_rec.get("prov") or "").strip()
+            cand_prov = str(member.get("prov") or "").strip()
+            if (
+                (not cur_prov or cur_prov == "SIN PROVINCIA")
+                and cand_prov
+                and cand_prov != "SIN PROVINCIA"
+            ):
+                merged_rec["prov"] = member["prov"]
+            elif not cur_prov and cand_prov:
+                merged_rec["prov"] = member["prov"]
+
+        seen_gids: set[str] = set()
+        merged_gids: list[str] = []
+        for member in sorted_members:
+            mgid = str(member.get("gid") or "").strip()
+            if mgid and mgid not in seen_gids:
+                seen_gids.add(mgid)
+                merged_gids.append(mgid)
+            extra = member.get("mergedGids")
+            if isinstance(extra, list):
+                for eg in extra:
+                    eg_str = str(eg or "").strip()
+                    if eg_str and eg_str not in seen_gids:
+                        seen_gids.add(eg_str)
+                        merged_gids.append(eg_str)
+
+        if merged_gids:
+            merged_rec["mergedGids"] = merged_gids
+
+        merged_by_root[root] = merged_rec
+
+    emitted_roots: set[int] = set()
+    output_records: list[dict[str, Any]] = []
+    for rec_idx, rec in enumerate(records):
+        voda_k = voda_pos_by_record_idx.get(rec_idx)
+        if voda_k is None:
+            output_records.append(dict(rec))
+            continue
+        root = find(voda_k)
+        if root not in emitted_roots:
+            emitted_roots.add(root)
+            output_records.append(merged_by_root[root])
+
+    return output_records, fused_duplicates
+
+
 def build_dataset(
-    records_by_id: dict[str, dict[str, Any]],
+    records_by_id: dict[str, dict[str, Any]] | list[dict[str, Any]],
     crawl_stats: dict[str, Any],
     updated_at: str | None = None,
 ) -> dict[str, Any]:
     """
     Construye el objeto `AntenasDataset` tipado según `src/types/antena.ts`,
+    fusionando previamente declaraciones duplicadas de Vodafone a `< 10 m` y
     ordenando las antenas determinísticamente por `(prov, mun, id)`.
     """
+    raw_records = (
+        list(records_by_id.values())
+        if isinstance(records_by_id, dict)
+        else list(records_by_id)
+    )
+    fused_records, fused_count = fuse_vodafone_duplicates(raw_records)
+
+    prior_fused = int(crawl_stats.get("vodafoneFusedDuplicates") or 0)
+    crawl_stats_out = dict(crawl_stats)
+    crawl_stats_out["vodafoneFusedDuplicates"] = prior_fused + fused_count
+
     sorted_antenas = sorted(
-        records_by_id.values(),
+        fused_records,
         key=lambda r: (r["prov"], r["mun"], r["id"]),
     )
 
@@ -873,7 +1085,7 @@ def build_dataset(
         "updatedAt": timestamp,
         "sourceUrl": PORTAL_SOURCE_URL,
         "total": len(sorted_antenas),
-        "crawlStats": crawl_stats,
+        "crawlStats": crawl_stats_out,
         "operators": operators_summary,
         "provinces": provinces_summary,
         "antenas": sorted_antenas,

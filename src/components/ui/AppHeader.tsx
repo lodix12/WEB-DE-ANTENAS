@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router';
 import {
   BarChart3,
-  BookOpen,
   Map as MapIcon,
   Moon,
   Sun,
@@ -96,15 +95,6 @@ export function AppHeader() {
           <BarChart3 size={15} aria-hidden="true" />
           <span className="nav-label-full">Estadísticas</span>
           <span className="nav-label-short">Datos</span>
-        </Link>
-        <Link
-          to="/metodologia"
-          className="nav-tab"
-          id="nav-tab-metodologia"
-        >
-          <BookOpen size={15} aria-hidden="true" />
-          <span className="nav-label-full">Bandas y Metodología</span>
-          <span className="nav-label-short">Bandas RF</span>
         </Link>
       </nav>
 

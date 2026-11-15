@@ -18,6 +18,12 @@ export interface RadarPoint {
   radiusKm?: number;
 }
 
+export interface MeasurePoint {
+  lat: number;
+  lon: number;
+  label?: string;
+}
+
 export interface NearestAntennaResult extends AntennaRecord {
   distanceKm: number;
   bearingDeg: number;
@@ -37,14 +43,22 @@ export interface AntenasMapProps {
   onStyleChange: (styleId: OpenFreeMapStyleOption['id']) => void;
   /** Coordenadas a las que desplazar la cámara cuando cambia `token` */
   flyToTarget?: FlyToTarget | null;
-  /** Ubicación del usuario o punto de análisis de cobertura */
+  /** Ubicación GPS o punto de radar de cercanía */
   radarPoint?: RadarPoint | null;
-  /** Actualizar o borrar el punto de análisis en el mapa */
+  /** Actualizar o borrar el punto de radar en el mapa */
   onRadarPointChange?: (point: RadarPoint | null) => void;
-  /** Si está activo el modo de medición haciendo clic sobre el mapa */
+  /** Si está activo el modo de radar por clic (legado/opcional) */
   radarModeActive?: boolean;
-  /** Activar/desactivar modo medición por clic */
+  /** Activar/desactivar modo radar */
   onToggleRadarMode?: () => void;
+  /** Puntos seleccionados (0, 1 o 2) para medir distancia entre 2 puntos en el mapa */
+  measurePoints?: MeasurePoint[];
+  /** Actualizar o limpiar los puntos de medición (Punto A y Punto B) */
+  onMeasurePointsChange?: (points: MeasurePoint[]) => void;
+  /** Si está activo el modo "Medir en mapa" (seleccionar 2 puntos) */
+  measureModeActive?: boolean;
+  /** Activar/desactivar el modo "Medir en mapa" */
+  onToggleMeasureMode?: () => void;
   /** Operadores actualmente visibles */
   activeOperators: OperatorKey[];
   /** Alternar visibilidad de un operador desde la leyenda */

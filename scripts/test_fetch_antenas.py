@@ -260,6 +260,186 @@ class FetchAntenasUnitTests(unittest.TestCase):
             resumed_dataset = resumed.crawl(region="sample")
             self.assertEqual(resumed_dataset["total"], dataset["total"])
 
+    def test_vodafone_duplicates_under_10m_fused_and_counted_as_one(self) -> None:
+        # 3 declaraciones de Vodafone en A Coruña a < 10 m (~0 m y ~5.5 m):
+        # "00144693" (con 2 ceros), "0144693" (con 1 cero y dirección completa),
+        # "144693" (canónico sin ceros, sin dir para comprobar relleno de campos).
+        records = [
+            {
+                "id": "VODAFONE ESPAÑA, S.A. - 00144693",
+                "gid": "00144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.",
+                "lat": 42.897686,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A. - 0144693",
+                "gid": "0144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.",
+                "lat": 42.897720,  # ~3.8 m al norte
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                "gid": "144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 42.897686,
+                "lon": -8.704622,
+                "dir": "",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+        ]
+
+        crawl_stats = {
+            "requestsCount": 1,
+            "durationSeconds": 1.0,
+            "gridBoxesVisited": 1,
+            "subdividedBoxes": 0,
+            "zoomParam": 7,
+            "delaySeconds": 1.0,
+        }
+        dataset = fa.build_dataset(records, crawl_stats=crawl_stats, updated_at="2026-11-15T18:51:08Z")
+
+        self.assertEqual(dataset["crawlStats"]["vodafoneFusedDuplicates"], 2)
+        self.assertEqual(dataset["total"], 1)
+        self.assertEqual(len(dataset["antenas"]), 1)
+        self.assertEqual(dataset["operators"]["vodafone"]["count"], 1)
+        self.assertEqual(len(dataset["provinces"]), 1)
+        self.assertEqual(dataset["provinces"][0]["provincia"], "A CORUÑA")
+        self.assertEqual(dataset["provinces"][0]["count"], 1)
+        self.assertEqual(dataset["provinces"][0]["byOperator"], {"vodafone": 1})
+
+        fused_ant = dataset["antenas"][0]
+        self.assertEqual(fused_ant["gid"], "144693")
+        self.assertEqual(fused_ant["lat"], 42.897686)
+        self.assertEqual(fused_ant["lon"], -8.704622)
+        self.assertEqual(fused_ant["dir"], "LG PG 78 PARC 9000 - ARUFE, S/N")
+        self.assertEqual(fused_ant["mergedGids"], ["144693", "0144693", "00144693"])
+
+        # Idempotencia al volver a pasar el dataset ya fusionado por build_dataset
+        rebuilt = fa.build_dataset(
+            dataset["antenas"],
+            crawl_stats=dataset["crawlStats"],
+            updated_at=dataset["updatedAt"],
+        )
+        self.assertEqual(rebuilt["total"], 1)
+        self.assertEqual(rebuilt["crawlStats"]["vodafoneFusedDuplicates"], 2)
+        self.assertEqual(rebuilt["antenas"][0]["mergedGids"], ["144693", "0144693", "00144693"])
+
+    def test_vodafone_stations_at_10m_or_more_are_not_fused(self) -> None:
+        # 0.000135 grados de latitud son ~15.01 metros (>= 10 m)
+        lat1, lon1 = 40.416800, -3.703800
+        lat2, lon2 = 40.416935, -3.703800
+        self.assertGreaterEqual(fa.haversine_m(lat1, lon1, lat2, lon2), 10.0)
+
+        records = [
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 280100",
+                "gid": "280100",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": lat1,
+                "lon": lon1,
+                "dir": "PUERTA DEL SOL 1",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 280101",
+                "gid": "280101",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": lat2,
+                "lon": lon2,
+                "dir": "PUERTA DEL SOL 3",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+        ]
+
+        fused, dup_count = fa.fuse_vodafone_duplicates(records)
+        self.assertEqual(dup_count, 0)
+        self.assertEqual(len(fused), 2)
+        self.assertNotIn("mergedGids", fused[0])
+        self.assertNotIn("mergedGids", fused[1])
+
+    def test_other_operators_under_10m_remain_separate_in_dataset(self) -> None:
+        # Movistar + Orange + segunda Movistar a ~2 metros NO deben eliminarse
+        records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001",
+                "gid": "2800001",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.416800,
+                "lon": -3.703800,
+                "dir": "GRAN VIA 28",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800002",
+                "gid": "2800002",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.416810,  # ~1.1 m
+                "lon": -3.703800,
+                "dir": "GRAN VIA 28",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 2800003",
+                "gid": "2800003",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.416805,  # ~0.5 m
+                "lon": -3.703805,
+                "dir": "GRAN VIA 28",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 289001",
+                "gid": "289001",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 40.416802,  # Co-ubicada con Movistar/Orange, pero única de Vodafone
+                "lon": -3.703802,
+                "dir": "GRAN VIA 28",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+        ]
+
+        dataset = fa.build_dataset(
+            records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 0.5,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 1.0,
+            },
+        )
+        self.assertEqual(dataset["crawlStats"]["vodafoneFusedDuplicates"], 0)
+        self.assertEqual(dataset["total"], 4)
+        self.assertEqual(dataset["operators"]["movistar"]["count"], 2)
+        self.assertEqual(dataset["operators"]["orange"]["count"], 1)
+        self.assertEqual(dataset["operators"]["vodafone"]["count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

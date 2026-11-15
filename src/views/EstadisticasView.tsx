@@ -145,6 +145,7 @@ export function EstadisticasView() {
   const { dataset, totalUniqueMunicipalities } = derived;
   const maxOperatorCount = operatorRows[0]?.count || 1;
   const { crawlStats } = dataset;
+  const vodafoneFused = crawlStats.vodafoneFusedDuplicates ?? 0;
 
   return (
     <main className="page-container">
@@ -168,7 +169,9 @@ export function EstadisticasView() {
             {dataset.total.toLocaleString('es-ES')}
           </span>
           <span className="metric-sub">
-            Emplazamientos únicos deduplicados
+            {vodafoneFused > 0
+              ? `${vodafoneFused.toLocaleString('es-ES')} declaraciones duplicadas de Vodafone (< 10 m) fusionadas`
+              : 'Emplazamientos únicos deduplicados'}
           </span>
         </div>
 
@@ -568,6 +571,28 @@ export function EstadisticasView() {
             </span>
           </div>
         </div>
+
+        {vodafoneFused > 0 && (
+          <div
+            className="section-block-body"
+            style={{
+              paddingTop: 14,
+              paddingBottom: 16,
+              borderTop: '1px solid var(--border-subtle)',
+            }}
+          >
+            <div className="callout-note">
+              <strong>Deduplicación espacial de Vodafone (&lt; 10 m):</strong>{' '}
+              <span className="mono" style={{ fontWeight: 700 }}>
+                {vodafoneFused.toLocaleString('es-ES')}
+              </span>{' '}
+              declaraciones duplicadas de Vodafone (&lt; 10 m) fusionadas en
+              emplazamientos únicos, contabilizadas como{' '}
+              <strong>1 sola antena</strong> tanto en el censo nacional como en
+              las cuotas por operador y provincia.
+            </div>
+          </div>
+        )}
       </section>
     </main>
   );

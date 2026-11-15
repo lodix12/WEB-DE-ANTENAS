@@ -12,7 +12,7 @@ import {
   type OpenFreeMapStyleOption,
   type OperatorKey,
 } from '../types/antena';
-import type { FlyToTarget, RadarPoint } from '../types/map';
+import type { FlyToTarget, MeasurePoint, RadarPoint } from '../types/map';
 import {
   WorkspaceContext,
   type ThemeMode,
@@ -66,6 +66,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [radarRadiusKm, setRadarRadiusKmState] = useState<number>(2);
   const [radarPoint, setRadarPointState] = useState<RadarPoint | null>(null);
   const [radarModeActive, setRadarModeActive] = useState<boolean>(false);
+
+  const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
+  const [measureModeActive, setMeasureModeActive] = useState<boolean>(false);
 
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -168,7 +171,27 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toggleRadarMode = useCallback(() => {
-    setRadarModeActive((prev) => !prev);
+    setRadarModeActive((prev) => {
+      const next = !prev;
+      if (next) setMeasureModeActive(false);
+      return next;
+    });
+  }, []);
+
+  const toggleMeasureMode = useCallback(() => {
+    setMeasureModeActive((prev) => {
+      const next = !prev;
+      if (next) {
+        setRadarModeActive(false);
+        setMeasurePoints((pts) => (pts.length >= 2 ? [] : pts));
+      }
+      return next;
+    });
+  }, []);
+
+  const clearMeasurement = useCallback(() => {
+    setMeasurePoints([]);
+    setMeasureModeActive(false);
   }, []);
 
   const jumpToCoordinates = useCallback(
@@ -214,11 +237,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           setGpsLoading(false);
           if (err.code === err.PERMISSION_DENIED) {
             setGpsError(
-              'Permiso de ubicación denegado. Puedes hacer clic en "Medir en mapa" o escribir coordenadas.',
+              'Permiso de ubicación denegado. Puedes escribir coordenadas en el buscador superior.',
             );
           } else {
             setGpsError(
-              'No se pudo obtener la señal GPS. Prueba a seleccionar un punto directamente en el mapa.',
+              'No se pudo obtener la señal GPS. Prueba a introducir coordenadas en el buscador.',
             );
           }
         },
@@ -272,6 +295,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       radarModeActive,
       setRadarModeActive,
       toggleRadarMode,
+      measurePoints,
+      setMeasurePoints,
+      clearMeasurement,
+      measureModeActive,
+      setMeasureModeActive,
+      toggleMeasureMode,
       gpsLoading,
       gpsError,
       requestGpsLocation,
@@ -302,6 +331,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setRadarRadiusKm,
       radarModeActive,
       toggleRadarMode,
+      measurePoints,
+      clearMeasurement,
+      measureModeActive,
+      toggleMeasureMode,
       gpsLoading,
       gpsError,
       requestGpsLocation,
