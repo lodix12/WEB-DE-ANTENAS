@@ -6,7 +6,6 @@ import {
 } from '@tanstack/react-router';
 import { NotFoundView, RootLayout } from './components/ui/RootLayout';
 import { EstadisticasView } from './views/EstadisticasView';
-import { ExplorarView } from './views/ExplorarView';
 import { MapaView } from './views/MapaView';
 
 export interface MapaRouteSearch {
@@ -34,12 +33,6 @@ const mapaRoute = createRoute({
   component: MapaView,
 });
 
-const explorarRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/explorar',
-  component: ExplorarView,
-});
-
 const estadisticasRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/estadisticas',
@@ -48,7 +41,6 @@ const estadisticasRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   mapaRoute,
-  explorarRoute,
   estadisticasRoute,
 ]);
 

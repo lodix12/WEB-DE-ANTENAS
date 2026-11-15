@@ -19,16 +19,15 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: 'pages-update-and-deploy'
-  cancel-in-progress: false
-
 jobs:
   update-data:
     name: Recolectar Censo Nacional (Infoantenas)
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.refresh_data != false)
     runs-on: ubuntu-latest
     timeout-minutes: 340
+    concurrency:
+      group: 'infoantenas-crawl-worker'
+      cancel-in-progress: false
     steps:
       - name: Descargar repositorio (rama main)
         uses: actions/checkout@v4
@@ -62,6 +61,9 @@ jobs:
     needs: [update-data]
     if: always() && (needs.update-data.result == 'success' || needs.update-data.result == 'skipped')
     runs-on: ubuntu-latest
+    concurrency:
+      group: 'pages-update-and-deploy'
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

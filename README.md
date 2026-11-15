@@ -8,18 +8,16 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 
 - **Mapa Vectorial de Alto Rendimiento (MapLibre GL JS + OpenFreeMap)**:
   - Renderizado WebGL fluido de decenas de miles de emplazamientos en Península, Islas Baleares, Islas Canarias, Ceuta y Melilla con agrupación dinámica (*clustering*), codificación cromática por operador y **agrupación visual multi-operador (`< 35 m`)** en un icono multicolor compartido cuando distintas redes comparten mástil o azotea (sin fusionar jamás estaciones de Telefónica consigo mismas).
-  - Cinco estilos cartográficos vectoriales sin claves ni límites de cuota (**Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**) sincronizados con el selector de **Modo Claro / Modo Oscuro**.
-- **Medición de Distancia entre 2 Puntos y Radar GPS 4G/5G**:
-  - La función **"Medir en mapa"** permite seleccionar **2 puntos cualesquiera en el mapa** (Punto A y Punto B) mostrando el segmento geodésico y la distancia exacta entre ambos.
-  - Además, permite usar el **GPS del dispositivo** o escribir **coordenadas WGS84 directas** (ej. `40.4168, -3.7038`) para localizar las estaciones más cercanas en radios de `500 m` a `10 km` con su rumbo de brújula (`acimut`).
-- **Ficha Técnica de Estación y Co-emplazamiento (`< 35 m` / `< 100 m`)**:
-  - Inspección completa de operador comercial, razón social concesionaria, `Gis_ID` (incluyendo expedientes fusionados `mergedGids`), dirección postal, coordenadas copiables en un clic, selector rápido de operadores integrados en el mismo icono (`< 35 m`) y detección de estaciones próximas (`< 100 m`).
-  - Enlace directo al expediente oficial `detalleEstacion.do` del Ministerio para consultar las **bandas activas en MHz** (`700–3500 MHz`) y los **niveles certificados de exposición radioeléctrica (`µW/cm²`)**, además de accesos rápidos a **Google Street View** y **OpenStreetMap**.
-- **Explorador Virtualizado de Datos (`/explorar`) y Exportación Abierta**:
-  - Tabla de alta densidad capaz de desplazar y ordenar más de **60.000 filas a 60 FPS** sin paginación gracias a `@tanstack/react-table` v9 + `@tanstack/react-virtual`.
-  - Filtros en cascada por provincia y municipio, filtrado por operador, ordenación instantánea por distancia/acimut y exportación directa en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y opción secundaria SIG (`GeoJSON` para QGIS/ArcGIS).
+  - Cinco estilos cartográficos vectoriales sin claves ni límites de cuota (**Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**) sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
+- **Medición de Distancia entre 2 Puntos**:
+  - La función **"Medir en mapa"** permite seleccionar **2 puntos cualesquiera en el mapa** (Punto A y Punto B) mostrando directamente sobre la cartografía el segmento geodésico y la distancia exacta entre ambos.
+- **Ficha Técnica de Estación, Bandas MHz y Co-emplazamiento (`< 35 m` / `< 100 m`)**:
+  - Inspección completa de operador comercial, razón social concesionaria, `Gis_ID` (incluyendo expedientes fusionados `mergedGids`), bandas y rangos de frecuencias asignadas en MHz extraídas de `detalleEstacion.do`, dirección postal, coordenadas copiables en un clic, selector rápido de operadores integrados en el mismo icono (`< 35 m`) y detección de estaciones próximas (`< 100 m`).
+  - Enlace directo al expediente oficial `detalleEstacion.do?emplazamiento=<Gis_ID>` del Ministerio además de accesos rápidos a **Google Street View** y **OpenStreetMap**.
+- **Filtrado Avanzado y Exportación Abierta**:
+  - Filtros en cascada por provincia y municipio, filtrado por operador y banda de frecuencia (MHz), búsqueda por coordenadas/dirección/`Gis_ID` y exportación directa en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y opción secundaria SIG (`GeoJSON` para QGIS/ArcGIS).
 - **Estadísticas Territoriales (`/estadisticas`)**:
-  - Cuotas nacionales por operador y razón social (con **deduplicación espacial de declaraciones duplicadas de Vodafone a `< 35 m`** contabilizadas como 1 única estación, mientras que las antenas de Telefónica nunca se fusionan consigo mismas), desglose completo de las 52 provincias y ciudades autónomas con barras multi-operador apiladas y estado del pipeline diario.
+  - Cuotas nacionales por operador y razón social (con **deduplicación espacial de declaraciones duplicadas de Vodafone a `< 35 m`** contabilizadas como 1 única estación, mientras que las antenas de Telefónica nunca se fusionan consigo mismas), desglose por bandas de frecuencia, ranking de las 52 provincias y ciudades autónomas con barras multi-operador apiladas y estado del pipeline diario.
 
 ---
 
@@ -28,10 +26,9 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | Capa | Tecnología | Propósito |
 | :--- | :--- | :--- |
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
-| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/explorar` y `#/estadisticas` sin errores 404 en GitHub Pages |
+| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/` y `#/estadisticas` sin errores 404 en GitHub Pages |
 | **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `data/antenas.json` (con validación de esquema propio), caché en memoria e índices `O(1)` |
-| **Tabla + Virtualización** | `@tanstack/react-table` v9 + `@tanstack/react-virtual` | Ordenación reactiva y renderizado virtual de 62.230+ estaciones |
-| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap | Teselas vectoriales libres, renderizado WebGL en GPU desde el JSON propio y línea de vista RF |
+| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap | Teselas vectoriales libres, renderizado WebGL en GPU desde el JSON propio |
 | **Pipeline de Datos** | Python 3.12 (`scripts/fetch_antenas.py`) | Barrido iterativo *quadtree* que transforma e importa las estaciones en el esquema JSON propio `public/data/antenas.json` |
 | **CI/CD y Hosting** | GitHub Actions + GitHub Pages | Sincronización automática cada 24 h (`04:00 UTC`) y despliegue estático |
 

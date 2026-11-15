@@ -4,7 +4,6 @@ import {
   Map as MapIcon,
   Moon,
   Sun,
-  Table2,
 } from 'lucide-react';
 import { useAntenasData } from '../../hooks/useAntenasData';
 import { useWorkspace } from '../../hooks/useWorkspace';
@@ -39,15 +38,6 @@ export function AppHeader() {
           <MapIcon size={15} aria-hidden="true" />
           <span className="nav-label-full">Mapa Interactivo</span>
           <span className="nav-label-short">Mapa</span>
-        </Link>
-        <Link
-          to="/explorar"
-          className="nav-tab"
-          id="nav-tab-explorar"
-        >
-          <Table2 size={15} aria-hidden="true" />
-          <span className="nav-label-full">Explorador de Datos</span>
-          <span className="nav-label-short">Explorar</span>
         </Link>
         <Link
           to="/estadisticas"

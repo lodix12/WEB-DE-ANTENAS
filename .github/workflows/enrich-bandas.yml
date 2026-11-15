@@ -17,7 +17,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: 'pages-update-and-deploy'
+  group: 'band-enrichment-worker'
   cancel-in-progress: false
 
 jobs:
@@ -88,6 +88,9 @@ jobs:
     needs: [enrich-bands]
     if: needs.enrich-bands.result == 'success' && needs.enrich-bands.outputs.updated == 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: 'pages-update-and-deploy'
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
