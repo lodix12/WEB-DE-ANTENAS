@@ -17,6 +17,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 - **Filtrado Avanzado y Exportación Abierta**:
   - Filtros en cascada por provincia y municipio, filtrado por operador y banda de frecuencia (MHz), búsqueda por coordenadas/dirección/`Gis_ID` y exportación directa en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y opción secundaria SIG (`GeoJSON` para QGIS/ArcGIS).
 - **Sección de Novedades (`#/novedades`)**:
+  - Incluye en su cabecera un **monitor en tiempo real del porcentaje de antenas escaneadas** (activo tanto durante el escaneo diario de las 18:00 como en cualquier escaneo manual forzado, mediante telemetría publicada en `scan-status`) junto a las casillas de **Antenas nuevas**, **Frecuencias nuevas** y **Último escaneo**.
   - Tabla única con las antenas nuevas y las frecuencias/concesiones nuevas detectadas respecto al escaneo anterior (`public/data/novedades.json`), donde cada fila lleva como fondo el color oficial de su operadora con un **50 % de transparencia**, acompañada de filtros por **Operadora**, tipo de novedad, banda/frecuencia, ubicación, fecha de escaneo y búsqueda libre, y las 6 columnas exactas:
     - **Novedad**: indica si es una **antena nueva** o una **frecuencia nueva** junto con el operador asociado.
     - **Código**: código `Gis_ID` de la estación con enlace directo para abrir y centrar esa antena en el mapa de la web.

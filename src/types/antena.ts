@@ -138,6 +138,48 @@ export interface NovedadesDataset {
   novedades: NovedadRecord[];
 }
 
+export type ScanLifecycleState =
+  | 'running'
+  | 'handoff'
+  | 'completed'
+  | 'stopped'
+  | 'idle';
+
+export type ScanPhase = 'censo' | 'frecuencias';
+
+export interface ScanStatusPayload {
+  /** Versión del esquema de telemetría en vivo */
+  schemaVersion: number;
+  /** Estado actual del proceso de escaneo */
+  state: ScanLifecycleState;
+  /** Identificador de ejecución de GitHub Actions (run_id) */
+  scanId: string;
+  /** Origen del disparo: 'schedule' (diario 18:00) o 'workflow_dispatch' (forzado manual) */
+  trigger: string;
+  /** Si el escaneo registra novedades (false en escaneos forzados de línea base) */
+  recordNovedades: boolean;
+  /** Tramo secuencial en ejecución (ej. "1/4", "2/4", "3/4", "4/4") */
+  part: string;
+  /** Fase activa: barrido inicial del censo o enriquecimiento de bandas/frecuencias */
+  phase: ScanPhase;
+  /** Marca temporal ISO 8601 UTC de inicio del ciclo de escaneo */
+  startedAt: string;
+  /** Marca temporal ISO 8601 UTC del último latido publicado */
+  updatedAt: string;
+  /** Cuadrículas GeoJSON visitadas durante la fase de censo */
+  censusBoxesVisited: number;
+  /** Estimación total de cuadrículas GeoJSON en el barrido nacional */
+  estimatedCensusBoxes: number;
+  /** Antenas descubiertas durante la fase de censo */
+  discoveredAntennas: number;
+  /** Número de antenas escaneadas en el ciclo actual */
+  scannedAntennas: number;
+  /** Número total de antenas objetivo en el censo nacional */
+  totalAntennas: number;
+  /** Porcentaje global de avance (0.00 - 100.00) */
+  percent: number;
+}
+
 export interface OperatorMeta {
   key: OperatorKey;
   name: string;

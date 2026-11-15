@@ -2129,6 +2129,150 @@ code {
   gap: 24px;
 }
 
+.novedades-scan-monitor {
+  gap: 6px;
+  position: relative;
+  transition: background-color 0.2s ease;
+}
+
+.novedades-scan-monitor.is-scanning {
+  background: linear-gradient(
+    180deg,
+    rgba(5, 150, 105, 0.07) 0%,
+    rgba(2, 132, 199, 0.03) 100%
+  );
+}
+
+[data-theme='dark'] .novedades-scan-monitor.is-scanning {
+  background: linear-gradient(
+    180deg,
+    rgba(16, 185, 129, 0.13) 0%,
+    rgba(14, 165, 233, 0.05) 100%
+  );
+}
+
+.scan-monitor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.scan-monitor-header .metric-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scan-monitor-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.5px;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+  line-height: 1.3;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.scan-monitor-badge.is-live {
+  background: rgba(5, 150, 105, 0.14);
+  color: #047857;
+  border: 1px solid rgba(5, 150, 105, 0.32);
+}
+
+[data-theme='dark'] .scan-monitor-badge.is-live {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.scan-monitor-badge.is-idle {
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.scan-monitor-dot {
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: currentColor;
+}
+
+.scan-monitor-badge.is-live .scan-monitor-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+  animation: scanMonitorPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes scanMonitorPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.42;
+    transform: scale(0.86);
+  }
+}
+
+.scan-monitor-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.scan-monitor-value.is-live {
+  color: #047857;
+}
+
+[data-theme='dark'] .scan-monitor-value.is-live {
+  color: #34d399;
+}
+
+.scan-monitor-value.is-idle {
+  font-family: var(--font-sans);
+  font-size: clamp(17px, 1.6vw, 21px);
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.scan-monitor-progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.scan-monitor-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--border-default);
+  transition: width 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.scan-monitor-progress-fill.is-live {
+  background: linear-gradient(90deg, #059669 0%, #0284c7 100%);
+}
+
+[data-theme='dark'] .scan-monitor-progress-fill.is-live {
+  background: linear-gradient(90deg, #10b981 0%, #38bdf8 100%);
+}
+
+.scan-monitor-sub {
+  font-variant-numeric: tabular-nums;
+}
+
 .novedades-metric-datetime {
   font-size: clamp(15px, 1.45vw, 19px);
   padding-top: 4px;

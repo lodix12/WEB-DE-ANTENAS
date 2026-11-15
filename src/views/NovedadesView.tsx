@@ -20,6 +20,7 @@ import {
   getOperatorRowBackground,
   useNovedadesData,
 } from '../hooks/useNovedadesData';
+import { useScanProgress } from '../hooks/useScanProgress';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
@@ -39,6 +40,7 @@ export function NovedadesView() {
     refetch,
   } = useNovedadesData();
   const { derived } = useAntenasData();
+  const scanProgress = useScanProgress(derived?.dataset.total ?? 62230);
 
   const [tipoFilter, setTipoFilter] = useState<'all' | NovedadTipo>('all');
   const [operatorFilter, setOperatorFilter] = useState<'all' | OperatorKey>(
@@ -213,9 +215,6 @@ export function NovedadesView() {
   }
 
   const lastScanFormatted = formatScanDateTimeDmyHms(dataset.updatedAt);
-  const previousScanFormatted = dataset.previousScanAt
-    ? formatScanDateTimeDmyHms(dataset.previousScanAt)
-    : null;
   const visibleRows =
     filteredRows.length > effectiveLimit
       ? filteredRows.slice(0, effectiveLimit)
@@ -241,17 +240,82 @@ export function NovedadesView() {
         className="metrics-strip novedades-metrics-strip"
         aria-label="Resumen del último escaneo de novedades"
       >
-        <div className="metric-cell">
-          <span className="metric-label">Total novedades</span>
-          <span className="metric-value">
-            {dataset.total.toLocaleString('es-ES')}
-          </span>
-          <span className="metric-sub">
-            {dataset.isBaselineScan
-              ? 'Escaneo base de referencia (sin contabilizar)'
-              : previousScanFormatted
-                ? `Respecto a ${previousScanFormatted}`
-                : 'Respecto al escaneo diario anterior'}
+        <div
+          id="novedades-scan-monitor"
+          className={`metric-cell novedades-scan-monitor${
+            scanProgress.isScanning ? ' is-scanning' : ''
+          }`}
+          aria-live="polite"
+        >
+          <div className="scan-monitor-header">
+            <span className="metric-label">Escaneo en vivo</span>
+            <span
+              className={`scan-monitor-badge${
+                scanProgress.isScanning ? ' is-live' : ' is-idle'
+              }`}
+            >
+              <span className="scan-monitor-dot" aria-hidden="true" />
+              <span>
+                {scanProgress.isScanning
+                  ? scanProgress.trigger === 'schedule'
+                    ? 'Diario · 18:00'
+                    : 'Forzado'
+                  : 'En espera'}
+              </span>
+            </span>
+          </div>
+
+          <div className="scan-monitor-value-row">
+            <span
+              id="novedades-scan-percent"
+              className={`metric-value scan-monitor-value${
+                scanProgress.isScanning ? ' is-live' : ' is-idle'
+              }`}
+            >
+              {scanProgress.isScanning
+                ? scanProgress.formattedPercent
+                : scanProgress.isLoadingInitial
+                  ? 'Conectando…'
+                  : 'En espera'}
+            </span>
+          </div>
+
+          <div
+            className="scan-monitor-progress-track"
+            role="progressbar"
+            aria-label="Porcentaje de antenas escaneadas en tiempo real"
+            aria-valuenow={
+              scanProgress.isScanning
+                ? Number(scanProgress.percent.toFixed(2))
+                : 0
+            }
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className={`scan-monitor-progress-fill${
+                scanProgress.isScanning ? ' is-live' : ''
+              }`}
+              style={{
+                width: `${
+                  scanProgress.isScanning
+                    ? Math.max(1.5, Math.min(100, scanProgress.percent))
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+
+          <span className="metric-sub scan-monitor-sub">
+            {scanProgress.isScanning
+              ? scanProgress.phase === 'censo'
+                ? `Barrido inicial del censo (${scanProgress.censusBoxesVisited}/${scanProgress.estimatedCensusBoxes} cuadrículas)`
+                : `${scanProgress.scannedAntennas.toLocaleString('es-ES')} / ${scanProgress.totalAntennas.toLocaleString('es-ES')} antenas${
+                    scanProgress.part ? ` · Parte ${scanProgress.part}` : ''
+                  }`
+              : scanProgress.status?.state === 'completed'
+                ? 'Último escaneo completado (100 %) · Diario 18:00 h'
+                : 'Se activa durante el escaneo diario (18:00) o forzado'}
           </span>
         </div>
 

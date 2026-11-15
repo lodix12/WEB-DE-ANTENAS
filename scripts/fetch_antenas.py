@@ -621,6 +621,7 @@ class InfoantenasCrawler:
         checkpoint_path: Path | None = None,
         checkpoint_every: int = 20,
         timeout_seconds: float = 30.0,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fetch_fn: Callable[[BBox, int], list[dict[str, Any]]] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.monotonic,
@@ -631,6 +632,7 @@ class InfoantenasCrawler:
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = max(1, int(checkpoint_every))
         self.timeout_seconds = float(timeout_seconds)
+        self._progress_callback = progress_callback
         self._custom_fetch_fn = fetch_fn
         self._sleep = sleep_fn
         self._clock = clock_fn
@@ -802,6 +804,17 @@ class InfoantenasCrawler:
                     count,
                     added,
                     len(self.records_by_id),
+                )
+
+            if self._progress_callback is not None and (
+                self.requests_count == 1 or self.requests_count % 3 == 0
+            ):
+                self._progress_callback(
+                    {
+                        "phase": "censo",
+                        "censusBoxesVisited": self.grid_boxes_visited,
+                        "discoveredAntennas": len(self.records_by_id),
+                    }
                 )
 
             if self._unsaved_requests >= self.checkpoint_every:
@@ -2004,6 +2017,7 @@ class BandEnricher:
         prior_index: dict[str, Any] | None = None,
         record_novedades: bool = True,
         novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fetch_fn: Callable[[str], str | bytes] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.monotonic,
@@ -2027,6 +2041,7 @@ class BandEnricher:
         self.prior_index = prior_index
         self.record_novedades = bool(record_novedades)
         self._novedades_checkpoint_fn = novedades_checkpoint_fn
+        self._progress_callback = progress_callback
         self._custom_fetch_fn = fetch_fn
         self._sleep = sleep_fn
         self._clock = clock_fn
@@ -2306,11 +2321,22 @@ class BandEnricher:
             for g in gids:
                 pending_by_gid.setdefault(g, []).append(idx)
 
+        total_antenas = len(antenas)
+        already_scanned_in_cycle = total_antenas - len(pending_indices) - zero_gid_populated
+
         if not pending_indices:
             crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
             crawl_stats["bandRequestsCount"] = 0
             if zero_gid_populated > 0:
                 self._save_dataset_checkpoint(dataset)
+            if self._progress_callback is not None:
+                self._progress_callback(
+                    {
+                        "phase": "frecuencias",
+                        "scannedAntennas": total_antenas,
+                        "totalAntennas": total_antenas,
+                    }
+                )
             return dataset
 
         units = self._build_prioritized_units(antenas, pending_indices)
@@ -2320,6 +2346,15 @@ class BandEnricher:
         consecutive_failures = 0
         newly_populated = zero_gid_populated
         run_start_ts = self._clock()
+
+        if self._progress_callback is not None:
+            self._progress_callback(
+                {
+                    "phase": "frecuencias",
+                    "scannedAntennas": already_scanned_in_cycle + newly_populated,
+                    "totalAntennas": total_antenas,
+                }
+            )
 
         logging.info(
             "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, delay=%.2fs)...",
@@ -2444,6 +2479,17 @@ class BandEnricher:
                     rec["bandsScannedAt"] = fetched_iso
                     newly_populated += 1
 
+                if self._progress_callback is not None and (
+                    self.requests_count == 1 or self.requests_count % 5 == 0
+                ):
+                    self._progress_callback(
+                        {
+                            "phase": "frecuencias",
+                            "scannedAntennas": already_scanned_in_cycle + newly_populated,
+                            "totalAntennas": total_antenas,
+                        }
+                    )
+
                 if self.requests_count % 25 == 0:
                     logging.info(
                         "[bandas req #%d] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
@@ -2461,6 +2507,15 @@ class BandEnricher:
         crawl_stats["bandRequestsCount"] = self.requests_count
         if self.requests_count > 0 or zero_gid_populated > 0:
             self._save_dataset_checkpoint(dataset)
+
+        if self._progress_callback is not None:
+            self._progress_callback(
+                {
+                    "phase": "frecuencias",
+                    "scannedAntennas": already_scanned_in_cycle + newly_populated,
+                    "totalAntennas": total_antenas,
+                }
+            )
 
         logging.info(
             "Enriquecimiento finalizado: %d peticiones HTTP, +%d antenas enriquecidas (%d/%d totales con bandas).",
@@ -2485,6 +2540,7 @@ def enrich_dataset_bands(
     prior_index: dict[str, Any] | None = None,
     record_novedades: bool = True,
     novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     fetch_fn: Callable[[str], str | bytes] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_fn: Callable[[], float] = time.monotonic,
@@ -2503,6 +2559,7 @@ def enrich_dataset_bands(
         prior_index=prior_index,
         record_novedades=record_novedades,
         novedades_checkpoint_fn=novedades_checkpoint_fn,
+        progress_callback=progress_callback,
         fetch_fn=fetch_fn,
         sleep_fn=sleep_fn,
         clock_fn=clock_fn,
@@ -2715,7 +2772,95 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Identificador único del lote de escaneo para NovedadesDataset.",
     )
+    parser.add_argument(
+        "--status-output",
+        default=None,
+        help="Ruta opcional donde escribir en tiempo real el JSON de estado del escaneo (scan-status.json).",
+    )
+    parser.add_argument(
+        "--scan-trigger",
+        default="",
+        help="Origen del escaneo ('schedule' para diario 18:00 o 'workflow_dispatch' para forzado).",
+    )
+    parser.add_argument(
+        "--scan-part",
+        default="",
+        help="Etiqueta opcional del tramo en ejecución (ej. '1/4', '2/4', '3/4', '4/4').",
+    )
     return parser.parse_args(argv)
+
+
+def build_scan_status_payload(
+    *,
+    state: str,
+    scan_id: str,
+    trigger: str,
+    record_novedades: bool,
+    part: str,
+    phase: str,
+    started_at: str,
+    total_antennas: int,
+    scanned_antennas: int = 0,
+    census_boxes_visited: int = 0,
+    discovered_antennas: int = 0,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    """
+    Construye el documento JSON compacto `scan-status.json` consumido en tiempo real
+    por el monitor de progreso de la sección `Novedades`.
+    """
+    eff_total = max(0, int(total_antennas))
+    eff_scanned = max(0, min(int(scanned_antennas), eff_total)) if eff_total > 0 else max(0, int(scanned_antennas))
+    eff_boxes = max(0, int(census_boxes_visited))
+    est_boxes = max(239, eff_boxes + 5)
+
+    if state == "completed":
+        pct = 100.0
+        if eff_total > 0:
+            eff_scanned = eff_total
+    elif phase == "censo":
+        if eff_boxes <= 0:
+            pct = 0.0
+        else:
+            pct = round(max(0.01, min(0.39, (eff_boxes / float(est_boxes)) * 0.39)), 2)
+    else:
+        if eff_total <= 0:
+            pct = 0.0
+        elif eff_scanned >= eff_total:
+            pct = 100.0
+        else:
+            raw_pct = (eff_scanned / float(eff_total)) * 100.0
+            if part in ("", "1/4") and raw_pct < 0.40:
+                pct = 0.40
+            else:
+                pct = round(min(99.99, raw_pct), 2)
+
+    return {
+        "schemaVersion": 1,
+        "state": state,
+        "scanId": str(scan_id or ""),
+        "trigger": str(trigger or "workflow_dispatch"),
+        "recordNovedades": bool(record_novedades),
+        "part": str(part or ""),
+        "phase": str(phase or "frecuencias"),
+        "startedAt": _normalize_iso_utc(started_at) if started_at else _utc_now_iso(),
+        "updatedAt": _normalize_iso_utc(updated_at) if updated_at else _utc_now_iso(),
+        "censusBoxesVisited": eff_boxes,
+        "estimatedCensusBoxes": est_boxes,
+        "discoveredAntennas": max(0, int(discovered_antennas)),
+        "scannedAntennas": eff_scanned,
+        "totalAntennas": eff_total,
+        "percent": pct,
+    }
+
+
+def write_scan_status_file(payload: dict[str, Any], status_path: Path) -> None:
+    """Escribe de forma atómica el estado en vivo del escaneo (`scan-status.json`)."""
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = status_path.with_name(status_path.name + ".tmp")
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    tmp_path.write_bytes(encoded)
+    os.replace(tmp_path, status_path)
 
 
 def _prepare_novedades_writer(
@@ -2804,6 +2949,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parse_args(argv)
     output_path = Path(args.output)
+    status_path = Path(args.status_output) if args.status_output else None
+    scan_started_iso = args.rescan_since or _utc_now_iso()
+
+    def _make_progress_emitter(fallback_total: int) -> Callable[[dict[str, Any]], None] | None:
+        if status_path is None:
+            return None
+
+        def _emit(info: dict[str, Any]) -> None:
+            total_ant = int(info.get("totalAntennas") or fallback_total or 0)
+            scanned_ant = int(info.get("scannedAntennas") or 0)
+            phase_name = str(info.get("phase") or "frecuencias")
+            is_done = phase_name == "frecuencias" and total_ant > 0 and scanned_ant >= total_ant
+            payload = build_scan_status_payload(
+                state="completed" if is_done else "running",
+                scan_id=args.scan_id,
+                trigger=args.scan_trigger or "workflow_dispatch",
+                record_novedades=not args.skip_novedades,
+                part=args.scan_part,
+                phase=phase_name,
+                started_at=scan_started_iso,
+                total_antennas=total_ant,
+                scanned_antennas=scanned_ant,
+                census_boxes_visited=int(info.get("censusBoxesVisited") or 0),
+                discovered_antennas=int(info.get("discoveredAntennas") or 0),
+            )
+            write_scan_status_file(payload, status_path)
+
+        return _emit
 
     if args.enrich_bands_only:
         input_path = Path(args.input) if args.input else output_path
@@ -2823,6 +2996,7 @@ def main(argv: list[str] | None = None) -> int:
             scan_id=args.scan_id,
             previous_scan_at=prev_updated_at,
         )
+        progress_cb = _make_progress_emitter(int(dataset.get("total") or len(dataset.get("antenas") or [])))
         band_delay = max(1.0, float(args.delay))
         enricher = BandEnricher(
             delay_seconds=band_delay,
@@ -2834,6 +3008,7 @@ def main(argv: list[str] | None = None) -> int:
             new_antenna_ids=seeded_new_ant_ids,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
         if output_path.resolve() != input_path.resolve() and enricher.requests_count == 0:
@@ -2881,6 +3056,14 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(prior_dataset, dict) and isinstance(prior_dataset.get("updatedAt"), str)
         else None
     )
+    prior_total_antennas = (
+        int(prior_dataset.get("total") or len(prior_dataset.get("antenas") or []))
+        if isinstance(prior_dataset, dict)
+        else 62230
+    )
+    progress_cb = _make_progress_emitter(prior_total_antennas)
+    if progress_cb is not None:
+        progress_cb({"phase": "censo", "censusBoxesVisited": 0, "discoveredAntennas": 0})
 
     delay = max(1.0, args.delay) if args.delay >= 1.0 else max(0.0, args.delay)
 
@@ -2888,6 +3071,7 @@ def main(argv: list[str] | None = None) -> int:
         delay_seconds=delay,
         zoom=args.zoom,
         checkpoint_path=checkpoint_path,
+        progress_callback=progress_cb,
     )
     dataset = crawler.crawl(region=args.region)
 
@@ -2944,11 +3128,29 @@ def main(argv: list[str] | None = None) -> int:
             prior_index=prior_index,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
         size_bytes = write_compact_dataset(dataset, output_path)
         if nov_writer is not None:
             nov_writer(enricher.discovered_novedades)
+    elif status_path is not None:
+        write_scan_status_file(
+            build_scan_status_payload(
+                state="completed",
+                scan_id=args.scan_id,
+                trigger=args.scan_trigger or "workflow_dispatch",
+                record_novedades=not args.skip_novedades,
+                part=args.scan_part,
+                phase="censo",
+                started_at=scan_started_iso,
+                total_antennas=dataset["total"],
+                scanned_antennas=dataset["total"],
+                census_boxes_visited=dataset["crawlStats"]["gridBoxesVisited"],
+                discovered_antennas=dataset["total"],
+            ),
+            status_path,
+        )
 
     if auto_checkpoint and checkpoint_path and checkpoint_path.exists():
         try:

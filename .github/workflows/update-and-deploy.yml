@@ -35,6 +35,7 @@ jobs:
       record_novedades: ${{ steps.decide.outputs.record_novedades }}
       scan_id: ${{ steps.decide.outputs.scan_id }}
       scan_started_at: ${{ steps.decide.outputs.scan_started_at }}
+      scan_trigger: ${{ steps.decide.outputs.scan_trigger }}
     steps:
       - name: Determinar parámetros de ejecución
         id: decide
@@ -77,6 +78,7 @@ jobs:
           echo "record_novedades=$RECORD_NOVEDADES" | tee -a "$GITHUB_OUTPUT"
           echo "scan_id=$RUN_ID" | tee -a "$GITHUB_OUTPUT"
           echo "scan_started_at=$SCAN_STARTED_AT" | tee -a "$GITHUB_OUTPUT"
+          echo "scan_trigger=$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
   scan-part-1:
     name: Escaneo Nacional MINETUR (Parte 1/4 · Censo + Bandas)
@@ -105,8 +107,21 @@ jobs:
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode watch \
+            --interval 50 \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "1/4" \
+            --started-at "$SCAN_STARTED_AT" &
+          WATCH_PID=$!
+          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
+
           EXTRA_ARGS=()
           if [ "$RECORD_NOVEDADES" = "false" ]; then
             EXTRA_ARGS+=(--skip-novedades)
@@ -121,6 +136,9 @@ jobs:
             --novedades-output public/data/novedades.json \
             --novedades-mode reset \
             --scan-id "$SCAN_ID" \
+            --status-output /tmp/scan-status.json \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --scan-part "1/4" \
             "${EXTRA_ARGS[@]}"
 
       - name: Confirmar y publicar avance (Parte 1/4)
@@ -160,6 +178,27 @@ jobs:
               out.write(f"has_more={has_more}\n")
           PY
 
+      - name: Actualizar estado en vivo tras Parte 1/4
+        if: always()
+        env:
+          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
+          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
+          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
+          JOB_STATUS: ${{ job.status }}
+          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
+        run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode finalize \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "1/4" \
+            --started-at "$SCAN_STARTED_AT" \
+            --job-status "$JOB_STATUS" \
+            --has-more "${HAS_MORE:-false}"
+
   scan-part-2:
     name: Escaneo Nacional MINETUR (Parte 2/4 · Bandas RF)
     needs: [check-trigger, scan-part-1]
@@ -187,8 +226,21 @@ jobs:
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode watch \
+            --interval 50 \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "2/4" \
+            --started-at "$SCAN_STARTED_AT" &
+          WATCH_PID=$!
+          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
+
           EXTRA_ARGS=()
           if [ "$RECORD_NOVEDADES" = "false" ]; then
             EXTRA_ARGS+=(--skip-novedades)
@@ -203,6 +255,9 @@ jobs:
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
             --scan-id "$SCAN_ID" \
+            --status-output /tmp/scan-status.json \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --scan-part "2/4" \
             "${EXTRA_ARGS[@]}"
 
       - name: Confirmar y publicar avance (Parte 2/4)
@@ -242,6 +297,27 @@ jobs:
               out.write(f"has_more={has_more}\n")
           PY
 
+      - name: Actualizar estado en vivo tras Parte 2/4
+        if: always()
+        env:
+          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
+          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
+          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
+          JOB_STATUS: ${{ job.status }}
+          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
+        run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode finalize \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "2/4" \
+            --started-at "$SCAN_STARTED_AT" \
+            --job-status "$JOB_STATUS" \
+            --has-more "${HAS_MORE:-false}"
+
   scan-part-3:
     name: Escaneo Nacional MINETUR (Parte 3/4 · Bandas RF)
     needs: [check-trigger, scan-part-2]
@@ -269,8 +345,21 @@ jobs:
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode watch \
+            --interval 50 \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "3/4" \
+            --started-at "$SCAN_STARTED_AT" &
+          WATCH_PID=$!
+          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
+
           EXTRA_ARGS=()
           if [ "$RECORD_NOVEDADES" = "false" ]; then
             EXTRA_ARGS+=(--skip-novedades)
@@ -285,6 +374,9 @@ jobs:
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
             --scan-id "$SCAN_ID" \
+            --status-output /tmp/scan-status.json \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --scan-part "3/4" \
             "${EXTRA_ARGS[@]}"
 
       - name: Confirmar y publicar avance (Parte 3/4)
@@ -324,6 +416,27 @@ jobs:
               out.write(f"has_more={has_more}\n")
           PY
 
+      - name: Actualizar estado en vivo tras Parte 3/4
+        if: always()
+        env:
+          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
+          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
+          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
+          JOB_STATUS: ${{ job.status }}
+          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
+        run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode finalize \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "3/4" \
+            --started-at "$SCAN_STARTED_AT" \
+            --job-status "$JOB_STATUS" \
+            --has-more "${HAS_MORE:-false}"
+
   scan-part-4:
     name: Escaneo Nacional MINETUR (Parte 4/4 · Bandas RF)
     needs: [check-trigger, scan-part-3]
@@ -351,8 +464,21 @@ jobs:
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode watch \
+            --interval 50 \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "4/4" \
+            --started-at "$SCAN_STARTED_AT" &
+          WATCH_PID=$!
+          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
+
           EXTRA_ARGS=()
           if [ "$RECORD_NOVEDADES" = "false" ]; then
             EXTRA_ARGS+=(--skip-novedades)
@@ -367,6 +493,9 @@ jobs:
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
             --scan-id "$SCAN_ID" \
+            --status-output /tmp/scan-status.json \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --scan-part "4/4" \
             "${EXTRA_ARGS[@]}"
 
       - name: Confirmar y publicar avance (Parte 4/4)
@@ -405,6 +534,27 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"has_more={has_more}\n")
           PY
+
+      - name: Actualizar estado en vivo tras Parte 4/4
+        if: always()
+        env:
+          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
+          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
+          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
+          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
+          JOB_STATUS: ${{ job.status }}
+          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
+        run: |
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-status.json \
+            --mode finalize \
+            --scan-id "$SCAN_ID" \
+            --scan-trigger "$SCAN_TRIGGER" \
+            --record-novedades "$RECORD_NOVEDADES" \
+            --part "4/4" \
+            --started-at "$SCAN_STARTED_AT" \
+            --job-status "$JOB_STATUS" \
+            --has-more "${HAS_MORE:-false}"
 
   build-and-deploy:
     name: Compilar Aplicación y Publicar en GitHub Pages

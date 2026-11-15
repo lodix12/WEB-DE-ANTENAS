@@ -14,6 +14,7 @@ import {
   OPERATOR_ORDER,
   type AntenasDataset,
   type NovedadesDataset,
+  type ScanStatusPayload,
 } from '../types/antena';
 import {
   buildCsvExportContent,
@@ -39,6 +40,11 @@ import {
   importNovedadesJsonDataset,
   parseCustomNovedadesJson,
 } from './useNovedadesData';
+import {
+  computeInterpolatedScanMetrics,
+  formatScanPercentEs,
+  parseScanStatusPayload,
+} from './useScanProgress';
 
 function createSampleCustomDataset(): AntenasDataset {
   return {
@@ -1093,12 +1099,16 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
   });
 
   it('renderiza 1 única tabla #novedades-table con las 6 columnas, filtros (incluida Operadora) y fondo 50% transparente por operadora', async () => {
-    async function renderNovedadesWithDataset(dataset: NovedadesDataset) {
+    async function renderNovedadesWithDataset(
+      dataset: NovedadesDataset,
+      scanStatus: ScanStatusPayload | null = null,
+    ) {
       const queryClient = new QueryClient({
         defaultOptions: { queries: { retry: false } },
       });
       queryClient.setQueryData(['novedades-dataset'], dataset);
       queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+      queryClient.setQueryData(['scan-status'], scanStatus);
 
       const testRoot = createRootRoute({ component: Outlet });
       const testMap = createRoute({
@@ -1150,6 +1160,17 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
       'Ubicación',
       'Fecha',
     ]);
+    // "Total novedades" ha sido sustituido por #novedades-scan-monitor,
+    // mientras que "Antenas nuevas" y "Frecuencias nuevas" se conservan intactas:
+    expect(baselineHtml).not.toContain('Total novedades');
+    expect(baselineHtml).toContain('id="novedades-scan-monitor"');
+    expect(baselineHtml).toContain('Escaneo en vivo');
+    expect(baselineHtml).toContain(
+      '<span class="metric-label">Antenas nuevas</span>',
+    );
+    expect(baselineHtml).toContain(
+      '<span class="metric-label">Frecuencias nuevas</span>',
+    );
     expect(baselineHtml).toContain('id="novedades-operator-filter"');
     expect(baselineHtml).toContain('id="novedades-op-chip-digi"');
     expect(baselineHtml).toContain('id="novedades-band-filter"');
@@ -1173,9 +1194,102 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(populatedHtml).toContain('ALCALÁ DE HENARES');
     expect(populatedHtml).toContain('15/11/2026 18:04:27');
     expect(populatedHtml).toMatch(/href="\/\?gid=.*2800001.*id=TELEFONICA/);
+
+    // Escaneo forzado activo (workflow_dispatch) mostrando porcentaje en vivo
+    const nowIso = new Date().toISOString();
+    const forcedScanHtml = await renderNovedadesWithDataset(
+      createSampleNovedadesDataset(),
+      {
+        schemaVersion: 1,
+        state: 'running',
+        scanId: 'forced-run-1',
+        trigger: 'workflow_dispatch',
+        recordNovedades: false,
+        part: '2/4',
+        phase: 'frecuencias',
+        startedAt: nowIso,
+        updatedAt: nowIso,
+        censusBoxesVisited: 239,
+        estimatedCensusBoxes: 239,
+        discoveredAntennas: 62230,
+        scannedAntennas: 21631,
+        totalAntennas: 62230,
+        percent: 34.76,
+      },
+    );
+    expect(forcedScanHtml).not.toContain('Total novedades');
+    expect(forcedScanHtml).toContain('Forzado');
+    expect(forcedScanHtml).toMatch(/34,76\s*%/);
+    expect(forcedScanHtml).toContain('Parte 2/4');
+    expect(forcedScanHtml).toContain(
+      '<span class="metric-label">Antenas nuevas</span>',
+    );
+    expect(forcedScanHtml).toContain(
+      '<span class="metric-label">Frecuencias nuevas</span>',
+    );
+
+    // Escaneo diario 18:00 activo (schedule) mostrando porcentaje en vivo
+    const dailyScanHtml = await renderNovedadesWithDataset(
+      createSampleNovedadesDataset(),
+      {
+        schemaVersion: 1,
+        state: 'running',
+        scanId: 'daily-run-2',
+        trigger: 'schedule',
+        recordNovedades: true,
+        part: '3/4',
+        phase: 'frecuencias',
+        startedAt: nowIso,
+        updatedAt: nowIso,
+        censusBoxesVisited: 239,
+        estimatedCensusBoxes: 239,
+        discoveredAntennas: 62230,
+        scannedAntennas: 42391,
+        totalAntennas: 62230,
+        percent: 68.12,
+      },
+    );
+    expect(dailyScanHtml).toContain('Diario · 18:00');
+    expect(dailyScanHtml).toMatch(/68,12\s*%/);
+    expect(dailyScanHtml).toContain('Parte 3/4');
+  });
+
+  it('parsea scan-status.json (directo y Base64 Contents API) e interpola avance en tiempo real', () => {
+    const rawPayload: ScanStatusPayload = {
+      schemaVersion: 1,
+      state: 'running',
+      scanId: 'run-999',
+      trigger: 'schedule',
+      recordNovedades: true,
+      part: '1/4',
+      phase: 'frecuencias',
+      startedAt: '2026-11-15T17:00:00Z',
+      updatedAt: '2026-11-15T17:10:00Z',
+      censusBoxesVisited: 239,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 62230,
+      scannedAntennas: 500,
+      totalAntennas: 62230,
+      percent: 0.8,
+    };
+
+    expect(parseScanStatusPayload(rawPayload)).toEqual(rawPayload);
+
+    const b64 = btoa(JSON.stringify(rawPayload));
+    expect(
+      parseScanStatusPayload({
+        content: `${b64.slice(0, 20)}\n${b64.slice(20)}`,
+        encoding: 'base64',
+      }),
+    ).toEqual(rawPayload);
+
+    expect(formatScanPercentEs(34.76)).toMatch(/^34,76\s%$/);
+
+    // 20 segundos después del último latido -> interpola ~18 antenas más de forma monótona
+    const t0 = Date.parse('2026-11-15T17:10:00Z');
+    const m20 = computeInterpolatedScanMetrics(rawPayload, t0 + 20_000, 62230);
+    expect(m20.isScanning).toBe(true);
+    expect(m20.scannedAntennas).toBe(518);
+    expect(m20.percent).toBeGreaterThanOrEqual(0.83);
   });
 });
-
-
-
-

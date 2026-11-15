@@ -1960,7 +1960,173 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 r"^\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}$",
             )
 
+    def test_build_scan_status_payload_and_cli_status_output(self) -> None:
+        # 1) Fase de censo (0% -> 0.39%)
+        censo_zero = fa.build_scan_status_payload(
+            state="running",
+            scan_id="run-100",
+            trigger="schedule",
+            record_novedades=True,
+            part="1/4",
+            phase="censo",
+            started_at="2026-04-06T16:00:00Z",
+            total_antennas=62230,
+            scanned_antennas=0,
+            census_boxes_visited=0,
+            discovered_antennas=0,
+            updated_at="2026-04-06T16:00:02Z",
+        )
+        self.assertEqual(censo_zero["percent"], 0.0)
+        self.assertEqual(censo_zero["trigger"], "schedule")
+        self.assertTrue(censo_zero["recordNovedades"])
+
+        censo_mid = fa.build_scan_status_payload(
+            state="running",
+            scan_id="run-100",
+            trigger="schedule",
+            record_novedades=True,
+            part="1/4",
+            phase="censo",
+            started_at="2026-04-06T16:00:00Z",
+            total_antennas=62230,
+            scanned_antennas=0,
+            census_boxes_visited=120,
+            discovered_antennas=31000,
+            updated_at="2026-04-06T16:02:00Z",
+        )
+        self.assertGreater(censo_mid["percent"], 0.15)
+        self.assertLessEqual(censo_mid["percent"], 0.39)
+
+        # 2) Fase de frecuencias (monótona desde >= 0.40% en parte 1/4 hasta 100%)
+        freq_start = fa.build_scan_status_payload(
+            state="running",
+            scan_id="run-100",
+            trigger="workflow_dispatch",
+            record_novedades=False,
+            part="1/4",
+            phase="frecuencias",
+            started_at="2026-04-06T16:00:00Z",
+            total_antennas=62230,
+            scanned_antennas=10,
+            updated_at="2026-04-06T16:04:15Z",
+        )
+        self.assertEqual(freq_start["percent"], 0.40)
+        self.assertFalse(freq_start["recordNovedades"])
+
+        freq_half = fa.build_scan_status_payload(
+            state="running",
+            scan_id="run-100",
+            trigger="workflow_dispatch",
+            record_novedades=False,
+            part="2/4",
+            phase="frecuencias",
+            started_at="2026-04-06T16:00:00Z",
+            total_antennas=62230,
+            scanned_antennas=31115,
+            updated_at="2026-04-06T21:30:00Z",
+        )
+        self.assertEqual(freq_half["percent"], 50.0)
+
+        freq_done = fa.build_scan_status_payload(
+            state="completed",
+            scan_id="run-100",
+            trigger="schedule",
+            record_novedades=True,
+            part="4/4",
+            phase="frecuencias",
+            started_at="2026-04-06T16:00:00Z",
+            total_antennas=62230,
+            scanned_antennas=62230,
+            updated_at="2026-04-07T08:00:00Z",
+        )
+        self.assertEqual(freq_done["percent"], 100.0)
+        self.assertEqual(freq_done["scannedAntennas"], 62230)
+
+        # 3) Emisión real desde CLI con --status-output
+        class _FakeResp:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self) -> "_FakeResp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        def _fake_urlopen(req: object, timeout: float = 30.0) -> _FakeResp:
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "infoantenasGeoJSON" in url:
+                fc = {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "Point",
+                                "coordinates": [-3.642914, 40.434322],
+                            },
+                            "properties": {
+                                "Gis_ID": "2800006",
+                                "Operador": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                                "Direccion": "CL EMILIO FERRARI, 11. MADRID, MADRID",
+                            },
+                        }
+                    ],
+                }
+                return _FakeResp(json.dumps(fc).encode("utf-8"))
+            html = """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table>
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+                </table>
+            """
+            return _FakeResp(html.encode("iso-8859-1"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            status_path = tmp / "scan-status.json"
+            with (
+                mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--delay",
+                        "1.0",
+                        "--fetch-bands",
+                        "--scan-id",
+                        "live-test-1",
+                        "--scan-trigger",
+                        "workflow_dispatch",
+                        "--scan-part",
+                        "1/4",
+                        "--skip-novedades",
+                        "--status-output",
+                        str(status_path),
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertTrue(status_path.exists())
+            status_doc = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status_doc["state"], "completed")
+            self.assertEqual(status_doc["scanId"], "live-test-1")
+            self.assertEqual(status_doc["trigger"], "workflow_dispatch")
+            self.assertFalse(status_doc["recordNovedades"])
+            self.assertEqual(status_doc["scannedAntennas"], 1)
+            self.assertEqual(status_doc["totalAntennas"], 1)
+            self.assertEqual(status_doc["percent"], 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
