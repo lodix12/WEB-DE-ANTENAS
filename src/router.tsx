@@ -7,9 +7,11 @@ import {
 import { NotFoundView, RootLayout } from './components/ui/RootLayout';
 import { EstadisticasView } from './views/EstadisticasView';
 import { MapaView } from './views/MapaView';
+import { NovedadesView } from './views/NovedadesView';
 
 export interface MapaRouteSearch {
   gid?: string;
+  id?: string;
 }
 
 const rootRoute = createRootRoute({
@@ -21,16 +23,36 @@ const mapaRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   validateSearch: (search: Record<string, unknown>): MapaRouteSearch => {
-    const raw = search.gid;
-    if (typeof raw === 'string' && raw.trim().length > 0) {
-      return { gid: raw.trim() };
+    const rawGid = search.gid;
+    let gid: string | undefined;
+    if (typeof rawGid === 'string' && rawGid.trim().length > 0) {
+      gid = rawGid.trim();
+    } else if (typeof rawGid === 'number' && Number.isFinite(rawGid)) {
+      gid = String(rawGid);
     }
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
-      return { gid: String(raw) };
+
+    const rawId = search.id;
+    let id: string | undefined;
+    if (typeof rawId === 'string' && rawId.trim().length > 0) {
+      id = rawId.trim();
     }
-    return { gid: undefined };
+
+    const parsed: MapaRouteSearch = {};
+    if (gid !== undefined) {
+      parsed.gid = gid;
+    }
+    if (id !== undefined) {
+      parsed.id = id;
+    }
+    return parsed;
   },
   component: MapaView,
+});
+
+const novedadesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/novedades',
+  component: NovedadesView,
 });
 
 const estadisticasRoute = createRoute({
@@ -41,6 +63,7 @@ const estadisticasRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   mapaRoute,
+  novedadesRoute,
   estadisticasRoute,
 ]);
 

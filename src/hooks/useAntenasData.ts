@@ -5,6 +5,7 @@ import {
   OPERATOR_ORDER,
   type AntenasDataset,
   type AntennaRecord,
+  type ConcesionBanda,
   type OperatorKey,
   type OperatorSummary,
   type ProvinceSummary,
@@ -183,6 +184,28 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
     ) {
       throw new Error(
         `Campo frecuencias inválido en antenas[${i}]: se esperaba un array de strings.`,
+      );
+    }
+    if (
+      item.concesiones !== undefined &&
+      (!Array.isArray(item.concesiones) ||
+        !item.concesiones.every(
+          (c): c is ConcesionBanda =>
+            isPlainRecord(c) &&
+            typeof c.ref === 'string' &&
+            typeof c.freq === 'string',
+        ))
+    ) {
+      throw new Error(
+        `Campo concesiones inválido en antenas[${i}]: se esperaba un array de { ref: string, freq: string }.`,
+      );
+    }
+    if (
+      item.bandsScannedAt !== undefined &&
+      typeof item.bandsScannedAt !== 'string'
+    ) {
+      throw new Error(
+        `Campo bandsScannedAt inválido en antenas[${i}]: se esperaba un string ISO 8601.`,
       );
     }
   }
@@ -396,6 +419,11 @@ export function fuseVodafoneAntennasInDataset(
     const seenBandas = new Set<string>();
     let anyHasFrecuencias = false;
     const seenFrecuencias = new Set<string>();
+    let anyHasConcesiones = false;
+    const seenConcesionKeys = new Set<string>();
+    const mergedConcesiones: ConcesionBanda[] = [];
+    let latestScannedAt: string | undefined;
+    let latestScannedMs = Number.NEGATIVE_INFINITY;
 
     for (let m = 0; m < sortedMembers.length; m++) {
       const member = sortedMembers[m];
@@ -431,6 +459,38 @@ export function fuseVodafoneAntennasInDataset(
           }
         }
       }
+      if (Array.isArray(member.concesiones)) {
+        anyHasConcesiones = true;
+        for (let c = 0; c < member.concesiones.length; c++) {
+          const item = member.concesiones[c];
+          const ref = item.ref.trim();
+          const freq = item.freq.trim();
+          if (!ref && !freq) continue;
+          const key = `${ref}|${freq}`;
+          if (!seenConcesionKeys.has(key)) {
+            seenConcesionKeys.add(key);
+            mergedConcesiones.push({ ref, freq });
+          }
+        }
+      }
+      if (typeof member.bandsScannedAt === 'string') {
+        const candidate = member.bandsScannedAt.trim();
+        if (candidate) {
+          const ms = Date.parse(candidate);
+          if (Number.isFinite(ms)) {
+            if (ms > latestScannedMs) {
+              latestScannedMs = ms;
+              latestScannedAt = candidate;
+            }
+          } else if (
+            latestScannedAt === undefined ||
+            (latestScannedMs === Number.NEGATIVE_INFINITY &&
+              candidate > latestScannedAt)
+          ) {
+            latestScannedAt = candidate;
+          }
+        }
+      }
     }
 
     if (mergedGids.length > 0) {
@@ -443,6 +503,16 @@ export function fuseVodafoneAntennasInDataset(
       merged.frecuencias = Array.from(seenFrecuencias).sort(
         compareFrequencyRanges,
       );
+    }
+    if (anyHasConcesiones) {
+      merged.concesiones = mergedConcesiones.sort(
+        (a, b) =>
+          compareFrequencyRanges(a.freq, b.freq) ||
+          a.ref.localeCompare(b.ref, 'es', { numeric: true }),
+      );
+    }
+    if (latestScannedAt !== undefined) {
+      merged.bandsScannedAt = latestScannedAt;
     }
     mergedByRoot.set(root, merged);
   }
@@ -647,8 +717,12 @@ export function buildDerivedAntenasStructures(
         : '';
     const bandsText = (ant.bandas ?? []).join(' ');
     const freqsText = (ant.frecuencias ?? []).join(' ');
+    const concesionesText =
+      ant.concesiones && ant.concesiones.length > 0
+        ? ant.concesiones.map((c) => `${c.ref} ${c.freq}`).join(' ')
+        : '';
     searchIndex[i] = normalizeSearchText(
-      `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText}`,
+      `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText} ${concesionesText}`,
     );
   }
 

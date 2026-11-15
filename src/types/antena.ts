@@ -6,6 +6,13 @@ export type OperatorKey =
   | 'digi'
   | 'otros';
 
+export interface ConcesionBanda {
+  /** Código/Referencia oficial de la concesión en MINETUR (ej. "M M -2205199") */
+  ref: string;
+  /** Rango exacto declarado en MINETUR sin abreviación (ej. "3460.00 - 3600.00") */
+  freq: string;
+}
+
 export interface AntennaRecord {
   /** Identificador único oficial, ej. "TELEFONICA MOVILES ESPAÑA, S.A.U. - 3600449" */
   id: string;
@@ -31,6 +38,10 @@ export interface AntennaRecord {
   bandas?: string[];
   /** Rangos exactos de frecuencias asignadas en MHz en detalleEstacion.do (ej. ["935.10 - 949.90", "3460.00 - 3600.00"]) */
   frecuencias?: string[];
+  /** Concesiones individuales (Referencia + Frecuencia exacta) en detalleEstacion.do */
+  concesiones?: ConcesionBanda[];
+  /** Marca temporal ISO 8601 UTC del último escaneo de bandas de esta estación */
+  bandsScannedAt?: string;
 }
 
 export interface OperatorSummary {
@@ -77,6 +88,54 @@ export interface AntenasDataset {
   provinces: ProvinceSummary[];
   /** Listado completo sin duplicados de antenas móviles de España */
   antenas: AntennaRecord[];
+}
+
+export type NovedadTipo = 'antena' | 'frecuencia';
+
+export interface NovedadRecord {
+  /** Identificador único determinista de la novedad */
+  id: string;
+  /** Tipo de novedad: antena nueva o frecuencia nueva */
+  tipo: NovedadTipo;
+  /** Clave normalizada del operador asociado */
+  op: OperatorKey;
+  /** Razón social original declarada en MINETUR */
+  opRaw: string;
+  /** Código asociado a la antena (Gis_ID, ej. "2800006"), enlazado al mapa */
+  codigo: string;
+  /** Identificador completo de la antena en antenas.json para enfoque exacto en el mapa */
+  antennaId: string;
+  /** Código oficial asociado a la frecuencia/banda nueva (Referencia MINETUR, ej. "M M -2205199"), o "" si es antena nueva */
+  codigoBanda: string;
+  /** Frecuencia exacta declarada en la página del ministerio con rango completo sin abreviación (ej. "3460.00 - 3600.00 MHz"), o "" si es antena nueva */
+  frecuencia: string;
+  /** Ciudad / municipio de la antena o frecuencia nueva */
+  ubicacion: string;
+  /** Provincia normalizada */
+  prov?: string;
+  /** Marca temporal ISO 8601 UTC exacta del escaneo */
+  scannedAt: string;
+  /** Fecha formateada en Dia/Mes/Año y hora exacta (Europe/Madrid): "DD/MM/YYYY HH:MM:SS" */
+  fecha: string;
+}
+
+export interface NovedadesDataset {
+  /** Marca temporal ISO 8601 UTC de generación del archivo de novedades */
+  updatedAt: string;
+  /** Identificador del lote/ejecución de escaneo */
+  scanId: string;
+  /** Marca temporal ISO 8601 UTC del escaneo anterior frente al que se ha comparado */
+  previousScanAt: string | null;
+  /** Si el escaneo fue forzado como línea base sin contabilizar novedades */
+  isBaselineScan?: boolean;
+  /** Total de filas de novedades */
+  total: number;
+  /** Total de antenas nuevas respecto al escaneo anterior */
+  antenasNuevas: number;
+  /** Total de frecuencias nuevas respecto al escaneo anterior */
+  frecuenciasNuevas: number;
+  /** Listado de antenas y frecuencias nuevas respecto al escaneo anterior */
+  novedades: NovedadRecord[];
 }
 
 export interface OperatorMeta {

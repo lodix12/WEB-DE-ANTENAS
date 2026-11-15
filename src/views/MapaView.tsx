@@ -56,18 +56,51 @@ export function MapaView() {
       'RadioMapa España · Mapa Interactivo de Antenas de Redes Móviles';
   }, []);
 
-  // Soporte de enlace directo #/?gid=3600449
+  // Soporte de enlace directo #/?gid=3600449&id=...
   useEffect(() => {
+    const targetId = searchParams.id;
     const targetGid = searchParams.gid;
-    if (!targetGid || !derived) return;
-    if (appliedGidRef.current === targetGid) return;
+    if (!targetId && !targetGid) {
+      appliedGidRef.current = null;
+      return;
+    }
+    if (!derived) return;
 
-    const found = derived.byGid.get(targetGid);
+    const targetKey = `${targetId ?? ''}|${targetGid ?? ''}`;
+    if (appliedGidRef.current === targetKey) return;
+
+    const found =
+      (targetId ? derived.byId.get(targetId) : undefined) ??
+      (targetGid ? derived.byGid.get(targetGid) : undefined);
     if (found) {
-      appliedGidRef.current = targetGid;
+      appliedGidRef.current = targetKey;
+      if (selectedProvince && selectedProvince !== found.prov) {
+        setSelectedProvince('');
+      } else if (selectedMunicipality && selectedMunicipality !== found.mun) {
+        setSelectedMunicipality('');
+      }
+      if (selectedBand && !found.bandas?.includes(selectedBand)) {
+        setSelectedBand('');
+      }
+      if (searchQuery.trim().length > 0) {
+        setSearchQuery('');
+      }
       focusAntennaOnMap(found);
     }
-  }, [searchParams.gid, derived, focusAntennaOnMap]);
+  }, [
+    searchParams.id,
+    searchParams.gid,
+    derived,
+    selectedProvince,
+    selectedMunicipality,
+    selectedBand,
+    searchQuery,
+    setSelectedProvince,
+    setSelectedMunicipality,
+    setSelectedBand,
+    setSearchQuery,
+    focusAntennaOnMap,
+  ]);
 
   const filteredAntenas = useFilteredAntenas({
     derived,

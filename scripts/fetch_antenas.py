@@ -36,6 +36,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/infoantenasGeoJSON.do"
 DETAIL_ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do"
@@ -47,9 +48,56 @@ DEFAULT_BAND_CHECKPOINT_EVERY = 50
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
 MAX_SUBDIVISION_DEPTH = 9
-FREQ_RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$")
+FREQ_RANGE_RE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)(?:\s*(?:MHz|GHz))?$",
+    re.IGNORECASE,
+)
+SPAIN_TZ = ZoneInfo("Europe/Madrid")
 
 BBox = tuple[float, float, float, float]  # (min_lon, min_lat, max_lon, max_lat)
+
+
+def _parse_utc_datetime(value: datetime | str) -> datetime:
+    """Convierte un `datetime` o cadena ISO-8601 UTC a `datetime` en `timezone.utc`."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise ValueError("Marca temporal ISO-8601 vacía")
+    if cleaned.endswith(("Z", "z")):
+        cleaned = cleaned[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(cleaned)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _utc_now_iso(now_utc_fn: Callable[[], datetime] | None = None) -> str:
+    """Genera una marca temporal ISO-8601 UTC en formato `'YYYY-MM-DDTHH:MM:SSZ'`."""
+    dt = now_utc_fn() if now_utc_fn is not None else datetime.now(timezone.utc)
+    return _parse_utc_datetime(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_iso_utc(value: str) -> str:
+    """Normaliza una marca temporal ISO-8601 a `'YYYY-MM-DDTHH:MM:SSZ'` para comparaciones."""
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        return _parse_utc_datetime(cleaned).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return cleaned
+
+
+def format_spain_datetime(value: datetime | str) -> str:
+    """
+    Formatea un `datetime` UTC o cadena ISO-8601 UTC en hora peninsular oficial de España
+    (`Europe/Madrid`, CET/CEST) con formato exacto `'DD/MM/YYYY HH:MM:SS'`.
+    """
+    utc_dt = _parse_utc_datetime(value)
+    return utc_dt.astimezone(SPAIN_TZ).strftime("%d/%m/%Y %H:%M:%S")
 
 OPERATOR_ORDER: tuple[str, ...] = (
     "movistar",
@@ -959,6 +1007,10 @@ def fuse_vodafone_duplicates(
                 single["bandas"] = list(single["bandas"])
             if isinstance(single.get("frecuencias"), list):
                 single["frecuencias"] = list(single["frecuencias"])
+            if isinstance(single.get("concesiones"), list):
+                single["concesiones"] = [
+                    dict(c) for c in single["concesiones"] if isinstance(c, dict)
+                ]
             merged_by_root[root] = single
             continue
 
@@ -1025,6 +1077,26 @@ def fuse_vodafone_duplicates(
             merged_rec.pop("bandas", None)
             merged_rec.pop("frecuencias", None)
 
+        if all(isinstance(m.get("concesiones"), list) for m in sorted_members):
+            combined_concs: list[dict[str, Any]] = []
+            for member in sorted_members:
+                for conc_item in member.get("concesiones") or []:
+                    if isinstance(conc_item, dict):
+                        combined_concs.append(conc_item)
+            merged_rec["concesiones"] = summarize_concessions(combined_concs)
+            if all(
+                isinstance(m.get("bandsScannedAt"), str) and m.get("bandsScannedAt")
+                for m in sorted_members
+            ):
+                merged_rec["bandsScannedAt"] = min(
+                    _normalize_iso_utc(str(m["bandsScannedAt"])) for m in sorted_members
+                )
+            else:
+                merged_rec.pop("bandsScannedAt", None)
+        else:
+            merged_rec.pop("concesiones", None)
+            merged_rec.pop("bandsScannedAt", None)
+
         merged_by_root[root] = merged_rec
 
     emitted_roots: set[int] = set()
@@ -1037,6 +1109,10 @@ def fuse_vodafone_duplicates(
                 copied["bandas"] = list(copied["bandas"])
             if isinstance(copied.get("frecuencias"), list):
                 copied["frecuencias"] = list(copied["frecuencias"])
+            if isinstance(copied.get("concesiones"), list):
+                copied["concesiones"] = [
+                    dict(c) for c in copied["concesiones"] if isinstance(c, dict)
+                ]
             output_records.append(copied)
             continue
         root = find(voda_k)
@@ -1067,6 +1143,33 @@ def _format_mhz(val: float) -> str:
     if abs(val - rounded_2) < 1e-6:
         return f"{rounded_2:.2f}"
     return f"{round(val, 4):.4f}".rstrip("0").rstrip(".")
+
+
+def format_exact_ministry_frequency(banda_raw: str) -> str:
+    """
+    Limpia espacios y devuelve exactamente el rango de frecuencias declarado en MINETUR
+    sin abreviación ni redondeo (añadiendo `' MHz'` si la unidad no figura ya explícita).
+    """
+    cleaned = " ".join((banda_raw or "").split()).strip()
+    if not cleaned:
+        return ""
+    upper = cleaned.upper()
+    if "MHZ" not in upper and "GHZ" not in upper:
+        return f"{cleaned} MHz"
+    return cleaned
+
+
+def _norm_freq_str(value: str) -> str:
+    cleaned = " ".join(str(value or "").strip().split())
+    if not cleaned:
+        return ""
+    m = FREQ_RANGE_RE.match(cleaned)
+    if m:
+        lo, hi = float(m.group(1)), float(m.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        return f"{_format_mhz(lo)} - {_format_mhz(hi)}"
+    return cleaned.upper()
 
 
 def _band_sort_key(label: str) -> tuple[float, str]:
@@ -1131,6 +1234,46 @@ def summarize_frequency_ranges(
     band_set = {classify_frequency_band(lo, hi) for _, (lo, hi) in sorted_items}
     bandas = sorted(band_set, key=_band_sort_key)
     return bandas, frecuencias
+
+
+def summarize_concessions(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """
+    Deduplica y ordena concesiones individuales `{"ref": referencia_raw, "freq": banda_raw}`
+    numéricamente por `(lo, hi, ref, freq)`.
+    """
+    deduped: dict[tuple[str, str], tuple[float, float]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ref = " ".join(
+            str(item.get("referencia", item.get("ref", "")) or "").split()
+        ).strip()
+        raw_freq = item.get(
+            "frecuenciaDeclarada", item.get("freq", item.get("frecuencia", ""))
+        )
+        freq = " ".join(str(raw_freq or "").split()).strip()
+        if not freq:
+            continue
+        if "minMhz" in item and "maxMhz" in item:
+            lo = float(item["minMhz"])
+            hi = float(item["maxMhz"])
+        else:
+            m = FREQ_RANGE_RE.match(freq)
+            if m:
+                lo, hi = float(m.group(1)), float(m.group(2))
+            else:
+                lo, hi = float("inf"), float("inf")
+        if lo > hi:
+            lo, hi = hi, lo
+        key = (ref, freq)
+        if key not in deduped:
+            deduped[key] = (lo, hi)
+
+    sorted_keys = sorted(
+        deduped.items(),
+        key=lambda kv: (kv[1][0], kv[1][1], kv[0][0], kv[0][1]),
+    )
+    return [{"ref": ref, "freq": freq} for (ref, freq), _ in sorted_keys]
 
 
 class _ParsedHTMLTable:
@@ -1287,6 +1430,7 @@ def parse_detalle_estacion_html(html: str) -> list[dict[str, Any]]:
                     "operador": operador_raw,
                     "op": classify_operator(operador_raw),
                     "referencia": referencia_raw,
+                    "frecuenciaDeclarada": banda_raw,
                     "frecuencia": frecuencia_clean,
                     "minMhz": lo,
                     "maxMhz": hi,
@@ -1347,13 +1491,124 @@ def _load_records_from_preserve_source(
     return []
 
 
+def build_prior_antenna_index(
+    prior_source: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
+) -> dict[str, Any]:
+    """
+    Construye el índice de antenas existentes del escaneo previo (`by_id` y `by_op_gid`
+    incluyendo todos los `mergedGids`) para detección exacta de antenas y frecuencias nuevas.
+    """
+    if (
+        isinstance(prior_source, dict)
+        and "by_id" in prior_source
+        and "by_op_gid" in prior_source
+    ):
+        return prior_source
+
+    prior_records = _load_records_from_preserve_source(prior_source)
+    by_id: dict[str, dict[str, Any]] = {}
+    by_op_gid: dict[tuple[str, str], dict[str, Any]] = {}
+    all_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    for old_rec in prior_records:
+        old_id = str(old_rec.get("id") or "").strip()
+        old_op = str(old_rec.get("op") or "").strip()
+        if old_id:
+            by_id[old_id] = old_rec
+        if old_op:
+            for g in get_record_gids(old_rec):
+                by_op_gid.setdefault((old_op, g), old_rec)
+                all_by_op_gid.setdefault((old_op, g), []).append(old_rec)
+
+    return {
+        "by_id": by_id,
+        "by_op_gid": by_op_gid,
+        "all_by_op_gid": all_by_op_gid,
+    }
+
+
+def match_prior_antenna(
+    rec: dict[str, Any],
+    prior_index: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """
+    Devuelve el registro previo correspondiente a `rec` casando por `rec["id"]` o por el
+    primer `g` en `get_record_gids(rec)` con `(rec["op"], g)` en `by_op_gid`.
+    """
+    if not prior_index:
+        return None
+    by_id: dict[str, dict[str, Any]] = prior_index.get("by_id") or {}
+    by_op_gid: dict[tuple[str, str], dict[str, Any]] = prior_index.get("by_op_gid") or {}
+
+    rec_id = str(rec.get("id") or "").strip()
+    if rec_id and rec_id in by_id:
+        return by_id[rec_id]
+
+    rec_op = str(rec.get("op") or "").strip()
+    if rec_op:
+        for g in get_record_gids(rec):
+            cand = by_op_gid.get((rec_op, g))
+            if cand is not None:
+                return cand
+    return None
+
+
+def diff_new_antennas(
+    records: list[dict[str, Any]],
+    prior_source: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
+    scanned_at_iso: str | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """
+    Compara `records` contra `prior_source` y devuelve `(novedades_antenas, new_antenna_ids)`.
+    Si `prior_source` es `None`, no emite novedades de antenas.
+    """
+    if prior_source is None:
+        return [], set()
+
+    prior_index = build_prior_antenna_index(prior_source)
+    scan_iso = _normalize_iso_utc(scanned_at_iso) if scanned_at_iso else _utc_now_iso()
+    fecha_es = format_spain_datetime(scan_iso)
+
+    novedades: list[dict[str, Any]] = []
+    new_ids: set[str] = set()
+
+    for rec in records:
+        if match_prior_antenna(rec, prior_index) is not None:
+            continue
+        rec_id = str(rec.get("id") or "").strip()
+        if not rec_id or rec_id in new_ids:
+            continue
+        new_ids.add(rec_id)
+        mun = str(rec.get("mun") or "").strip()
+        prov = str(rec.get("prov") or "").strip()
+        novedades.append(
+            {
+                "id": f"ant:{rec_id}",
+                "tipo": "antena",
+                "op": rec["op"],
+                "opRaw": rec["opRaw"],
+                "codigo": rec["gid"],
+                "antennaId": rec_id,
+                "codigoBanda": "",
+                "frecuencia": "",
+                "ubicacion": mun or prov,
+                "prov": prov,
+                "scannedAt": scan_iso,
+                "fecha": fecha_es,
+            }
+        )
+
+    return novedades, new_ids
+
+
 def preserve_bands_in_records(
     records: list[dict[str, Any]],
     preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
 ) -> int:
     """
-    Reutiliza `bandas` y `frecuencias` ya extraídas en un dataset previo casando por
-    `id` o `(op, gid)` (verificando que ningún `mergedGid` nuevo haya quedado sin cubrir).
+    Reutiliza `bandas`, `frecuencias`, `concesiones` y `bandsScannedAt` ya extraídas
+    en un dataset previo casando por `id` o `(op, gid)` (verificando que ningún
+    `mergedGid` nuevo haya quedado sin cubrir).
     Devuelve el número de antenas enriquecidas desde `preserve_from`.
     """
     prior_records = _load_records_from_preserve_source(preserve_from)
@@ -1382,10 +1637,12 @@ def preserve_bands_in_records(
             continue
         rec_id = str(rec.get("id") or "").strip()
         rec_op = str(rec.get("op") or "").strip()
-        rec_gid = str(rec.get("gid") or "").strip()
         cand = by_id.get(rec_id)
-        if cand is None and rec_op and rec_gid:
-            cand = by_op_gid.get((rec_op, rec_gid))
+        if cand is None and rec_op:
+            for g in get_record_gids(rec):
+                cand = by_op_gid.get((rec_op, g))
+                if cand is not None:
+                    break
         if cand is None:
             continue
 
@@ -1396,16 +1653,26 @@ def preserve_bands_in_records(
 
         rec["bandas"] = list(cand["bandas"])
         rec["frecuencias"] = list(cand.get("frecuencias") or [])
+        if isinstance(cand.get("concesiones"), list):
+            rec["concesiones"] = [
+                dict(c) for c in cand["concesiones"] if isinstance(c, dict)
+            ]
+        if isinstance(cand.get("bandsScannedAt"), str) and cand.get("bandsScannedAt"):
+            rec["bandsScannedAt"] = cand["bandsScannedAt"]
         restored += 1
 
     return restored
 
 
-def _extract_record_ranges_for_gid(
+def _extract_record_concessions_for_gid(
     rec: dict[str, Any],
     entries: list[dict[str, Any]],
     records_at_gid: list[dict[str, Any]],
-) -> list[tuple[float, float]]:
+) -> list[dict[str, Any]]:
+    """
+    Devuelve las filas de concesión (`referencia`, `frecuenciaDeclarada`, `frecuencia`,
+    `minMhz`, `maxMhz`, `operador`) correspondientes al operador de `rec` en `gid`.
+    """
     if not entries:
         return []
     rec_op = str(rec.get("op") or "").strip() or classify_operator(str(rec.get("opRaw") or ""))
@@ -1428,12 +1695,298 @@ def _extract_record_ranges_for_gid(
     if not matched and len(records_at_gid) <= 1:
         matched = list(entries)
 
+    return [dict(e) for e in matched]
+
+
+def _extract_record_ranges_for_gid(
+    rec: dict[str, Any],
+    entries: list[dict[str, Any]],
+    records_at_gid: list[dict[str, Any]],
+) -> list[tuple[float, float]]:
+    matched = _extract_record_concessions_for_gid(rec, entries, records_at_gid)
     return [(float(e["minMhz"]), float(e["maxMhz"])) for e in matched]
+
+
+def _diff_record_new_frequencies(
+    rec: dict[str, Any],
+    matched_entries: list[dict[str, Any]],
+    fetched_iso: str,
+    new_antenna_ids: set[str] | None = None,
+    prior_index: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Detecta concesiones/frecuencias nuevas en una antena existente que YA contaba con
+    un escaneo previo de frecuencias (`concesiones` o `frecuencias` no nulos).
+    Nunca emite falsos positivos para antenas nuevas ni para antenas antiguas aún sin escanear.
+    """
+    rec_id = str(rec.get("id") or "").strip()
+    if not rec_id or not matched_entries:
+        return []
+    if new_antenna_ids and rec_id in new_antenna_ids:
+        return []
+
+    prior_conc: list[dict[str, Any]] | None = (
+        rec["concesiones"] if isinstance(rec.get("concesiones"), list) else None
+    )
+    prior_freqs: list[str] | None = (
+        rec["frecuencias"] if isinstance(rec.get("frecuencias"), list) else None
+    )
+    extra_prior_freq_norms: set[str] = set()
+
+    if prior_conc is None and prior_freqs is None and prior_index is not None:
+        matched_priors: list[dict[str, Any]] = []
+        seen_prior_objs: set[int] = set()
+        primary_old = match_prior_antenna(rec, prior_index)
+        if primary_old is not None:
+            seen_prior_objs.add(id(primary_old))
+            matched_priors.append(primary_old)
+        all_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] = (
+            prior_index.get("all_by_op_gid") or {}
+        )
+        rec_op = str(rec.get("op") or "").strip()
+        if rec_op:
+            for g in get_record_gids(rec):
+                for cand in all_by_op_gid.get((rec_op, g), ()):
+                    if id(cand) not in seen_prior_objs:
+                        seen_prior_objs.add(id(cand))
+                        matched_priors.append(cand)
+
+        conc_acc: list[dict[str, Any]] = []
+        freq_acc: list[str] = []
+        any_conc = False
+        any_freq = False
+        for old_rec in matched_priors:
+            if isinstance(old_rec.get("concesiones"), list):
+                any_conc = True
+                conc_acc.extend(
+                    c for c in old_rec["concesiones"] if isinstance(c, dict)
+                )
+            elif isinstance(old_rec.get("frecuencias"), list):
+                any_freq = True
+                for f_str in old_rec["frecuencias"]:
+                    if isinstance(f_str, str):
+                        freq_acc.append(f_str)
+                        extra_prior_freq_norms.add(_norm_freq_str(f_str))
+
+        if any_conc:
+            prior_conc = conc_acc
+        elif any_freq:
+            prior_freqs = freq_acc
+
+    # CRÍTICO: solo emitir novedades si la antena existente ya tenía un escaneo previo
+    if not isinstance(prior_conc, list) and not isinstance(prior_freqs, list):
+        return []
+
+    scan_iso = _normalize_iso_utc(fetched_iso)
+    fecha_es = format_spain_datetime(scan_iso)
+    mun = str(rec.get("mun") or "").strip()
+    prov = str(rec.get("prov") or "").strip()
+    ubicacion = mun or prov
+
+    emitted: list[dict[str, Any]] = []
+    seen_new_keys: set[tuple[str, str, str]] = set()
+
+    if isinstance(prior_conc, list):
+        prior_pairs: set[tuple[str, str]] = set()
+        prior_freq_only: set[str] = set(extra_prior_freq_norms)
+        for c in prior_conc:
+            if not isinstance(c, dict):
+                continue
+            c_ref = " ".join(str(c.get("ref") or "").split()).strip()
+            c_freq_norm = _norm_freq_str(str(c.get("freq") or ""))
+            if c_freq_norm:
+                prior_pairs.add((c_ref, c_freq_norm))
+                prior_freq_only.add(c_freq_norm)
+
+        for entry in matched_entries:
+            ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+            banda_raw = " ".join(
+                str(
+                    entry.get("frecuenciaDeclarada")
+                    or entry.get("frecuencia")
+                    or ""
+                ).split()
+            ).strip()
+            freq_clean = _norm_freq_str(
+                str(entry.get("frecuencia") or banda_raw)
+            )
+            if not banda_raw or not freq_clean:
+                continue
+            if (ref, freq_clean) in prior_pairs:
+                continue
+            if ref == "" and freq_clean in prior_freq_only:
+                continue
+            if freq_clean in extra_prior_freq_norms:
+                continue
+
+            dedup_key = (rec_id, ref, banda_raw)
+            if dedup_key in seen_new_keys:
+                continue
+            seen_new_keys.add(dedup_key)
+
+            op_raw_entry = " ".join(str(entry.get("operador") or "").split()).strip()
+            emitted.append(
+                {
+                    "id": f"freq:{rec_id}:{ref}:{banda_raw}",
+                    "tipo": "frecuencia",
+                    "op": rec["op"],
+                    "opRaw": op_raw_entry or rec["opRaw"],
+                    "codigo": rec["gid"],
+                    "antennaId": rec_id,
+                    "codigoBanda": ref,
+                    "frecuencia": format_exact_ministry_frequency(banda_raw),
+                    "ubicacion": ubicacion,
+                    "prov": prov,
+                    "scannedAt": scan_iso,
+                    "fecha": fecha_es,
+                }
+            )
+    elif isinstance(prior_freqs, list):
+        prior_freq_set = {
+            _norm_freq_str(f) for f in prior_freqs if isinstance(f, str) and f.strip()
+        }
+        for entry in matched_entries:
+            ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+            banda_raw = " ".join(
+                str(
+                    entry.get("frecuenciaDeclarada")
+                    or entry.get("frecuencia")
+                    or ""
+                ).split()
+            ).strip()
+            freq_clean = _norm_freq_str(
+                str(entry.get("frecuencia") or banda_raw)
+            )
+            if not banda_raw or not freq_clean:
+                continue
+            if freq_clean in prior_freq_set:
+                continue
+
+            dedup_key = (rec_id, ref, banda_raw)
+            if dedup_key in seen_new_keys:
+                continue
+            seen_new_keys.add(dedup_key)
+
+            op_raw_entry = " ".join(str(entry.get("operador") or "").split()).strip()
+            emitted.append(
+                {
+                    "id": f"freq:{rec_id}:{ref}:{banda_raw}",
+                    "tipo": "frecuencia",
+                    "op": rec["op"],
+                    "opRaw": op_raw_entry or rec["opRaw"],
+                    "codigo": rec["gid"],
+                    "antennaId": rec_id,
+                    "codigoBanda": ref,
+                    "frecuencia": format_exact_ministry_frequency(banda_raw),
+                    "ubicacion": ubicacion,
+                    "prov": prov,
+                    "scannedAt": scan_iso,
+                    "fecha": fecha_es,
+                }
+            )
+
+    return emitted
+
+
+def _novedad_sort_key(item: dict[str, Any]) -> tuple[float, str, str, str]:
+    scanned_at = str(item.get("scannedAt") or "")
+    try:
+        ts = _parse_utc_datetime(scanned_at).timestamp()
+    except ValueError:
+        ts = 0.0
+    return (
+        -ts,
+        str(item.get("tipo") or ""),
+        str(item.get("codigo") or ""),
+        str(item.get("id") or ""),
+    )
+
+
+def load_novedades_dataset(path: Path | str | None) -> dict[str, Any] | None:
+    """Carga un `NovedadesDataset` existente desde disco si es válido."""
+    if path is None:
+        return None
+    target = Path(path)
+    if not target.exists():
+        return None
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and isinstance(loaded.get("novedades"), list):
+            return loaded
+    except Exception as exc:
+        logging.warning("No se pudo leer novedades previas en %s: %s", target, exc)
+    return None
+
+
+def build_novedades_dataset(
+    novedades: list[dict[str, Any]],
+    *,
+    scan_id: str = "",
+    previous_scan_at: str | None = None,
+    updated_at: str | None = None,
+    is_baseline_scan: bool = False,
+) -> dict[str, Any]:
+    """
+    Construye un `NovedadesDataset` compatible al 100% con `src/types/antena.ts`,
+    deduplicado por `id` y ordenado con las novedades más recientes primero.
+    """
+    ts = _normalize_iso_utc(updated_at) if updated_at else _utc_now_iso()
+    effective_scan_id = str(scan_id or "").strip() or f"scan-{ts}"
+
+    if is_baseline_scan:
+        return {
+            "updatedAt": ts,
+            "scanId": effective_scan_id,
+            "previousScanAt": previous_scan_at,
+            "isBaselineScan": True,
+            "total": 0,
+            "antenasNuevas": 0,
+            "frecuenciasNuevas": 0,
+            "novedades": [],
+        }
+
+    deduped_by_id: dict[str, dict[str, Any]] = {}
+    for item in novedades:
+        if not isinstance(item, dict):
+            continue
+        nov_id = str(item.get("id") or "").strip()
+        if not nov_id:
+            continue
+        deduped_by_id[nov_id] = dict(item)
+
+    sorted_items = sorted(deduped_by_id.values(), key=_novedad_sort_key)
+    antenas_nuevas = sum(1 for n in sorted_items if n.get("tipo") == "antena")
+    frecuencias_nuevas = sum(1 for n in sorted_items if n.get("tipo") == "frecuencia")
+
+    return {
+        "updatedAt": ts,
+        "scanId": effective_scan_id,
+        "previousScanAt": previous_scan_at,
+        "isBaselineScan": False,
+        "total": len(sorted_items),
+        "antenasNuevas": antenas_nuevas,
+        "frecuenciasNuevas": frecuencias_nuevas,
+        "novedades": sorted_items,
+    }
+
+
+def write_novedades_dataset(
+    novedades_dataset: dict[str, Any], output_path: Path
+) -> int:
+    """Escribe `novedades_dataset` en JSON UTF-8 de forma atómica."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    encoded = json.dumps(
+        novedades_dataset, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    tmp_path.write_bytes(encoded)
+    os.replace(tmp_path, output_path)
+    return len(encoded)
 
 
 class BandEnricher:
     """
-    Motor incremental de extracción de bandas y frecuencias desde `detalleEstacion.do`
+    Motor incremental y de re-escaneo diario de bandas y concesiones desde `detalleEstacion.do`
     respetando estrictamente `>= 1.0 s` entre peticiones HTTP consecutivas.
     """
 
@@ -1446,9 +1999,15 @@ class BandEnricher:
         checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
         timeout_seconds: float = 30.0,
         fail_fast: bool = False,
+        rescan_since: str | None = None,
+        new_antenna_ids: set[str] | None = None,
+        prior_index: dict[str, Any] | None = None,
+        record_novedades: bool = True,
+        novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
         fetch_fn: Callable[[str], str | bytes] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.monotonic,
+        now_utc_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self.delay_seconds = max(1.0, float(delay_seconds))
         self.max_band_seconds = (
@@ -1461,14 +2020,54 @@ class BandEnricher:
         self.checkpoint_every = max(1, int(checkpoint_every))
         self.timeout_seconds = float(timeout_seconds)
         self.fail_fast = bool(fail_fast)
+        self.rescan_since = (
+            _normalize_iso_utc(rescan_since) if rescan_since else None
+        )
+        self.new_antenna_ids: set[str] = set(new_antenna_ids or ())
+        self.prior_index = prior_index
+        self.record_novedades = bool(record_novedades)
+        self._novedades_checkpoint_fn = novedades_checkpoint_fn
         self._custom_fetch_fn = fetch_fn
         self._sleep = sleep_fn
         self._clock = clock_fn
+        self._now_utc = now_utc_fn
 
         self.requests_count: int = 0
         self.failed_gids_count: int = 0
+        self.discovered_novedades: list[dict[str, Any]] = []
+        self._seen_novedad_ids: set[str] = set()
         self._last_request_ts: float | None = None
         self._unsaved_requests: int = 0
+
+    def _needs_band_scan(self, rec: dict[str, Any]) -> bool:
+        if not isinstance(rec.get("bandas"), list) or not isinstance(
+            rec.get("concesiones"), list
+        ):
+            return True
+        if self.rescan_since:
+            scanned_at = _normalize_iso_utc(str(rec.get("bandsScannedAt") or ""))
+            if not scanned_at or scanned_at < self.rescan_since:
+                return True
+        return False
+
+    def _record_priority_tier_and_age(
+        self, antenas: list[dict[str, Any]], idxs: list[int]
+    ) -> tuple[int, str]:
+        if any(
+            str(antenas[i].get("id") or "") in self.new_antenna_ids for i in idxs
+        ):
+            return (0, "")
+        if any(
+            not isinstance(antenas[i].get("bandas"), list)
+            or not isinstance(antenas[i].get("concesiones"), list)
+            for i in idxs
+        ):
+            return (1, "")
+        oldest_scanned = min(
+            _normalize_iso_utc(str(antenas[i].get("bandsScannedAt") or ""))
+            for i in idxs
+        )
+        return (2, oldest_scanned)
 
     def _wait_rate_limit(self) -> None:
         if self._last_request_ts is not None and self.delay_seconds > 0:
@@ -1559,9 +2158,11 @@ class BandEnricher:
         crawl_stats = dataset.setdefault("crawlStats", {})
         crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
         crawl_stats["bandRequestsCount"] = self.requests_count
-        dataset["updatedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        dataset["updatedAt"] = _utc_now_iso(self._now_utc)
         if self.checkpoint_path is not None:
             write_compact_dataset(dataset, self.checkpoint_path)
+        if self._novedades_checkpoint_fn is not None:
+            self._novedades_checkpoint_fn(self.discovered_novedades)
         self._unsaved_requests = 0
 
     def _build_prioritized_units(
@@ -1583,43 +2184,88 @@ class BandEnricher:
             elif len(gids) > 1:
                 multi_gid_units.append((idx, gids))
 
-        raw_candidates: list[tuple[float, str, int, str, tuple[str, ...], list[str]]] = []
+        raw_candidates: list[
+            tuple[int, str, float, str, int, str, tuple[str, ...], list[str]]
+        ] = []
         for gid, idxs in single_gid_groups.items():
+            tier, oldest_scanned = self._record_priority_tier_and_age(antenas, idxs)
             gain = float(len(idxs))
             first_rec = antenas[idxs[0]]
             prov = str(first_rec.get("prov") or "")
             op_sig = tuple(sorted({str(antenas[i].get("op") or "") for i in idxs}))
-            raw_candidates.append((gain, prov, prov_totals.get(prov, 0), gid, op_sig, [gid]))
+            raw_candidates.append(
+                (
+                    tier,
+                    oldest_scanned,
+                    gain,
+                    prov,
+                    prov_totals.get(prov, 0),
+                    gid,
+                    op_sig,
+                    [gid],
+                )
+            )
 
         for idx, gids in multi_gid_units:
+            tier, oldest_scanned = self._record_priority_tier_and_age(antenas, [idx])
             rec = antenas[idx]
             prov = str(rec.get("prov") or "")
             op_sig = (str(rec.get("op") or ""),)
             ratio = 1.0 / float(len(gids))
-            raw_candidates.append((ratio, prov, prov_totals.get(prov, 0), gids[0], op_sig, gids))
+            raw_candidates.append(
+                (
+                    tier,
+                    oldest_scanned,
+                    ratio,
+                    prov,
+                    prov_totals.get(prov, 0),
+                    gids[0],
+                    op_sig,
+                    gids,
+                )
+            )
 
-        # Orden base: mayor ratio antenas/petición primero, priorizando MADRID y provincias con más censo
+        # Orden base:
+        #   1) Antenas nuevas (tier=0) primero,
+        #   2) Antenas nunca escaneadas con concesiones (tier=1),
+        #   3) Antenas existentes pendientes de re-escaneo (tier=2), más antiguas primero,
+        # desempatando por mayor ratio antenas/petición, MADRID y volumen provincial.
         raw_candidates.sort(
             key=lambda item: (
-                -item[0],
-                0 if item[1] == "MADRID" else 1,
-                -item[2],
+                item[0],
                 item[1],
+                -item[2],
+                0 if item[3] == "MADRID" else 1,
+                -item[4],
                 item[3],
+                item[5],
             )
         )
 
-        # Entre emplazamientos compartidos (ratio >= 2.0), adelantar el primer ejemplar de
-        # cada combinación de operadores para poblar todos los operadores desde las primeras peticiones.
-        seen_shared_op_sigs: set[tuple[str, ...]] = set()
-        final_keyed: list[tuple[float, int, int, int, str, str, list[str]]] = []
-        for ratio, prov, prov_cnt, gid, op_sig, gids in raw_candidates:
+        # Entre emplazamientos compartidos (ratio >= 2.0) dentro del mismo tier/edad,
+        # adelantar el primer ejemplar de cada combinación de operadores.
+        seen_shared_op_sigs: set[tuple[int, tuple[str, ...]]] = set()
+        final_keyed: list[
+            tuple[int, str, float, int, int, int, str, str, list[str]]
+        ] = []
+        for (
+            tier,
+            oldest_scanned,
+            ratio,
+            prov,
+            prov_cnt,
+            gid,
+            op_sig,
+            gids,
+        ) in raw_candidates:
             first_of_sig = 1
-            if ratio >= 2.0 and op_sig not in seen_shared_op_sigs:
-                seen_shared_op_sigs.add(op_sig)
+            if ratio >= 2.0 and (tier, op_sig) not in seen_shared_op_sigs:
+                seen_shared_op_sigs.add((tier, op_sig))
                 first_of_sig = 0
             final_keyed.append(
                 (
+                    tier,
+                    oldest_scanned,
                     -ratio,
                     first_of_sig,
                     0 if prov == "MADRID" else 1,
@@ -1630,8 +2276,8 @@ class BandEnricher:
                 )
             )
 
-        final_keyed.sort(key=lambda item: item[:6])
-        return [item[6] for item in final_keyed]
+        final_keyed.sort(key=lambda item: item[:8])
+        return [item[8] for item in final_keyed]
 
     def enrich_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
         antenas: list[dict[str, Any]] = dataset.get("antenas") or []
@@ -1646,12 +2292,14 @@ class BandEnricher:
         pending_indices: list[int] = []
         pending_by_gid: dict[str, list[int]] = {}
         for idx, rec in enumerate(antenas):
-            if isinstance(rec.get("bandas"), list):
+            if not self._needs_band_scan(rec):
                 continue
             gids = get_record_gids(rec)
             if not gids:
                 rec["bandas"] = []
                 rec["frecuencias"] = []
+                rec["concesiones"] = []
+                rec["bandsScannedAt"] = _utc_now_iso(self._now_utc)
                 zero_gid_populated += 1
                 continue
             pending_indices.append(idx)
@@ -1667,6 +2315,7 @@ class BandEnricher:
 
         units = self._build_prioritized_units(antenas, pending_indices)
         gid_entries_cache: dict[str, list[dict[str, Any]]] = {}
+        completed_pending_indices: set[int] = set()
         failed_gids: set[str] = set()
         consecutive_failures = 0
         newly_populated = zero_gid_populated
@@ -1729,6 +2378,7 @@ class BandEnricher:
 
                 try:
                     entries = self._http_fetch_detalle(gid)
+                    fetched_iso = _utc_now_iso(self._now_utc)
                     gid_entries_cache[gid] = entries
                     consecutive_failures = 0
                 except RuntimeError as exc:
@@ -1748,26 +2398,50 @@ class BandEnricher:
                     continue
 
                 for rec_idx in pending_by_gid.get(gid, ()):
-                    rec = antenas[rec_idx]
-                    if isinstance(rec.get("bandas"), list):
+                    if rec_idx in completed_pending_indices:
                         continue
+                    rec = antenas[rec_idx]
                     rec_gids = get_record_gids(rec)
                     if not all(g in gid_entries_cache for g in rec_gids):
                         continue
-                    combined_ranges: list[tuple[float, float]] = []
+
+                    completed_pending_indices.add(rec_idx)
+                    matched_entries: list[dict[str, Any]] = []
                     for rg in rec_gids:
-                        combined_ranges.extend(
-                            _extract_record_ranges_for_gid(
+                        matched_entries.extend(
+                            _extract_record_concessions_for_gid(
                                 rec,
                                 gid_entries_cache[rg],
                                 all_records_per_gid.get(rg, [rec]),
                             )
                         )
+
+                    if self.record_novedades:
+                        new_freq_novs = _diff_record_new_frequencies(
+                            rec,
+                            matched_entries,
+                            fetched_iso=fetched_iso,
+                            new_antenna_ids=self.new_antenna_ids,
+                            prior_index=self.prior_index,
+                        )
+                        for nov in new_freq_novs:
+                            nov_id = nov["id"]
+                            if nov_id not in self._seen_novedad_ids:
+                                self._seen_novedad_ids.add(nov_id)
+                                self.discovered_novedades.append(nov)
+
+                    combined_ranges = [
+                        (float(e["minMhz"]), float(e["maxMhz"]))
+                        for e in matched_entries
+                    ]
                     bandas_sorted, freqs_sorted = summarize_frequency_ranges(
                         combined_ranges
                     )
+                    concs_sorted = summarize_concessions(matched_entries)
                     rec["bandas"] = bandas_sorted
                     rec["frecuencias"] = freqs_sorted
+                    rec["concesiones"] = concs_sorted
+                    rec["bandsScannedAt"] = fetched_iso
                     newly_populated += 1
 
                 if self.requests_count % 25 == 0:
@@ -1806,11 +2480,17 @@ def enrich_dataset_bands(
     checkpoint_path: Path | None = None,
     checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
     fail_fast: bool = False,
+    rescan_since: str | None = None,
+    new_antenna_ids: set[str] | None = None,
+    prior_index: dict[str, Any] | None = None,
+    record_novedades: bool = True,
+    novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
     fetch_fn: Callable[[str], str | bytes] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_fn: Callable[[], float] = time.monotonic,
+    now_utc_fn: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
-    """Función auxiliar para enriquecer `bandas` y `frecuencias` sobre un `AntenasDataset`."""
+    """Función auxiliar para enriquecer `bandas`, `frecuencias` y `concesiones` sobre un `AntenasDataset`."""
     enricher = BandEnricher(
         delay_seconds=delay_seconds,
         max_band_seconds=max_band_seconds,
@@ -1818,9 +2498,15 @@ def enrich_dataset_bands(
         checkpoint_path=checkpoint_path,
         checkpoint_every=checkpoint_every,
         fail_fast=fail_fast,
+        rescan_since=rescan_since,
+        new_antenna_ids=new_antenna_ids,
+        prior_index=prior_index,
+        record_novedades=record_novedades,
+        novedades_checkpoint_fn=novedades_checkpoint_fn,
         fetch_fn=fetch_fn,
         sleep_fn=sleep_fn,
         clock_fn=clock_fn,
+        now_utc_fn=now_utc_fn,
     )
     return enricher.enrich_dataset(dataset)
 
@@ -1835,8 +2521,8 @@ def build_dataset(
     """
     Construye el objeto `AntenasDataset` tipado según `src/types/antena.ts`,
     fusionando previamente declaraciones duplicadas de Vodafone a `< max_distance_m`
-    (por defecto `< 35 m`), preservando opcionalmente `bandas`/`frecuencias` previas
-    y ordenando las antenas determinísticamente por `(prov, mun, id)`.
+    (por defecto `< 35 m`), preservando opcionalmente `bandas`/`frecuencias`/`concesiones`
+    previas y ordenando las antenas determinísticamente por `(prov, mun, id)`.
     """
     raw_records = (
         list(records_by_id.values())
@@ -1978,18 +2664,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--fetch-bands",
         action="store_true",
-        help="Tras recolectar el censo, consulta detalleEstacion.do (a >= 1.0s/req) para antenas sin bandas.",
+        help="Tras recolectar el censo, consulta detalleEstacion.do (a >= 1.0s/req) para antenas pendientes o a re-escanear.",
     )
     parser.add_argument(
         "--enrich-bands-only",
         action="store_true",
-        help="Carga --input y consulta detalleEstacion.do únicamente para las antenas pendientes sin bandas.",
+        help="Carga --input y consulta detalleEstacion.do únicamente para las antenas pendientes o con bandsScannedAt < --rescan-since.",
     )
     parser.add_argument(
         "--max-band-seconds",
         type=float,
         default=None,
-        help="Tiempo máximo en segundos dedicado a consultar detalleEstacion.do (ej. 14400 o 18000).",
+        help="Tiempo máximo en segundos dedicado a consultar detalleEstacion.do (ej. 17400 o 18600).",
     )
     parser.add_argument(
         "--max-band-requests",
@@ -2003,7 +2689,111 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_BAND_CHECKPOINT_EVERY,
         help="Guardar checkpoint atómico en --output cada N peticiones de bandas (por defecto 50).",
     )
+    parser.add_argument(
+        "--rescan-since",
+        default=None,
+        help="Marca temporal ISO-8601 UTC: re-escanea también antenas con bandsScannedAt ausente o anterior a este instante.",
+    )
+    parser.add_argument(
+        "--novedades-output",
+        default=None,
+        help="Ruta opcional donde escribir el archivo NovedadesDataset (ej. public/data/novedades.json).",
+    )
+    parser.add_argument(
+        "--novedades-mode",
+        choices=("reset", "append"),
+        default="reset",
+        help="Modo de escritura de novedades: 'reset' inicia lote limpio; 'append' acumula novedades del mismo escaneo.",
+    )
+    parser.add_argument(
+        "--skip-novedades",
+        action="store_true",
+        help="No contabilizar este escaneo en la sección Novedades (escaneo forzado de línea base).",
+    )
+    parser.add_argument(
+        "--scan-id",
+        default="",
+        help="Identificador único del lote de escaneo para NovedadesDataset.",
+    )
     return parser.parse_args(argv)
+
+
+def _prepare_novedades_writer(
+    *,
+    novedades_output: str | Path | None,
+    novedades_mode: str,
+    skip_novedades: bool,
+    scan_id: str,
+    previous_scan_at: str | None,
+    initial_novedades: list[dict[str, Any]] | None = None,
+) -> tuple[
+    Callable[[list[dict[str, Any]]], None] | None,
+    set[str],
+]:
+    """
+    Configura la persistencia atómica de `novedades.json` para modos `'reset'` y `'append'`
+    (incluyendo `--skip-novedades`) y devuelve `(checkpoint_writer_fn, existing_new_antenna_ids)`.
+    """
+    if not novedades_output:
+        return None, set()
+
+    nov_path = Path(novedades_output)
+    effective_scan_id = str(scan_id or "").strip()
+
+    if skip_novedades:
+        if novedades_mode == "reset" or not nov_path.exists():
+            baseline_doc = build_novedades_dataset(
+                [],
+                scan_id=effective_scan_id or "baseline-scan",
+                previous_scan_at=previous_scan_at,
+                is_baseline_scan=True,
+            )
+            write_novedades_dataset(baseline_doc, nov_path)
+        return None, set()
+
+    base_items: list[dict[str, Any]] = []
+    effective_prev_scan_at = previous_scan_at
+
+    if novedades_mode == "append":
+        existing_doc = load_novedades_dataset(nov_path)
+        if existing_doc is not None:
+            same_scan = bool(
+                effective_scan_id and existing_doc.get("scanId") == effective_scan_id
+            )
+            non_baseline = not bool(existing_doc.get("isBaselineScan"))
+            if same_scan or non_baseline:
+                base_items.extend(
+                    item
+                    for item in (existing_doc.get("novedades") or [])
+                    if isinstance(item, dict)
+                )
+                if not effective_scan_id and isinstance(existing_doc.get("scanId"), str):
+                    effective_scan_id = existing_doc["scanId"]
+                if "previousScanAt" in existing_doc:
+                    effective_prev_scan_at = existing_doc.get("previousScanAt")
+
+    if initial_novedades:
+        base_items.extend(initial_novedades)
+
+    seeded_new_ant_ids = {
+        str(item["antennaId"])
+        for item in base_items
+        if isinstance(item, dict)
+        and item.get("tipo") == "antena"
+        and item.get("antennaId")
+    }
+
+    def _write_current(discovered: list[dict[str, Any]]) -> None:
+        nov_doc = build_novedades_dataset(
+            [*base_items, *discovered],
+            scan_id=effective_scan_id,
+            previous_scan_at=effective_prev_scan_at,
+            is_baseline_scan=False,
+        )
+        write_novedades_dataset(nov_doc, nov_path)
+
+    _write_current([])
+    return _write_current, seeded_new_ant_ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2021,6 +2811,18 @@ def main(argv: list[str] | None = None) -> int:
             logging.error("No existe el archivo de entrada: %s", input_path)
             return 1
         dataset = json.loads(input_path.read_text(encoding="utf-8"))
+        prev_updated_at = (
+            dataset.get("updatedAt")
+            if isinstance(dataset.get("updatedAt"), str)
+            else None
+        )
+        nov_writer, seeded_new_ant_ids = _prepare_novedades_writer(
+            novedades_output=args.novedades_output,
+            novedades_mode=args.novedades_mode,
+            skip_novedades=args.skip_novedades,
+            scan_id=args.scan_id,
+            previous_scan_at=prev_updated_at,
+        )
         band_delay = max(1.0, float(args.delay))
         enricher = BandEnricher(
             delay_seconds=band_delay,
@@ -2028,18 +2830,25 @@ def main(argv: list[str] | None = None) -> int:
             max_band_requests=args.max_band_requests,
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
+            rescan_since=args.rescan_since,
+            new_antenna_ids=seeded_new_ant_ids,
+            record_novedades=not args.skip_novedades,
+            novedades_checkpoint_fn=nov_writer,
         )
         enricher.enrich_dataset(dataset)
         if output_path.resolve() != input_path.resolve() and enricher.requests_count == 0:
             write_compact_dataset(dataset, output_path)
+        if nov_writer is not None:
+            nov_writer(enricher.discovered_novedades)
         size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0.0
         logging.info(
-            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP).",
+            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP, +%d novedades de frecuencia).",
             dataset["crawlStats"].get("bandsPopulatedCount", 0),
             dataset["total"],
             output_path,
             size_mb,
             enricher.requests_count,
+            len(enricher.discovered_novedades),
         )
         return 0
 
@@ -2067,6 +2876,12 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             logging.warning("No se pudo cargar %s para preservar bandas: %s", preserve_path, exc)
 
+    previous_scan_at = (
+        prior_dataset.get("updatedAt")
+        if isinstance(prior_dataset, dict) and isinstance(prior_dataset.get("updatedAt"), str)
+        else None
+    )
+
     delay = max(1.0, args.delay) if args.delay >= 1.0 else max(0.0, args.delay)
 
     crawler = InfoantenasCrawler(
@@ -2075,6 +2890,19 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_path=checkpoint_path,
     )
     dataset = crawler.crawl(region=args.region)
+
+    prior_index = (
+        build_prior_antenna_index(prior_dataset) if prior_dataset is not None else None
+    )
+    detected_ant_novedades, new_antenna_ids = (
+        diff_new_antennas(
+            dataset["antenas"],
+            prior_index,
+            scanned_at_iso=dataset["updatedAt"],
+        )
+        if prior_index is not None
+        else ([], set())
+    )
 
     if prior_dataset is not None:
         restored = preserve_bands_in_records(dataset["antenas"], prior_dataset)
@@ -2085,24 +2913,42 @@ def main(argv: list[str] | None = None) -> int:
         if prior_band_reqs is not None and not args.fetch_bands:
             dataset["crawlStats"]["bandRequestsCount"] = int(prior_band_reqs)
         logging.info(
-            "Preservadas bandas previas de %d antenas desde %s.",
+            "Preservadas bandas previas de %d antenas desde %s (antenas nuevas detectadas=%d).",
             restored,
             preserve_path,
+            len(new_antenna_ids),
         )
 
     size_bytes = write_compact_dataset(dataset, output_path)
 
+    nov_writer, seeded_new_ant_ids = _prepare_novedades_writer(
+        novedades_output=args.novedades_output,
+        novedades_mode=args.novedades_mode,
+        skip_novedades=args.skip_novedades,
+        scan_id=args.scan_id,
+        previous_scan_at=previous_scan_at,
+        initial_novedades=[] if args.skip_novedades else detected_ant_novedades,
+    )
+    all_new_ant_ids = new_antenna_ids | seeded_new_ant_ids
+
     if args.fetch_bands:
         band_delay = max(1.0, float(args.delay))
-        enrich_dataset_bands(
-            dataset,
+        enricher = BandEnricher(
             delay_seconds=band_delay,
             max_band_seconds=args.max_band_seconds,
             max_band_requests=args.max_band_requests,
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
+            rescan_since=args.rescan_since,
+            new_antenna_ids=all_new_ant_ids,
+            prior_index=prior_index,
+            record_novedades=not args.skip_novedades,
+            novedades_checkpoint_fn=nov_writer,
         )
+        enricher.enrich_dataset(dataset)
         size_bytes = write_compact_dataset(dataset, output_path)
+        if nov_writer is not None:
+            nov_writer(enricher.discovered_novedades)
 
     if auto_checkpoint and checkpoint_path and checkpoint_path.exists():
         try:

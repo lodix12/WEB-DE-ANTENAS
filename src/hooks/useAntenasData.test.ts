@@ -1,7 +1,20 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from '@tanstack/react-router';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OPERATOR_ORDER, type AntenasDataset } from '../types/antena';
+import {
+  OPERATOR_ORDER,
+  type AntenasDataset,
+  type NovedadesDataset,
+} from '../types/antena';
 import {
   buildCsvExportContent,
   buildCustomJsonExportPayload,
@@ -9,6 +22,7 @@ import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
+import { NovedadesView } from '../views/NovedadesView';
 import {
   buildDerivedAntenasStructures,
   filterAntenas,
@@ -17,6 +31,14 @@ import {
   parseCustomAntenasJson,
   useFilteredAntenas,
 } from './useAntenasData';
+import {
+  classifyFrequencyBandMhz,
+  filterNovedades,
+  formatScanDateTimeDmyHms,
+  getOperatorRowBackground,
+  importNovedadesJsonDataset,
+  parseCustomNovedadesJson,
+} from './useNovedadesData';
 
 function createSampleCustomDataset(): AntenasDataset {
   return {
@@ -734,6 +756,426 @@ describe('bandas y frecuencias (MHz): validación, unión Vodafone < 35 m, filtr
     ]);
   });
 });
+
+describe('concesiones, bandsScannedAt e índice exacto byId', () => {
+  it('valida concesiones y bandsScannedAt opcionales en parseCustomAntenasJson y rechaza formatos inválidos', () => {
+    const sample = createSampleCustomDataset();
+    sample.antenas[0] = {
+      ...sample.antenas[0],
+      concesiones: [
+        { ref: 'M M -2205199', freq: '3460.00 - 3600.00' },
+        { ref: 'M M -1100234', freq: '935.10 - 949.90' },
+      ],
+      bandsScannedAt: '2026-11-15T17:04:27Z',
+    };
+
+    const parsed = parseCustomAntenasJson(sample);
+    expect(parsed.antenas[0].concesiones).toEqual([
+      { ref: 'M M -2205199', freq: '3460.00 - 3600.00' },
+      { ref: 'M M -1100234', freq: '935.10 - 949.90' },
+    ]);
+    expect(parsed.antenas[0].bandsScannedAt).toBe('2026-11-15T17:04:27Z');
+
+    expect(() =>
+      parseCustomAntenasJson({
+        ...sample,
+        antenas: [
+          { ...sample.antenas[0], concesiones: [{ ref: 123, freq: '800' }] },
+        ],
+      }),
+    ).toThrow(/concesiones/i);
+
+    expect(() =>
+      parseCustomAntenasJson({
+        ...sample,
+        antenas: [{ ...sample.antenas[0], bandsScannedAt: 1700000000 }],
+      }),
+    ).toThrow(/bandsScannedAt/i);
+  });
+
+  it('une concesiones sin duplicados (ref|freq), conserva el último bandsScannedAt en Vodafone < 35 m y expone byId O(1)', () => {
+    const base = createSampleCustomDataset();
+    const sharedTowerDataset: AntenasDataset = {
+      ...base,
+      total: 6,
+      antenas: [
+        ...base.antenas,
+        // Dos operadores distintos que comparten código numérico Gis_ID en emplazamiento compartido
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2800001',
+          gid: '2800001',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.416805,
+          lon: -3.703805,
+          dir: 'GRAN VIA 28',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          concesiones: [{ ref: 'DG-9901', freq: '3400.00 - 3420.00' }],
+          bandsScannedAt: '2026-11-15T17:05:10Z',
+        },
+        // Dos Vodafone a ~15 m (< 35 m) con concesiones solapadas y distintas marcas bandsScannedAt
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 287700',
+          gid: '287700',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42,
+          lon: -3.71,
+          dir: 'PRINCESA 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          concesiones: [
+            { ref: 'VF-3500-A', freq: '3710.00 - 3800.00' },
+            { ref: 'VF-800-A', freq: '791.00 - 801.00' },
+          ],
+          bandsScannedAt: '2026-11-14T17:00:05Z',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 0287700',
+          gid: '0287700',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42012, // ~13.3 m
+          lon: -3.71,
+          dir: 'PRINCESA 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          concesiones: [
+            { ref: 'VF-800-A', freq: '791.00 - 801.00' },
+            { ref: 'VF-700-B', freq: '758.00 - 768.00' },
+          ],
+          bandsScannedAt: '2026-11-15T17:04:59Z',
+        },
+      ],
+    };
+
+    const derived = buildDerivedAntenasStructures(sharedTowerDataset);
+
+    // O(1) byId distingue con precisión operadores con idéntico Gis_ID ("2800001")
+    const movistarShared = derived.byId.get(
+      'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+    );
+    const digiShared = derived.byId.get(
+      'DIGI SPAIN TELECOM, S.L.U. - 2800001',
+    );
+    expect(movistarShared?.op).toBe('movistar');
+    expect(digiShared?.op).toBe('digi');
+    expect(movistarShared).not.toBe(digiShared);
+
+    // Unión ordenada y deduplicada de concesiones + último bandsScannedAt en Vodafone < 35 m
+    const fusedVoda = derived.byGid.get('287700');
+    expect(fusedVoda?.concesiones).toEqual([
+      { ref: 'VF-700-B', freq: '758.00 - 768.00' },
+      { ref: 'VF-800-A', freq: '791.00 - 801.00' },
+      { ref: 'VF-3500-A', freq: '3710.00 - 3800.00' },
+    ]);
+    expect(fusedVoda?.bandsScannedAt).toBe('2026-11-15T17:04:59Z');
+
+    // Búsqueda por código de concesión en el buscador del mapa
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: 'DG-9901',
+        selectedProvince: '',
+        selectedMunicipality: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.id),
+    ).toEqual(['DIGI SPAIN TELECOM, S.L.U. - 2800001']);
+  });
+});
+
+describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrado y tabla única', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function createSampleNovedadesDataset(): NovedadesDataset {
+    return {
+      updatedAt: '2026-11-15T17:04:27Z',
+      scanId: 'daily-2026-11-15',
+      previousScanAt: '2026-11-14T17:01:12Z',
+      isBaselineScan: false,
+      total: 2,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 1,
+      novedades: [
+        {
+          id: 'antena::DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T17:04:11Z',
+          fecha: '15/11/2026 18:04:11',
+        },
+        {
+          id: 'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T17:04:27Z',
+          fecha: '15/11/2026 18:04:27',
+        },
+      ],
+    };
+  }
+
+  it('formatea fechas exactas en DD/MM/YYYY HH:MM:SS (Europe/Madrid) en invierno CET, verano CEST y medianoche', () => {
+    // Respeta directamente preformattedFecha si ya cumple DD/MM/YYYY HH:MM:SS
+    expect(
+      formatScanDateTimeDmyHms(
+        '2026-11-15T17:04:27Z',
+        '15/11/2026 18:04:27',
+      ),
+    ).toBe('15/11/2026 18:04:27');
+
+    // Invierno CET (UTC+1)
+    expect(formatScanDateTimeDmyHms('2026-11-15T17:04:27Z')).toBe(
+      '15/11/2026 18:04:27',
+    );
+
+    // Verano CEST (UTC+2)
+    expect(formatScanDateTimeDmyHms('2026-07-15T16:04:05Z')).toBe(
+      '15/07/2026 18:04:05',
+    );
+
+    // Medianoche en Madrid (00:05:09, nunca 24:05:09)
+    expect(formatScanDateTimeDmyHms('2026-11-15T23:05:09Z')).toBe(
+      '16/11/2026 00:05:09',
+    );
+  });
+
+  it('valida el esquema NovedadesDataset (incluyendo escaneo baseline) y rechaza GeoJSON', async () => {
+    const baseline: NovedadesDataset = {
+      updatedAt: '2026-11-15T22:25:00Z',
+      scanId: 'baseline-init',
+      previousScanAt: null,
+      isBaselineScan: true,
+      total: 0,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 0,
+      novedades: [],
+    };
+    expect(parseCustomNovedadesJson(baseline)).toEqual(baseline);
+
+    const sample = createSampleNovedadesDataset();
+    expect(parseCustomNovedadesJson(sample)).toEqual(sample);
+
+    expect(() =>
+      parseCustomNovedadesJson({ type: 'FeatureCollection', features: [] }),
+    ).toThrow(/GeoJSON/i);
+
+    expect(() =>
+      parseCustomNovedadesJson({
+        ...sample,
+        novedades: [{ ...sample.novedades[0], tipo: 'desconocido' }],
+      }),
+    ).toThrow(/NovedadRecord/i);
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify(sample), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const loaded = await importNovedadesJsonDataset();
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toMatch(
+      /data\/novedades\.json$/,
+    );
+    expect(loaded.total).toBe(2);
+  });
+
+  it('calcula el color de fondo de cada fila con 50% de transparencia exacta según la operadora', () => {
+    expect(getOperatorRowBackground('movistar')).toBe('rgba(0, 102, 204, 0.5)');
+    expect(getOperatorRowBackground('orange')).toBe('rgba(234, 88, 12, 0.5)');
+    expect(getOperatorRowBackground('vodafone')).toBe('rgba(220, 38, 38, 0.5)');
+    expect(getOperatorRowBackground('masmovil')).toBe(
+      'rgba(13, 148, 136, 0.5)',
+    );
+    expect(getOperatorRowBackground('digi')).toBe('rgba(124, 58, 237, 0.5)');
+    expect(getOperatorRowBackground('otros')).toBe('rgba(100, 116, 139, 0.5)');
+  });
+
+  it('filtra novedades por tipo, operadora, banda, ubicación, fecha y búsqueda instantánea sin tildes', () => {
+    const { novedades } = createSampleNovedadesDataset();
+
+    expect(classifyFrequencyBandMhz('3460.00 - 3600.00 MHz')).toBe('3500 MHz');
+    expect(classifyFrequencyBandMhz('935.10 - 949.90 MHz')).toBe('900 MHz');
+    expect(classifyFrequencyBandMhz('758.00 - 768.00 MHz')).toBe('700 MHz');
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'antena',
+        operatorFilter: 'all',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['2809991']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'digi',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['2809991']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'movistar',
+        searchQuery: '2205199',
+      }).map((r) => r.codigo),
+    ).toEqual(['2800001']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        bandFilter: '3500 MHz',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['2800001']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        locationFilter: 'ALCALÁ DE HENARES',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['2809991']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        dateFilter: '15/11/2026',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['2809991', '2800001']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        searchQuery: 'alcala de henares',
+      }).map((r) => r.codigo),
+    ).toEqual(['2809991']);
+
+    expect(
+      filterNovedades({
+        novedades,
+        tipoFilter: 'frecuencia',
+        operatorFilter: 'all',
+        searchQuery: '3460.00 - 3600.00 MHz',
+      }).map((r) => r.codigo),
+    ).toEqual(['2800001']);
+  });
+
+  it('renderiza 1 única tabla #novedades-table con las 6 columnas, filtros (incluida Operadora) y fondo 50% transparente por operadora', async () => {
+    async function renderNovedadesWithDataset(dataset: NovedadesDataset) {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(['novedades-dataset'], dataset);
+      queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+
+      const testRoot = createRootRoute({ component: Outlet });
+      const testMap = createRoute({
+        getParentRoute: () => testRoot,
+        path: '/',
+        component: () => createElement('div', null, 'Mapa'),
+      });
+      const testNov = createRoute({
+        getParentRoute: () => testRoot,
+        path: '/novedades',
+        component: NovedadesView,
+      });
+      const testRouter = createRouter({
+        routeTree: testRoot.addChildren([testMap, testNov]),
+        history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+      });
+      await testRouter.load();
+
+      return renderToStaticMarkup(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(RouterProvider, { router: testRouter }),
+        ),
+      );
+    }
+
+    const baselineHtml = await renderNovedadesWithDataset({
+      updatedAt: '2026-11-15T22:25:00Z',
+      scanId: 'baseline-init',
+      previousScanAt: null,
+      isBaselineScan: true,
+      total: 0,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 0,
+      novedades: [],
+    });
+
+    expect(baselineHtml.match(/<table\b/g)).toHaveLength(1);
+    const baselineHeaders = Array.from(
+      baselineHtml.matchAll(/<th\b[^>]*>(.*?)<\/th>/g),
+      (m) => m[1],
+    );
+    expect(baselineHeaders).toEqual([
+      'Novedad',
+      'Código',
+      'Código Banda',
+      'Frecuencia',
+      'Ubicación',
+      'Fecha',
+    ]);
+    expect(baselineHtml).toContain('id="novedades-operator-filter"');
+    expect(baselineHtml).toContain('id="novedades-op-chip-digi"');
+    expect(baselineHtml).toContain('id="novedades-band-filter"');
+    expect(baselineHtml).toContain('id="novedades-location-filter"');
+    expect(baselineHtml).toContain('18:00 h');
+
+    const populatedHtml = await renderNovedadesWithDataset(
+      createSampleNovedadesDataset(),
+    );
+    expect(populatedHtml.match(/<table\b/g)).toHaveLength(1);
+    expect(populatedHtml).toContain('rgba(124, 58, 237, 0.5)');
+    expect(populatedHtml).toContain('rgba(0, 102, 204, 0.5)');
+    expect(populatedHtml).toContain('id="novedades-date-filter"');
+    expect(populatedHtml).toContain('Antena nueva');
+    expect(populatedHtml).toContain('DIGI Spain');
+    expect(populatedHtml).toContain('Frecuencia nueva');
+    expect(populatedHtml).toContain('Movistar (Telefónica)');
+    expect(populatedHtml).toContain('2809991');
+    expect(populatedHtml).toContain('M M -2205199');
+    expect(populatedHtml).toContain('3460.00 - 3600.00 MHz');
+    expect(populatedHtml).toContain('ALCALÁ DE HENARES');
+    expect(populatedHtml).toContain('15/11/2026 18:04:27');
+    expect(populatedHtml).toMatch(/href="\/\?gid=.*2800001.*id=TELEFONICA/);
+  });
+});
+
 
 
 

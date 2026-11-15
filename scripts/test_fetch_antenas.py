@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import gzip
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -1004,6 +1006,959 @@ class FetchAntenasUnitTests(unittest.TestCase):
             )
             self.assertEqual(dataset["crawlStats"]["bandsPopulatedCount"], 5)
             self.assertEqual(dataset["crawlStats"]["bandRequestsCount"], 1)
+
+    def test_format_spain_datetime_cet_and_cest(self) -> None:
+        # Invierno CET (UTC+1): 17:14:09Z -> 18:14:09
+        self.assertEqual(
+            fa.format_spain_datetime("2026-11-16T17:14:09Z"),
+            "16/11/2026 18:14:09",
+        )
+        # Verano CEST (UTC+2): 16:14:09Z -> 18:14:09
+        self.assertEqual(
+            fa.format_spain_datetime("2026-07-16T16:14:09Z"),
+            "16/07/2026 18:14:09",
+        )
+        # Cambio de día en medianoche española (CEST UTC+2)
+        self.assertEqual(
+            fa.format_spain_datetime("2026-08-01T22:05:59Z"),
+            "02/08/2026 00:05:59",
+        )
+        # Acepta también objetos datetime UTC directamente
+        dt_utc = datetime(2026, 12, 31, 23, 30, 45, tzinfo=timezone.utc)
+        self.assertEqual(
+            fa.format_spain_datetime(dt_utc),
+            "01/01/2027 00:30:45",
+        )
+
+    def test_format_exact_ministry_frequency_and_concesiones_preservation(self) -> None:
+        # Sin abreviación ni pérdida de decimales declarados en MINETUR
+        self.assertEqual(
+            fa.format_exact_ministry_frequency("3460.00 - 3600.00"),
+            "3460.00 - 3600.00 MHz",
+        )
+        self.assertEqual(
+            fa.format_exact_ministry_frequency("935.10 - 949.90"),
+            "935.10 - 949.90 MHz",
+        )
+        self.assertEqual(
+            fa.format_exact_ministry_frequency("  1805.125   -   1825.125  "),
+            "1805.125 - 1825.125 MHz",
+        )
+        self.assertEqual(
+            fa.format_exact_ministry_frequency("3460.00 - 3600.00 MHz"),
+            "3460.00 - 3600.00 MHz",
+        )
+        self.assertEqual(
+            fa.format_exact_ministry_frequency("26.50 - 27.50 GHz"),
+            "26.50 - 27.50 GHz",
+        )
+        self.assertEqual(fa.format_exact_ministry_frequency("   "), "")
+
+        sample_html = """
+            <h2>CARACTERISTICAS TÉCNICAS</h2>
+            <table class="tablaDetalleEstacionNivelesMedidos">
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+            </table>
+        """
+        rows = fa.parse_detalle_estacion_html(sample_html)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["frecuenciaDeclarada"], "3460.00 - 3600.00")
+        self.assertEqual(rows[0]["referencia"], "M M -2205199")
+
+        clock = FakeClock()
+        fixed_utc = datetime(2026, 11, 15, 17, 10, 0, tzinfo=timezone.utc)
+        rec = {
+            "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+            "gid": "2800006",
+            "op": "movistar",
+            "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+            "lat": 40.434322,
+            "lon": -3.642914,
+            "dir": "CL EMILIO FERRARI, 11",
+            "mun": "MADRID",
+            "prov": "MADRID",
+        }
+        ds = fa.build_dataset(
+            [rec],
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 1.0,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 1.0,
+            },
+        )
+        fa.enrich_dataset_bands(
+            ds,
+            fetch_fn=lambda _gid: sample_html,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+            now_utc_fn=lambda: fixed_utc,
+        )
+        enriched = ds["antenas"][0]
+        self.assertEqual(
+            enriched["concesiones"],
+            [
+                {"ref": "M M -2200490", "freq": "935.10 - 949.90"},
+                {"ref": "M M -2205199", "freq": "3460.00 - 3600.00"},
+            ],
+        )
+        self.assertEqual(enriched["bandsScannedAt"], "2026-11-15T17:10:00Z")
+
+        # Verificar que preserve_bands_in_records conserva también concesiones y bandsScannedAt
+        fresh_copy = [dict(rec)]
+        restored = fa.preserve_bands_in_records(fresh_copy, ds)
+        self.assertEqual(restored, 1)
+        self.assertEqual(fresh_copy[0]["concesiones"], enriched["concesiones"])
+        self.assertEqual(fresh_copy[0]["bandsScannedAt"], "2026-11-15T17:10:00Z")
+
+    def test_novedades_diff_new_antenna_new_frequency_cold_scan_and_vodafone_dedup(
+        self,
+    ) -> None:
+        base_stats = {
+            "requestsCount": 2,
+            "durationSeconds": 2.0,
+            "gridBoxesVisited": 2,
+            "subdividedBoxes": 0,
+            "zoomParam": 7,
+            "delaySeconds": 1.0,
+        }
+        # Escaneo previo (día 1):
+        # 1) Movistar 2800006 YA escaneada con 900 MHz (M M -2200490)
+        # 2) Orange 4600111 existente pero FRÍA (nunca escaneada aún: sin bandas/concesiones)
+        # 3) Vodafone 0144693 YA escaneada con 800 MHz (V-800)
+        prior_records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "gid": "2800006",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.434322,
+                "lon": -3.642914,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["900 MHz"],
+                "frecuencias": ["935.10 - 949.90"],
+                "concesiones": [{"ref": "M M -2200490", "freq": "935.10 - 949.90"}],
+                "bandsScannedAt": "2026-11-15T17:05:00Z",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 4600111",
+                "gid": "4600111",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 39.4699,
+                "lon": -0.3763,
+                "dir": "PL AYUNTAMIENTO, 1",
+                "mun": "VALENCIA",
+                "prov": "VALENCIA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A. - 0144693",
+                "gid": "0144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.",
+                "lat": 42.897900,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+                "bandas": ["800 MHz"],
+                "frecuencias": ["842.00 - 852.00"],
+                "concesiones": [{"ref": "V-800", "freq": "842.00 - 852.00"}],
+                "bandsScannedAt": "2026-11-15T17:06:00Z",
+            },
+        ]
+        prior_dataset = fa.build_dataset(
+            prior_records,
+            crawl_stats=base_stats,
+            updated_at="2026-11-15T17:30:00Z",
+        )
+
+        # Escaneo día 2 a las 18:00 España (17:00 UTC invierno):
+        # - Movistar 2800006 añade banda 3500 MHz (M M -2205199, 3460.00 - 3600.00)
+        # - Movistar 2800007 NUEVA a 10 m de 2800006 (Telefónica NUNCA se fusiona consigo misma)
+        # - DIGI 0800999 NUEVA en Barcelona
+        # - Orange 4600111 existente fría -> se escanea por 1ª vez -> 0 falsos positivos
+        # - Vodafone añade duplicado administrativo 144693 a < 35 m (~24 m) con la misma banda V-800 ->
+        #   se fusiona con 0144693 y NO genera antena nueva falsa ni frecuencia nueva falsa!
+        day2_raw_records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "gid": "2800006",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.434322,
+                "lon": -3.642914,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800007",
+                "gid": "2800007",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.434400,  # ~8.7 m de 2800006 -> jamás se fusiona en Telefónica
+                "lon": -3.642914,
+                "dir": "CL EMILIO FERRARI, 13",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "DS MOBILE NETWORKS, S.L. - 0800999",
+                "gid": "0800999",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "lat": 41.3874,
+                "lon": 2.1686,
+                "dir": "PL CATALUNYA, 5",
+                "mun": "BARCELONA",
+                "prov": "BARCELONA",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 4600111",
+                "gid": "4600111",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 39.4699,
+                "lon": -0.3763,
+                "dir": "PL AYUNTAMIENTO, 1",
+                "mun": "VALENCIA",
+                "prov": "VALENCIA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A. - 0144693",
+                "gid": "0144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.",
+                "lat": 42.897900,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                "gid": "144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 42.897686,
+                "lon": -8.704622,
+                "dir": "LG PG 78 PARC 9000 - ARUFE, S/N",
+                "mun": "AMES",
+                "prov": "A CORUÑA",
+            },
+        ]
+
+        crawl_iso = "2026-11-16T17:02:00Z"
+        day2_dataset = fa.build_dataset(
+            day2_raw_records,
+            crawl_stats=base_stats,
+            updated_at=crawl_iso,
+        )
+        # 6 registros brutos -> 5 antenas únicas (las 2 de Vodafone fusionadas; las 2 de Movistar intactas)
+        self.assertEqual(day2_dataset["total"], 5)
+
+        prior_index = fa.build_prior_antenna_index(prior_dataset)
+        ant_novedades, new_ant_ids = fa.diff_new_antennas(
+            day2_dataset["antenas"],
+            prior_index,
+            scanned_at_iso=crawl_iso,
+        )
+        # Exactamente 2 antenas nuevas: Movistar 2800007 y DIGI 0800999 (Vodafone 144693 NO cuenta como nueva)
+        self.assertEqual(
+            new_ant_ids,
+            {
+                "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800007",
+                "DS MOBILE NETWORKS, S.L. - 0800999",
+            },
+        )
+        self.assertEqual(len(ant_novedades), 2)
+        digi_nov = next(n for n in ant_novedades if n["op"] == "digi")
+        self.assertEqual(
+            digi_nov,
+            {
+                "id": "ant:DS MOBILE NETWORKS, S.L. - 0800999",
+                "tipo": "antena",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800999",
+                "antennaId": "DS MOBILE NETWORKS, S.L. - 0800999",
+                "codigoBanda": "",
+                "frecuencia": "",
+                "ubicacion": "BARCELONA",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T17:02:00Z",
+                "fecha": "16/11/2026 18:02:00",
+            },
+        )
+
+        fa.preserve_bands_in_records(day2_dataset["antenas"], prior_dataset)
+
+        html_day2: dict[str, str] = {
+            "2800006": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>
+                </table>
+            """,
+            "2800007": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2209999</td><td>758.00 - 768.00</td></tr>
+                </table>
+            """,
+            "0800999": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>DS MOBILE NETWORKS, S.L.</td><td>M M -2602235</td><td>1845.10 - 1855.10</td></tr>
+                </table>
+            """,
+            "4600111": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-1800</td><td>1805.10 - 1825.10</td></tr>
+                </table>
+            """,
+            "144693": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-800</td><td>842.00 - 852.00</td></tr>
+                </table>
+            """,
+            "0144693": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>VODAFONE ESPAÑA, S.A.</td><td>V-800</td><td>842.00 - 852.00</td></tr>
+                </table>
+            """,
+        }
+
+        clock = FakeClock()
+        step_counter = 0
+
+        def next_utc() -> datetime:
+            nonlocal step_counter
+            step_counter += 1
+            return datetime(2026, 11, 16, 17, 14, step_counter, tzinfo=timezone.utc)
+
+        enricher = fa.BandEnricher(
+            delay_seconds=1.0,
+            rescan_since="2026-11-16T17:00:00Z",
+            new_antenna_ids=new_ant_ids,
+            prior_index=prior_index,
+            record_novedades=True,
+            fetch_fn=lambda gid: html_day2[gid],
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+            now_utc_fn=next_utc,
+        )
+        enricher.enrich_dataset(day2_dataset)
+
+        # Solo 1 novedad de frecuencia: 3460.00 - 3600.00 MHz en Movistar 2800006.
+        # - Orange 4600111 (fría sin escaneo previo) NO genera falsos positivos.
+        # - Antenas nuevas (2800007, 0800999) NO duplican filas de frecuencia.
+        # - Vodafone fusionada (V-800 ya conocida en 0144693) NO genera novedad falsa.
+        self.assertEqual(len(enricher.discovered_novedades), 1)
+        freq_nov = enricher.discovered_novedades[0]
+        self.assertEqual(freq_nov["tipo"], "frecuencia")
+        self.assertEqual(freq_nov["op"], "movistar")
+        self.assertEqual(freq_nov["opRaw"], "TELEFONICA MOVILES ESPAÑA, S.A.U.")
+        self.assertEqual(freq_nov["codigo"], "2800006")
+        self.assertEqual(
+            freq_nov["antennaId"], "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006"
+        )
+        self.assertEqual(freq_nov["codigoBanda"], "M M -2205199")
+        self.assertEqual(freq_nov["frecuencia"], "3460.00 - 3600.00 MHz")
+        self.assertEqual(freq_nov["ubicacion"], "MADRID")
+        self.assertEqual(freq_nov["prov"], "MADRID")
+        self.assertRegex(freq_nov["fecha"], r"^16/11/2026 18:14:\d{2}$")
+
+        nov_dataset = fa.build_novedades_dataset(
+            [*ant_novedades, *enricher.discovered_novedades],
+            scan_id="daily-20261116",
+            previous_scan_at=prior_dataset["updatedAt"],
+            updated_at="2026-11-16T17:20:00Z",
+            is_baseline_scan=False,
+        )
+        self.assertFalse(nov_dataset["isBaselineScan"])
+        self.assertEqual(nov_dataset["total"], 3)
+        self.assertEqual(nov_dataset["antenasNuevas"], 2)
+        self.assertEqual(nov_dataset["frecuenciasNuevas"], 1)
+        self.assertEqual(nov_dataset["previousScanAt"], "2026-11-15T17:30:00Z")
+        # La frecuencia escaneada a las 17:14Z es más reciente que el crawl de las 17:02Z -> va primera
+        self.assertEqual(nov_dataset["novedades"][0]["tipo"], "frecuencia")
+
+    def test_skip_novedades_produces_empty_baseline_in_reset_and_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+
+            # Crear dataset previo con una antena ya escaneada y novedades antiguas
+            ds = fa.build_dataset(
+                [
+                    {
+                        "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                        "gid": "2800006",
+                        "op": "movistar",
+                        "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                        "lat": 40.434322,
+                        "lon": -3.642914,
+                        "dir": "CL EMILIO FERRARI, 11",
+                        "mun": "MADRID",
+                        "prov": "MADRID",
+                        "bandas": ["900 MHz"],
+                        "frecuencias": ["935.10 - 949.90"],
+                        "concesiones": [
+                            {"ref": "M M -2200490", "freq": "935.10 - 949.90"}
+                        ],
+                        "bandsScannedAt": "2026-11-14T17:00:00Z",
+                    },
+                    {
+                        "id": "ORANGE ESPAGNE, S.A.U. - 2800999",
+                        "gid": "2800999",
+                        "op": "orange",
+                        "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                        "lat": 40.420000,
+                        "lon": -3.700000,
+                        "dir": "GRAN VÍA, 1",
+                        "mun": "MADRID",
+                        "prov": "MADRID",
+                        "bandas": ["800 MHz"],
+                        "frecuencias": ["832.00 - 842.00"],
+                        "concesiones": [{"ref": "OR-1", "freq": "832.00 - 842.00"}],
+                        "bandsScannedAt": "2026-11-14T17:01:00Z",
+                    },
+                ],
+                crawl_stats={
+                    "requestsCount": 1,
+                    "durationSeconds": 1.0,
+                    "gridBoxesVisited": 1,
+                    "subdividedBoxes": 0,
+                    "zoomParam": 7,
+                    "delaySeconds": 1.0,
+                },
+                updated_at="2026-11-14T17:05:00Z",
+            )
+            fa.write_compact_dataset(ds, ant_path)
+
+            # Poblar novedades previas para verificar que --novedades-mode reset --skip-novedades limpia a 0
+            old_nov = fa.build_novedades_dataset(
+                [
+                    {
+                        "id": "ant:OLD",
+                        "tipo": "antena",
+                        "op": "movistar",
+                        "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                        "codigo": "9999999",
+                        "antennaId": "OLD",
+                        "codigoBanda": "",
+                        "frecuencia": "",
+                        "ubicacion": "MADRID",
+                        "prov": "MADRID",
+                        "scannedAt": "2026-11-14T17:05:00Z",
+                        "fecha": "14/11/2026 18:05:00",
+                    }
+                ],
+                scan_id="old-scan",
+                is_baseline_scan=False,
+            )
+            fa.write_novedades_dataset(old_nov, nov_path)
+
+            # Aunque ambas antenas traen frecuencias nuevas en MINETUR, --skip-novedades NO registra ninguna
+            new_html = """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-3500</td><td>3600.00 - 3710.00</td></tr>
+                </table>
+            """
+
+            class _FakeHTTPResp:
+                def __init__(self, body: bytes) -> None:
+                    self._body = body
+
+                def read(self) -> bytes:
+                    return self._body
+
+                def __enter__(self) -> _FakeHTTPResp:
+                    return self
+
+                def __exit__(self, *_: object) -> None:
+                    return None
+
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=lambda *_a, **_kw: _FakeHTTPResp(
+                        new_html.encode("iso-8859-1")
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc1 = fa.main(
+                    [
+                        "--enrich-bands-only",
+                        "--input",
+                        str(ant_path),
+                        "--output",
+                        str(ant_path),
+                        "--max-band-requests",
+                        "1",
+                        "--rescan-since",
+                        "2099-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "reset",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "forced-now",
+                    ]
+                )
+                self.assertEqual(rc1, 0)
+                nov_after_part1 = json.loads(nov_path.read_text(encoding="utf-8"))
+                self.assertTrue(nov_after_part1["isBaselineScan"])
+                self.assertEqual(nov_after_part1["total"], 0)
+                self.assertEqual(nov_after_part1["antenasNuevas"], 0)
+                self.assertEqual(nov_after_part1["frecuenciasNuevas"], 0)
+                self.assertEqual(nov_after_part1["novedades"], [])
+
+                rc2 = fa.main(
+                    [
+                        "--enrich-bands-only",
+                        "--input",
+                        str(ant_path),
+                        "--output",
+                        str(ant_path),
+                        "--max-band-requests",
+                        "1",
+                        "--rescan-since",
+                        "2099-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "append",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "forced-now",
+                    ]
+                )
+                self.assertEqual(rc2, 0)
+                nov_after_part2 = json.loads(nov_path.read_text(encoding="utf-8"))
+                self.assertTrue(nov_after_part2["isBaselineScan"])
+                self.assertEqual(nov_after_part2["total"], 0)
+                self.assertEqual(nov_after_part2["novedades"], [])
+
+    def test_multipart_scan_append_rescan_since_and_priority_order(self) -> None:
+        clock = FakeClock()
+        # Verificar orden estricto de prioridad en BandEnricher:
+        # 1) Antena nueva (gid="9000001")
+        # 2) Antena sin concesiones escaneadas aún (gid="9000002")
+        # 3) Antena existente más antigua (gid="9000003", bandsScannedAt="2026-11-10T17:00:00Z")
+        # 4) Antena existente menos antigua (gid="9000004", bandsScannedAt="2026-11-14T17:00:00Z")
+        # Mientras que gid="9000005" (bandsScannedAt="2026-11-16T17:05:00Z" >= rescan_since) se omite.
+        records = [
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 9000004",
+                "gid": "9000004",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.41,
+                "lon": -3.70,
+                "dir": "C 4",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["800 MHz"],
+                "frecuencias": ["832.00 - 842.00"],
+                "concesiones": [{"ref": "R-800", "freq": "832.00 - 842.00"}],
+                "bandsScannedAt": "2026-11-14T17:00:00Z",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 9000005",
+                "gid": "9000005",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.45,
+                "lon": -3.70,
+                "dir": "C 5",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["800 MHz"],
+                "frecuencias": ["832.00 - 842.00"],
+                "concesiones": [{"ref": "R-800", "freq": "832.00 - 842.00"}],
+                "bandsScannedAt": "2026-11-16T17:05:00Z",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 9000003",
+                "gid": "9000003",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.43,
+                "lon": -3.70,
+                "dir": "C 3",
+                "mun": "SEBÚLCOR",
+                "prov": "SEGOVIA",
+                "bandas": ["800 MHz"],
+                "frecuencias": ["832.00 - 842.00"],
+                "concesiones": [{"ref": "R-800", "freq": "832.00 - 842.00"}],
+                "bandsScannedAt": "2026-11-10T17:00:00Z",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - 9000002",
+                "gid": "9000002",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.42,
+                "lon": -3.70,
+                "dir": "C 2",
+                "mun": "ZAMORA",
+                "prov": "ZAMORA",
+            },
+            {
+                "id": "DS MOBILE NETWORKS, S.L. - 9000001",
+                "gid": "9000001",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "lat": 40.40,
+                "lon": -3.70,
+                "dir": "C 1",
+                "mun": "SORIA",
+                "prov": "SORIA",
+            },
+        ]
+        dataset = fa.build_dataset(
+            records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 1.0,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 1.0,
+            },
+            updated_at="2026-11-16T17:00:00Z",
+        )
+
+        html_by_gid = {
+            "9000001": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table><tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>DS MOBILE NETWORKS, S.L.</td><td>DG-1</td><td>2110.00 - 2120.00</td></tr></table>
+            """,
+            "9000002": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table><tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-COLD</td><td>1805.10 - 1825.10</td></tr></table>
+            """,
+            "9000003": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table><tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>R-800</td><td>832.00 - 842.00</td></tr>
+                <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-NEW-3</td><td>758.00 - 768.00</td></tr></table>
+            """,
+            "9000004": """
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table><tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>R-800</td><td>832.00 - 842.00</td></tr>
+                <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-NEW-4</td><td>3600.00 - 3710.00</td></tr></table>
+            """,
+        }
+
+        fetched_order: list[str] = []
+        tick = 0
+
+        def next_utc() -> datetime:
+            nonlocal tick
+            tick += 1
+            return datetime(2026, 11, 16, 17, 10, 0, tzinfo=timezone.utc) + timedelta(
+                seconds=tick
+            )
+
+        def fake_fetch(gid: str) -> str:
+            fetched_order.append(gid)
+            return html_by_gid[gid]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+            fa.write_compact_dataset(dataset, ant_path)
+
+            initial_ant_nov = [
+                {
+                    "id": "ant:DS MOBILE NETWORKS, S.L. - 9000001",
+                    "tipo": "antena",
+                    "op": "digi",
+                    "opRaw": "DS MOBILE NETWORKS, S.L.",
+                    "codigo": "9000001",
+                    "antennaId": "DS MOBILE NETWORKS, S.L. - 9000001",
+                    "codigoBanda": "",
+                    "frecuencia": "",
+                    "ubicacion": "SORIA",
+                    "prov": "SORIA",
+                    "scannedAt": "2026-11-16T17:01:00Z",
+                    "fecha": "16/11/2026 18:01:00",
+                }
+            ]
+
+            # Parte 1 (reset, max_band_requests=3): procesa 9000001 (nueva), 9000002 (fría) y 9000003 (más antigua)
+            nov_writer_1, seeded_1 = fa._prepare_novedades_writer(
+                novedades_output=nov_path,
+                novedades_mode="reset",
+                skip_novedades=False,
+                scan_id="run-1800",
+                previous_scan_at="2026-11-15T17:00:00Z",
+                initial_novedades=initial_ant_nov,
+            )
+            ds_part1 = json.loads(ant_path.read_text(encoding="utf-8"))
+            enr1 = fa.BandEnricher(
+                delay_seconds=1.0,
+                max_band_requests=3,
+                checkpoint_path=ant_path,
+                rescan_since="2026-11-16T17:00:00Z",
+                new_antenna_ids=seeded_1,
+                record_novedades=True,
+                novedades_checkpoint_fn=nov_writer_1,
+                fetch_fn=fake_fetch,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+                now_utc_fn=next_utc,
+            )
+            enr1.enrich_dataset(ds_part1)
+            assert nov_writer_1 is not None
+            nov_writer_1(enr1.discovered_novedades)
+
+            self.assertEqual(fetched_order, ["9000001", "9000002", "9000003"])
+            nov_doc_1 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertEqual(nov_doc_1["antenasNuevas"], 1)
+            self.assertEqual(nov_doc_1["frecuenciasNuevas"], 1)  # OR-NEW-3
+            self.assertEqual(nov_doc_1["total"], 2)
+
+            # Parte 2 (append, max_band_requests=3): solo queda pendiente 9000004 (9000005 ya >= rescan_since)
+            nov_writer_2, seeded_2 = fa._prepare_novedades_writer(
+                novedades_output=nov_path,
+                novedades_mode="append",
+                skip_novedades=False,
+                scan_id="run-1800",
+                previous_scan_at=None,
+            )
+            ds_part2 = json.loads(ant_path.read_text(encoding="utf-8"))
+            enr2 = fa.BandEnricher(
+                delay_seconds=1.0,
+                max_band_requests=3,
+                checkpoint_path=ant_path,
+                rescan_since="2026-11-16T17:00:00Z",
+                new_antenna_ids=seeded_2,
+                record_novedades=True,
+                novedades_checkpoint_fn=nov_writer_2,
+                fetch_fn=fake_fetch,
+                sleep_fn=clock.sleep,
+                clock_fn=clock.time,
+                now_utc_fn=next_utc,
+            )
+            enr2.enrich_dataset(ds_part2)
+            assert nov_writer_2 is not None
+            nov_writer_2(enr2.discovered_novedades)
+
+            self.assertEqual(
+                fetched_order, ["9000001", "9000002", "9000003", "9000004"]
+            )
+            nov_doc_2 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertEqual(nov_doc_2["scanId"], "run-1800")
+            self.assertEqual(nov_doc_2["previousScanAt"], "2026-11-15T17:00:00Z")
+            self.assertFalse(nov_doc_2["isBaselineScan"])
+            self.assertEqual(nov_doc_2["antenasNuevas"], 1)
+            self.assertEqual(nov_doc_2["frecuenciasNuevas"], 2)  # OR-NEW-3 + OR-NEW-4
+            self.assertEqual(nov_doc_2["total"], 3)
+            self.assertEqual(
+                [n["codigo"] for n in nov_doc_2["novedades"]],
+                ["9000004", "9000003", "9000001"],
+            )
+
+    def test_main_full_crawl_cli_end_to_end_novedades_and_skip_novedades(self) -> None:
+        class _FakeResp:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> _FakeResp:
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+        madrid_feat = {
+            "type": "Feature",
+            "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+            "geometry": {"type": "Point", "coordinates": [-3.700000, 40.415000]},
+            "properties": {
+                "Gis_ID": "2800006",
+                "Gis_Latitud": "40.415000",
+                "Gis_Longitud": "-3.700000",
+                "Gis_Codigo": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "Dirección": "CL MAYOR, 1. MADRID, MADRID",
+            },
+        }
+        bcn_feat = {
+            "type": "Feature",
+            "id": "DS MOBILE NETWORKS, S.L. - 0800777",
+            "geometry": {"type": "Point", "coordinates": [2.170000, 41.385000]},
+            "properties": {
+                "Gis_ID": "0800777",
+                "Gis_Latitud": "41.385000",
+                "Gis_Longitud": "2.170000",
+                "Gis_Codigo": "DS MOBILE NETWORKS, S.L. - 0800777",
+                "Dirección": "PS DE GRÀCIA, 10. BARCELONA, BARCELONA",
+            },
+        }
+
+        def make_urlopen(include_bcn: bool, mov_extra_3500: bool):
+            def _urlopen(req: object, timeout: float = 30.0) -> _FakeResp:
+                url = getattr(req, "full_url", str(req))
+                if "infoantenasGeoJSON.do" in url:
+                    if "-3.715000" in url:
+                        payload = {"type": "FeatureCollection", "features": [madrid_feat]}
+                    else:
+                        feats = [bcn_feat] if include_bcn else []
+                        payload = {"type": "FeatureCollection", "features": feats}
+                    return _FakeResp(
+                        json.dumps(payload, ensure_ascii=False).encode("iso-8859-1")
+                    )
+                if "emplazamiento=2800006" in url:
+                    extra_row = (
+                        "<tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>"
+                        if mov_extra_3500
+                        else ""
+                    )
+                    html = f"""
+                        <h2>CARACTERISTICAS TÉCNICAS</h2>
+                        <table>
+                            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                            <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+                            {extra_row}
+                        </table>
+                    """
+                    return _FakeResp(html.encode("iso-8859-1"))
+                html_digi = """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>DS MOBILE NETWORKS, S.L.</td><td>M M -2602235</td><td>1845.10 - 1855.10</td></tr>
+                    </table>
+                """
+                return _FakeResp(html_digi.encode("iso-8859-1"))
+
+            return _urlopen
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+
+            # 1) Escaneo forzado inicial (--skip-novedades): crea base limpia con 0 novedades
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(include_bcn=False, mov_extra_3500=False),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc_base = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--delay",
+                        "1.0",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2099-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "reset",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "forced-baseline",
+                    ]
+                )
+            self.assertEqual(rc_base, 0)
+            nov_base = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertTrue(nov_base["isBaselineScan"])
+            self.assertEqual(nov_base["total"], 0)
+            self.assertEqual(nov_base["novedades"], [])
+
+            # 2) Siguiente escaneo diario 18:00 (sin --skip-novedades):
+            # detecta antena nueva DIGI 0800777 + frecuencia nueva 3460.00 - 3600.00 MHz en Movistar 2800006
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(include_bcn=True, mov_extra_3500=True),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc_daily = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "1.0",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2099-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "reset",
+                        "--scan-id",
+                        "daily-1800",
+                    ]
+                )
+            self.assertEqual(rc_daily, 0)
+            nov_daily = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertFalse(nov_daily["isBaselineScan"])
+            self.assertEqual(nov_daily["scanId"], "daily-1800")
+            self.assertEqual(nov_daily["total"], 2)
+            self.assertEqual(nov_daily["antenasNuevas"], 1)
+            self.assertEqual(nov_daily["frecuenciasNuevas"], 1)
+
+            by_tipo = {n["tipo"]: n for n in nov_daily["novedades"]}
+            self.assertEqual(by_tipo["antena"]["codigo"], "0800777")
+            self.assertEqual(by_tipo["antena"]["ubicacion"], "BARCELONA")
+            self.assertEqual(by_tipo["antena"]["codigoBanda"], "")
+            self.assertEqual(by_tipo["antena"]["frecuencia"], "")
+            self.assertEqual(by_tipo["frecuencia"]["codigo"], "2800006")
+            self.assertEqual(by_tipo["frecuencia"]["codigoBanda"], "M M -2205199")
+            self.assertEqual(
+                by_tipo["frecuencia"]["frecuencia"], "3460.00 - 3600.00 MHz"
+            )
+            self.assertEqual(by_tipo["frecuencia"]["ubicacion"], "MADRID")
+            self.assertRegex(
+                by_tipo["frecuencia"]["fecha"],
+                r"^\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}$",
+            )
 
 
 if __name__ == "__main__":
