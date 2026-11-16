@@ -1,10 +1,1 @@
-{
-  "updatedAt": "2026-11-15T22:25:00Z",
-  "scanId": "baseline-init",
-  "previousScanAt": null,
-  "isBaselineScan": true,
-  "total": 0,
-  "antenasNuevas": 0,
-  "frecuenciasNuevas": 0,
-  "novedades": []
-}
+{"updatedAt":"2026-11-16T02:21:22Z","scanId":"43791600864","previousScanAt":"2026-11-15T21:28:57Z","isBaselineScan":true,"total":0,"antenasNuevas":0,"frecuenciasNuevas":0,"novedades":[]}
