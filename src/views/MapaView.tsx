@@ -46,6 +46,8 @@ export function MapaView() {
     setMeasurePoints,
     measureModeActive,
     toggleMeasureMode,
+    showBandsOnMap,
+    toggleShowBandsOnMap,
     focusAntennaOnMap,
   } = useWorkspace();
 
@@ -273,6 +275,8 @@ export function MapaView() {
             }}
             measureModeActive={measureModeActive}
             onToggleMeasureMode={toggleMeasureMode}
+            showBandsOnMap={showBandsOnMap}
+            onToggleShowBandsOnMap={toggleShowBandsOnMap}
             activeOperators={activeOperators}
             onToggleOperator={toggleOperator}
           />

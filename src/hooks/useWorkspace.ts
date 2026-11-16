@@ -54,6 +54,11 @@ export interface WorkspaceContextValue {
   setMeasureModeActive: (active: boolean) => void;
   toggleMeasureMode: () => void;
 
+  /* Visualización directa de bandas de frecuencia en el mapa */
+  showBandsOnMap: boolean;
+  setShowBandsOnMap: (show: boolean) => void;
+  toggleShowBandsOnMap: () => void;
+
   /* Geolocalización GPS */
   gpsLoading: boolean;
   gpsError: string | null;

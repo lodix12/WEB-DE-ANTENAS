@@ -16,6 +16,12 @@ import {
 } from '../../types/antena';
 import type { AntenasMapProps, MeasurePoint } from '../../types/map';
 import {
+  BAND_CARD_KEY_PREFIX,
+  BAND_CARD_PIXEL_RATIO,
+  buildSiteBandCardKey,
+  getOrCreateBandCardSprite,
+} from '../../utils/bandCard';
+import {
   SPAIN_REGION_PRESETS,
   formatDistance,
   groupColocatedAntennasForMap,
@@ -52,6 +58,7 @@ const LAYER_UNCLUSTERED = 'antenas-unclustered';
 const LAYER_UNCLUSTERED_MULTI = 'antenas-unclustered-multi';
 const LAYER_SELECTED_HALO = 'antenas-selected-halo';
 const LAYER_SELECTED_RING = 'antenas-selected-ring';
+const LAYER_UNCLUSTERED_BANDS = 'antenas-unclustered-bands';
 
 const NONE_SELECTED_SENTINEL = '__none_selected__';
 const MULTI_SPRITE_CACHE = new Map<string, ImageData>();
@@ -70,6 +77,7 @@ interface AntennaFeatureProperties {
   lon: number;
   isMultiOp: boolean;
   iconKey: string;
+  bandCardKey: string;
   operatorsCsv: string;
   stationCount: number;
   memberIdsPipe: string;
@@ -215,6 +223,19 @@ function registerMultiOperatorSprite(
   }
 }
 
+function registerBandCardSprite(map: maplibregl.Map, key: string): void {
+  if (!key.startsWith(BAND_CARD_KEY_PREFIX) || map.hasImage(key)) {
+    return;
+  }
+  const imageData = getOrCreateBandCardSprite(key);
+  if (!imageData) {
+    return;
+  }
+  if (!map.hasImage(key)) {
+    map.addImage(key, imageData, { pixelRatio: BAND_CARD_PIXEL_RATIO });
+  }
+}
+
 function buildSelectedFilter(
   selectedId: string | null | undefined,
 ): maplibregl.FilterSpecification {
@@ -324,6 +345,8 @@ export function AntenasMap(props: AntenasMapProps) {
     onToggleMeasureMode,
     lock3dPitch,
     onToggleLock3dPitch,
+    showBandsOnMap,
+    onToggleShowBandsOnMap,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -350,6 +373,20 @@ export function AntenasMap(props: AntenasMapProps) {
       setInternalLock3dPitch((prev) => !prev);
     }
   }, [onToggleLock3dPitch]);
+
+  // Soporte híbrido controlado o autónomo para etiquetas de bandas flotantes en el mapa ("Ver bandas")
+  const [internalShowBandsOnMap, setInternalShowBandsOnMap] =
+    useState<boolean>(false);
+  const effectiveShowBandsOnMap = showBandsOnMap ?? internalShowBandsOnMap;
+  const showBandsOnMapRef = useRef<boolean>(effectiveShowBandsOnMap);
+
+  const handleToggleShowBandsOnMap = useCallback(() => {
+    if (onToggleShowBandsOnMap) {
+      onToggleShowBandsOnMap();
+    } else {
+      setInternalShowBandsOnMap((prev) => !prev);
+    }
+  }, [onToggleShowBandsOnMap]);
 
   // Soporte híbrido controlado o autónomo para la regla de distancia entre 2 puntos ("Medir en mapa")
   const [internalMeasurePoints, setInternalMeasurePoints] = useState<
@@ -425,6 +462,7 @@ export function AntenasMap(props: AntenasMapProps) {
         }
 
         const primary = site.primary;
+        const bandCardKey = buildSiteBandCardKey(site);
         features.push({
           type: 'Feature',
           geometry: {
@@ -445,6 +483,7 @@ export function AntenasMap(props: AntenasMapProps) {
             lon: site.lon,
             isMultiOp: site.isMultiOperator,
             iconKey: site.iconKey,
+            bandCardKey,
             operatorsCsv: site.operators.join('|'),
             stationCount: site.members.length,
             memberIdsPipe: `|${site.memberIds.join('|')}|`,
@@ -600,6 +639,26 @@ export function AntenasMap(props: AntenasMapProps) {
     }
     applyPitchLock(map, effectiveLock3dPitch);
   }, [effectiveLock3dPitch]);
+
+  // Sincronización inmediata en GPU de la visibilidad de tarjetas flotantes de bandas ("Ver bandas")
+  useEffect(() => {
+    showBandsOnMapRef.current = effectiveShowBandsOnMap;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    if (map.getLayer(LAYER_UNCLUSTERED_BANDS)) {
+      map.setLayoutProperty(
+        LAYER_UNCLUSTERED_BANDS,
+        'visibility',
+        effectiveShowBandsOnMap ? 'visible' : 'none',
+      );
+    }
+    if (!effectiveShowBandsOnMap && hoveredIdRef.current !== null) {
+      hoveredIdRef.current = null;
+      popupRef.current?.remove();
+    }
+  }, [effectiveShowBandsOnMap]);
 
   // Permitir cancelar o limpiar la medición de 2 puntos pulsando la tecla Escape
   useEffect(() => {
@@ -878,6 +937,50 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
 
+    if (!map.getLayer(LAYER_UNCLUSTERED_BANDS)) {
+      map.addLayer({
+        id: LAYER_UNCLUSTERED_BANDS,
+        type: 'symbol',
+        source: ANTENAS_SOURCE_ID,
+        filter: [
+          'all',
+          ['!', ['has', 'point_count']],
+          ['!=', ['get', 'bandCardKey'], ''],
+        ],
+        layout: {
+          visibility: showBandsOnMapRef.current ? 'visible' : 'none',
+          'icon-image': ['get', 'bandCardKey'],
+          'icon-anchor': 'top',
+          'icon-offset': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            5,
+            ['literal', [0, 5]],
+            11,
+            ['literal', [0, 8]],
+            14,
+            ['literal', [0, 10]],
+            17,
+            ['literal', [0, 13]],
+          ],
+          'icon-size': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            6,
+            0.78,
+            12,
+            0.9,
+            15,
+            1,
+          ],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      });
+    }
+
     // 2. Capas de la regla de distancia entre 2 puntos (Punto A -> Punto B), aisladas en try/catch
     try {
       if (!map.getSource(MEASURE_SOURCE_ID)) {
@@ -1078,17 +1181,32 @@ export function AntenasMap(props: AntenasMapProps) {
     mapRef.current = map;
     popupRef.current = popup;
 
-    const handleStyleImageMissing = (event: { id: string }) => {
-      if (event.id.startsWith('multi:')) {
-        registerMultiOperatorSprite(map, event.id);
+    const resolveMissingStyleImage = (id: string) => {
+      if (id.startsWith('multi:')) {
+        registerMultiOperatorSprite(map, id);
+      } else if (id.startsWith(BAND_CARD_KEY_PREFIX)) {
+        registerBandCardSprite(map, id);
       }
     };
+
+    const handleStyleImageMissing = (event: { id: string }) => {
+      resolveMissingStyleImage(event.id);
+    };
+
+    map.setMissingStyleImageResolver(resolveMissingStyleImage);
 
     const handleStyleLoad = () => {
       hasLoadedOnceRef.current = true;
       map.setMinZoom(0);
       applyPitchLock(map, lock3dPitchRef.current);
       ensureCustomSourcesAndLayers(map);
+      if (map.getLayer(LAYER_UNCLUSTERED_BANDS)) {
+        map.setLayoutProperty(
+          LAYER_UNCLUSTERED_BANDS,
+          'visibility',
+          showBandsOnMapRef.current ? 'visible' : 'none',
+        );
+      }
       const antSource = map.getSource(ANTENAS_SOURCE_ID) as
         | maplibregl.GeoJSONSource
         | undefined;
@@ -1122,6 +1240,12 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const getActiveUnclusteredLayers = (): string[] => {
       const layers: string[] = [];
+      if (
+        showBandsOnMapRef.current &&
+        map.getLayer(LAYER_UNCLUSTERED_BANDS)
+      ) {
+        layers.push(LAYER_UNCLUSTERED_BANDS);
+      }
       if (map.getLayer(LAYER_UNCLUSTERED_MULTI)) {
         layers.push(LAYER_UNCLUSTERED_MULTI);
       }
@@ -1298,7 +1422,8 @@ export function AntenasMap(props: AntenasMapProps) {
         : 'pointer';
 
       if (
-        (topHit.layer.id === LAYER_UNCLUSTERED_MULTI ||
+        (topHit.layer.id === LAYER_UNCLUSTERED_BANDS ||
+          topHit.layer.id === LAYER_UNCLUSTERED_MULTI ||
           topHit.layer.id === LAYER_UNCLUSTERED) &&
         topHit.geometry.type === 'Point'
       ) {
@@ -1326,6 +1451,7 @@ export function AntenasMap(props: AntenasMapProps) {
               raw.isMultiOp === 'true' ||
               Boolean(matchedSite?.isMultiOperator),
             iconKey: String(raw.iconKey ?? matchedSite?.iconKey ?? ''),
+            bandCardKey: String(raw.bandCardKey ?? ''),
             operatorsCsv: String(raw.operatorsCsv ?? ''),
             stationCount: Number(raw.stationCount ?? 1),
             memberIdsPipe: String(raw.memberIdsPipe ?? ''),
@@ -1367,6 +1493,7 @@ export function AntenasMap(props: AntenasMapProps) {
     return () => {
       resizeObserver?.disconnect();
       map.getCanvas().removeEventListener('mouseleave', handleCanvasLeave);
+      map.setMissingStyleImageResolver(null);
       popup.remove();
       map.remove();
       mapRef.current = null;
@@ -1533,6 +1660,8 @@ export function AntenasMap(props: AntenasMapProps) {
         onToggleMeasureMode={handleToggleMeasureMode}
         lock3dPitch={effectiveLock3dPitch}
         onToggleLock3dPitch={handleToggleLock3dPitch}
+        showBandsOnMap={effectiveShowBandsOnMap}
+        onToggleShowBandsOnMap={handleToggleShowBandsOnMap}
         onFlyToRegion={handleFlyToRegion}
       />
     </div>

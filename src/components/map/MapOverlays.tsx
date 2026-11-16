@@ -7,6 +7,7 @@ import {
   LocateFixed,
   Lock,
   LockOpen,
+  Radio,
   Ruler,
 } from 'lucide-react';
 import {
@@ -28,6 +29,8 @@ export interface MapOverlaysProps {
   onToggleMeasureMode?: () => void;
   lock3dPitch?: boolean;
   onToggleLock3dPitch?: () => void;
+  showBandsOnMap?: boolean;
+  onToggleShowBandsOnMap?: () => void;
   onFlyToRegion: (
     lon: number,
     lat: number,
@@ -47,6 +50,8 @@ export function MapOverlays({
   onToggleMeasureMode,
   lock3dPitch = true,
   onToggleLock3dPitch,
+  showBandsOnMap = false,
+  onToggleShowBandsOnMap,
   onFlyToRegion,
 }: MapOverlaysProps) {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
@@ -150,7 +155,7 @@ export function MapOverlays({
   return (
     <div className="map-overlay-top-stack">
       <div className="map-top-row">
-        {/* Herramientas cartográficas: Ubicación GPS, Medición 2 puntos y Estilo OpenFreeMap + Bloqueo 3D */}
+        {/* Herramientas cartográficas: Ubicación GPS, Medición 2 puntos, Bandas en mapa y Estilo OpenFreeMap + Bloqueo 3D */}
         <div className="map-tools-cluster">
           <button
             id="map-locate-gps-btn"
@@ -183,6 +188,24 @@ export function MapOverlays({
             >
               <Ruler size={15} aria-hidden="true" />
               <span className="map-tool-btn-label">Medir en mapa</span>
+            </button>
+          )}
+
+          {onToggleShowBandsOnMap && (
+            <button
+              id="map-toggle-bands-btn"
+              type="button"
+              className={`map-tool-btn${showBandsOnMap ? ' is-active' : ''}`}
+              onClick={() => onToggleShowBandsOnMap()}
+              aria-pressed={showBandsOnMap}
+              title={
+                showBandsOnMap
+                  ? 'Ocultar las etiquetas de bandas de frecuencia en el mapa'
+                  : 'Mostrar directamente las bandas de frecuencia que emite cada antena sin hacer clic'
+              }
+            >
+              <Radio size={15} aria-hidden="true" />
+              <span className="map-tool-btn-label">Mostrar bandas</span>
             </button>
           )}
 
@@ -255,6 +278,41 @@ export function MapOverlays({
                     );
                   })}
                 </div>
+
+                {onToggleShowBandsOnMap && (
+                  <>
+                    <div
+                      className="map-style-popover-divider"
+                      role="separator"
+                    />
+                    <button
+                      id="map-show-bands-option"
+                      type="button"
+                      role="switch"
+                      aria-checked={showBandsOnMap}
+                      className={`map-lock-3d-option${showBandsOnMap ? ' is-locked' : ''}`}
+                      onClick={() => onToggleShowBandsOnMap()}
+                    >
+                      <span className="map-lock-3d-icon" aria-hidden="true">
+                        <Radio size={14} strokeWidth={2.2} />
+                      </span>
+                      <span className="map-style-option-body">
+                        <span className="map-style-option-title">
+                          Mostrar bandas en antenas
+                        </span>
+                        <span className="map-style-option-desc">
+                          Ver frecuencias emitidas sin hacer clic
+                        </span>
+                      </span>
+                      <span
+                        className={`map-lock-3d-switch${showBandsOnMap ? ' is-on' : ''}`}
+                        aria-hidden="true"
+                      >
+                        <span className="map-lock-3d-switch-thumb" />
+                      </span>
+                    </button>
+                  </>
+                )}
 
                 {onToggleLock3dPitch && (
                   <>

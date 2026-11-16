@@ -67,4 +67,8 @@ export interface AntenasMapProps {
   lock3dPitch?: boolean;
   /** Alternar bloqueo de movimiento 3D / inclinación vertical del mapa */
   onToggleLock3dPitch?: () => void;
+  /** Si está activa la visualización directa de bandas de frecuencia bajo cada antena en el mapa */
+  showBandsOnMap?: boolean;
+  /** Alternar la visualización directa de bandas de frecuencia en el mapa */
+  onToggleShowBandsOnMap?: () => void;
 }

@@ -75,6 +75,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [measureModeActive, setMeasureModeActive] = useState<boolean>(false);
+  const [showBandsOnMap, setShowBandsOnMap] = useState<boolean>(false);
 
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -238,6 +239,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setMeasureModeActive(false);
   }, []);
 
+  const toggleShowBandsOnMap = useCallback(() => {
+    setShowBandsOnMap((prev) => !prev);
+  }, []);
+
   const jumpToCoordinates = useCallback(
     (lat: number, lon: number, _label?: string) => {
       setRadarModeActive(false);
@@ -351,6 +356,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       measureModeActive,
       setMeasureModeActive,
       toggleMeasureMode,
+      showBandsOnMap,
+      setShowBandsOnMap,
+      toggleShowBandsOnMap,
       gpsLoading,
       gpsError,
       requestGpsLocation,
@@ -390,6 +398,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       clearMeasurement,
       measureModeActive,
       toggleMeasureMode,
+      showBandsOnMap,
+      setShowBandsOnMap,
+      toggleShowBandsOnMap,
       gpsLoading,
       gpsError,
       requestGpsLocation,

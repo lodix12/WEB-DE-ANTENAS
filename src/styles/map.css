@@ -104,15 +104,18 @@
 }
 
 /* ==========================================================================
-   Botonera Derecha: GPS, Medición 2 puntos y Estilo OpenFreeMap + Bloqueo 3D
+   Botonera Derecha: GPS, Medición 2 puntos, Bandas y Estilo OpenFreeMap + 3D
    ========================================================================== */
 
 .map-tools-cluster {
   pointer-events: auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: 100%;
   position: relative;
 }
 
@@ -182,7 +185,7 @@
   }
 }
 
-/* Selector desplegable de mapas base OpenFreeMap + Bloqueo 3D */
+/* Selector desplegable de mapas base OpenFreeMap + Opciones de vista */
 
 .map-style-switcher-wrap {
   position: relative;
@@ -194,6 +197,8 @@
   right: 0;
   width: 292px;
   max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 110px);
+  overflow-y: auto;
   padding: 6px;
   background: var(--map-surface);
   backdrop-filter: blur(16px) saturate(150%);
@@ -643,9 +648,33 @@
    ========================================================================== */
 
 @container map-canvas (max-width: 1040px) {
+  .map-tools-cluster {
+    gap: 5px;
+  }
+
   .map-tool-btn {
     padding: 0 8.5px;
     font-size: 11.5px;
+  }
+}
+
+@container map-canvas (max-width: 540px) {
+  .map-tool-btn-label {
+    display: none;
+  }
+
+  .map-tool-btn {
+    padding: 0 8.5px;
+  }
+}
+
+@media (max-width: 680px) {
+  .map-tool-btn-label {
+    display: none;
+  }
+
+  .map-tool-btn {
+    padding: 0 9px;
   }
 }
 
@@ -656,12 +685,14 @@
     right: 10px;
     gap: 6px;
   }
+}
 
-  .map-tool-btn-label {
-    display: none;
+@media (max-width: 380px) {
+  .map-tools-cluster {
+    gap: 4px;
   }
 
   .map-tool-btn {
-    padding: 0 9px;
+    padding: 0 7.5px;
   }
 }
