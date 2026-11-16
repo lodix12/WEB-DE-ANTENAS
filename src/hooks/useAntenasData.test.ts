@@ -20,6 +20,7 @@ import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
+  type AntennaRecord,
   type AntenasDataset,
   type LiveScanDeltaChunk,
   type NovedadesDataset,
@@ -33,6 +34,7 @@ import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
+import { groupColocatedAntennasForMap } from '../utils/geo';
 import { EstadisticasView } from '../views/EstadisticasView';
 import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
@@ -3876,8 +3878,16 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     });
     expect(mmwNovItems).toHaveLength(1);
 
-    // AntenasMap mantiene AntenasMap como única exportación para react-refresh
-    expect(Object.keys(AntenasMapModule)).toEqual(['AntenasMap']);
+    // AntenasMap exporta el componente principal y los helpers puros de conteo exacto en clústeres
+    expect(AntenasMapModule.AntenasMap).toBeTypeOf('function');
+    expect(Object.keys(AntenasMapModule).sort()).toEqual([
+      'AntenasMap',
+      'buildClusterCircleRadiusExpr',
+      'buildClusterCountTextFieldExpr',
+      'buildClusterCountTextSizeExpr',
+      'buildClusterExactCountExpr',
+      'evaluateClusterCountLabel',
+    ]);
     expect(antenasMapRawSource).toContain('normalizeAntennaBandsList');
 
     const base = createSampleCustomDataset();
@@ -4834,6 +4844,326 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
     fetchSpy.mockRestore();
   });
 });
+
+describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', () => {
+  function flattenExpressionTokens(expr: unknown): (string | number | boolean)[] {
+    if (Array.isArray(expr)) {
+      const acc: (string | number | boolean)[] = [];
+      for (let i = 0; i < expr.length; i++) {
+        acc.push(...flattenExpressionTokens(expr[i]));
+      }
+      return acc;
+    }
+    if (
+      typeof expr === 'string' ||
+      typeof expr === 'number' ||
+      typeof expr === 'boolean'
+    ) {
+      return [expr];
+    }
+    return [];
+  }
+
+  function evaluateNumericStepExpr(expr: unknown, countValue: number): number {
+    if (!Array.isArray(expr) || expr[0] !== 'step' || expr.length < 3) {
+      throw new Error('Se esperaba una expresión MapLibre ["step", input, default, ...]');
+    }
+    let result = Number(expr[2]);
+    for (let i = 3; i + 1 < expr.length; i += 2) {
+      const stopThreshold = Number(expr[i]);
+      const stopOutput = Number(expr[i + 1]);
+      if (countValue >= stopThreshold) {
+        result = stopOutput;
+      } else {
+        break;
+      }
+    }
+    return result;
+  }
+
+  it('construye la expresión WebGL exacta hasta la unidad sin step, concat, sufijo k ni divisiones por 100 o 1000', () => {
+    const exactCountExpr = AntenasMapModule.buildClusterExactCountExpr();
+    expect(exactCountExpr).toEqual([
+      'round',
+      ['coalesce', ['get', 'stationSum'], ['get', 'point_count']],
+    ]);
+
+    const textFieldExpr = AntenasMapModule.buildClusterCountTextFieldExpr();
+    expect(textFieldExpr).toEqual([
+      'to-string',
+      ['round', ['coalesce', ['get', 'stationSum'], ['get', 'point_count']]],
+    ]);
+
+    const tokens = flattenExpressionTokens(textFieldExpr);
+    expect(tokens).not.toContain('step');
+    expect(tokens).not.toContain('concat');
+    expect(tokens).not.toContain('number-format');
+    expect(tokens).not.toContain('k');
+    expect(tokens).not.toContain('K');
+    expect(tokens).not.toContain('/');
+    expect(tokens).not.toContain(100);
+    expect(tokens).not.toContain(1000);
+  });
+
+  it('configura stationSum en clusterProperties y conecta LAYER_CLUSTER_COUNT sin redondeo k en AntenasMap.tsx', () => {
+    expect(antenasMapRawSource).toContain('stationCount: site.members.length');
+    expect(antenasMapRawSource).toMatch(
+      /clusterProperties:\s*\{\s*stationSum:\s*\['\+',\s*\['get',\s*'stationCount'\]\]/,
+    );
+
+    expect(antenasMapRawSource).toMatch(
+      /id:\s*LAYER_CLUSTERS[\s\S]*?'circle-radius':\s*buildClusterCircleRadiusExpr\(\)/,
+    );
+
+    const clusterCountLayerMatch = antenasMapRawSource.match(
+      /id:\s*LAYER_CLUSTER_COUNT[\s\S]*?paint:\s*\{[\s\S]*?\}/,
+    );
+    expect(clusterCountLayerMatch).not.toBeNull();
+    const clusterCountLayerBlock = clusterCountLayerMatch?.[0] ?? '';
+
+    expect(clusterCountLayerBlock).toContain(
+      "'text-field': buildClusterCountTextFieldExpr()",
+    );
+    expect(clusterCountLayerBlock).toContain(
+      "'text-size': buildClusterCountTextSizeExpr()",
+    );
+    expect(clusterCountLayerBlock).toMatch(/'text-allow-overlap':\s*true/);
+    expect(clusterCountLayerBlock).toMatch(/'text-ignore-placement':\s*true/);
+
+    // Regresión estructural: prohibido truncar o abreviar miles con 'k' o dividir entre 100
+    expect(antenasMapRawSource).not.toContain("['/', clusterCountExpr, 100]");
+    expect(antenasMapRawSource).not.toContain('point_count_abbreviated');
+    expect(clusterCountLayerBlock).not.toContain("'concat'");
+    expect(clusterCountLayerBlock).not.toMatch(/['"]k['"]/i);
+  });
+
+  it('evaluateClusterCountLabel devuelve cadenas enteras exactas hasta la unidad con stationSum (incluyendo emplazamientos < 35 m) y con fallback a point_count', () => {
+    const exactUnitCounts = [2, 49, 999, 1000, 1247, 5893, 15482, 62238];
+
+    for (const exactCount of exactUnitCounts) {
+      const reducedPointCount = Math.max(1, Math.floor(exactCount * 0.78));
+      const withStationSum = AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: exactCount,
+        point_count: reducedPointCount,
+      });
+      expect(withStationSum).toBe(String(exactCount));
+      expect(withStationSum).toMatch(/^\d+$/);
+      expect(withStationSum).not.toContain('k');
+      expect(withStationSum).not.toContain('.');
+      expect(withStationSum).not.toContain(',');
+
+      const fallbackPointCount = AntenasMapModule.evaluateClusterCountLabel({
+        point_count: exactCount,
+      });
+      expect(fallbackPointCount).toBe(String(exactCount));
+    }
+
+    // Caso representativo de emplazamientos compartidos (< 35 m) donde stationSum > point_count
+    expect(
+      AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: 1247,
+        point_count: 983,
+      }),
+    ).toBe('1247');
+
+    // Redondeo defensivo ante posible ruido en coma flotante de WebGL y valores ausentes/no finitos
+    expect(
+      AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: 1246.9999999,
+        point_count: 983,
+      }),
+    ).toBe('1247');
+    expect(
+      AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: Number.NaN,
+        point_count: 15482,
+      }),
+    ).toBe('15482');
+    expect(AntenasMapModule.evaluateClusterCountLabel({})).toBe('0');
+    expect(
+      AntenasMapModule.evaluateClusterCountLabel({ stationSum: -4 }),
+    ).toBe('0');
+  });
+
+  it('groupColocatedAntennasForMap conserva la suma exacta de antenas hasta la unidad (stationCount) en datasets mixtos con emplazamientos compartidos < 35 m y estaciones individuales', () => {
+    const makeStation = (
+      id: string,
+      gid: string,
+      op: OperatorKey,
+      lat: number,
+      lon: number,
+    ): AntennaRecord => ({
+      id,
+      gid,
+      op,
+      opRaw: OPERATOR_META[op].name,
+      lat,
+      lon,
+      dir: 'CALLE PRUEBA 1',
+      mun: 'MADRID',
+      prov: 'MADRID',
+    });
+
+    const mixedAntenas: AntennaRecord[] = [];
+
+    // 1. 120 emplazamientos tri-operador (< 35 m: ~9 m de separación) => 360 antenas reales en 120 puntos GeoJSON
+    for (let i = 0; i < 120; i++) {
+      const baseLat = 40.0 + i * 0.01;
+      const baseLon = -3.9 + (i % 10) * 0.01;
+      mixedAntenas.push(
+        makeStation(`TRI-MOV-${i}`, `2801${i}`, 'movistar', baseLat, baseLon),
+        makeStation(
+          `TRI-ORA-${i}`,
+          `2802${i}`,
+          'orange',
+          baseLat + 0.00005,
+          baseLon + 0.00004,
+        ),
+        makeStation(
+          `TRI-DIG-${i}`,
+          `2803${i}`,
+          'digi',
+          baseLat - 0.00004,
+          baseLon + 0.00005,
+        ),
+      );
+    }
+
+    // 2. 24 emplazamientos bi-operador (< 35 m: ~7 m de separación) => 48 antenas reales en 24 puntos GeoJSON
+    for (let i = 0; i < 24; i++) {
+      const baseLat = 41.5 + i * 0.01;
+      const baseLon = 2.0 + (i % 8) * 0.01;
+      mixedAntenas.push(
+        makeStation(`BI-VOD-${i}`, `0801${i}`, 'vodafone', baseLat, baseLon),
+        makeStation(
+          `BI-MAS-${i}`,
+          `0802${i}`,
+          'masmovil',
+          baseLat + 0.00004,
+          baseLon - 0.00004,
+        ),
+      );
+    }
+
+    // 3. Pareja de Telefónica/Movistar a < 35 m (~11 m): NUNCA se fusionan entre sí => 2 antenas en 2 puntos
+    mixedAntenas.push(
+      makeStation('MOV-PAIR-A', '460001', 'movistar', 39.4699, -0.3763),
+      makeStation('MOV-PAIR-B', '460002', 'movistar', 39.47, -0.3763),
+    );
+
+    // 4. 837 estaciones individuales aisladas (> 1 km entre sí) => 837 antenas en 837 puntos GeoJSON
+    // Total exacto = 360 + 48 + 2 + 837 = 1247 antenas reales en 120 + 24 + 2 + 837 = 983 puntos GeoJSON
+    const singleOps: OperatorKey[] = [
+      'movistar',
+      'orange',
+      'vodafone',
+      'masmovil',
+      'digi',
+      'otros',
+    ];
+    for (let i = 0; i < 837; i++) {
+      const op = singleOps[i % singleOps.length];
+      const lat = 36.5 + Math.floor(i / 30) * 0.05;
+      const lon = -6.0 + (i % 30) * 0.05;
+      mixedAntenas.push(makeStation(`SINGLE-${i}`, `419${i}`, op, lat, lon));
+    }
+
+    expect(mixedAntenas).toHaveLength(1247);
+
+    const groupedSites = groupColocatedAntennasForMap(mixedAntenas, 35);
+    expect(groupedSites).toHaveLength(983);
+
+    const multiOpSites = groupedSites.filter((s) => s.isMultiOperator);
+    expect(multiOpSites).toHaveLength(144);
+
+    // Suma exacta de `stationCount` (`site.members.length`) agregada en `stationSum` por MapLibre
+    const stationSumAcrossSites = groupedSites.reduce(
+      (sum, site) => sum + site.members.length,
+      0,
+    );
+    expect(stationSumAcrossSites).toBe(1247);
+    expect(stationSumAcrossSites).toBe(mixedAntenas.length);
+
+    expect(
+      AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: stationSumAcrossSites,
+        point_count: groupedSites.length,
+      }),
+    ).toBe('1247');
+  });
+
+  it('escala limpiamente circle-radius y text-size hasta conteos exactos de 4 y 5 cifras (10000 -> radio 34 / diámetro 68 px vs text-size 11.5 px)', () => {
+    const exactCountExpr = AntenasMapModule.buildClusterExactCountExpr();
+    const radiusExpr = AntenasMapModule.buildClusterCircleRadiusExpr();
+    const textSizeExpr = AntenasMapModule.buildClusterCountTextSizeExpr();
+
+    expect(radiusExpr).toEqual([
+      'step',
+      exactCountExpr,
+      15.5,
+      50,
+      19,
+      250,
+      23,
+      1000,
+      27.5,
+      5000,
+      31,
+      10000,
+      34,
+    ]);
+
+    expect(textSizeExpr).toEqual([
+      'step',
+      exactCountExpr,
+      11,
+      250,
+      11.5,
+    ]);
+
+    const expectedScale: {
+      count: number;
+      radius: number;
+      textSize: number;
+    }[] = [
+      { count: 2, radius: 15.5, textSize: 11 },
+      { count: 49, radius: 15.5, textSize: 11 },
+      { count: 50, radius: 19, textSize: 11 },
+      { count: 249, radius: 19, textSize: 11 },
+      { count: 250, radius: 23, textSize: 11.5 },
+      { count: 999, radius: 23, textSize: 11.5 },
+      { count: 1000, radius: 27.5, textSize: 11.5 },
+      { count: 1247, radius: 27.5, textSize: 11.5 },
+      { count: 4999, radius: 27.5, textSize: 11.5 },
+      { count: 5000, radius: 31, textSize: 11.5 },
+      { count: 5893, radius: 31, textSize: 11.5 },
+      { count: 9999, radius: 31, textSize: 11.5 },
+      { count: 10000, radius: 34, textSize: 11.5 },
+      { count: 15482, radius: 34, textSize: 11.5 },
+      { count: 62238, radius: 34, textSize: 11.5 },
+    ];
+
+    for (const { count, radius, textSize } of expectedScale) {
+      const actualRadius = evaluateNumericStepExpr(radiusExpr, count);
+      const actualTextSize = evaluateNumericStepExpr(textSizeExpr, count);
+      expect(actualRadius).toBe(radius);
+      expect(actualTextSize).toBe(textSize);
+
+      const label = AntenasMapModule.evaluateClusterCountLabel({
+        stationSum: count,
+      });
+      const diameterPx = actualRadius * 2;
+      // Ancho estimado conservador de dígitos tabulares en Noto Sans Regular (~0.62 * fontSize por dígito)
+      const estimatedLabelWidthPx = label.length * actualTextSize * 0.62;
+      expect(diameterPx - estimatedLabelWidthPx).toBeGreaterThanOrEqual(14);
+    }
+
+    // Verificación explícita de 5 dígitos (10000+): radio 34 px -> diámetro 68 px frente a text-size 11.5 px
+    expect(evaluateNumericStepExpr(radiusExpr, 10000) * 2).toBe(68);
+    expect(evaluateNumericStepExpr(textSizeExpr, 10000)).toBe(11.5);
+  });
+});
+
 
 
 

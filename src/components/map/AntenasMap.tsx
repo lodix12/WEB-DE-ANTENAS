@@ -272,6 +272,70 @@ function buildSelectedFilter(
   ];
 }
 
+/* oxlint-disable react/only-export-components */
+export function buildClusterExactCountExpr(): maplibregl.ExpressionSpecification {
+  return [
+    'round',
+    ['coalesce', ['get', 'stationSum'], ['get', 'point_count']],
+  ] as maplibregl.ExpressionSpecification;
+}
+
+export function buildClusterCountTextFieldExpr(): maplibregl.ExpressionSpecification {
+  return [
+    'to-string',
+    buildClusterExactCountExpr(),
+  ] as maplibregl.ExpressionSpecification;
+}
+
+export function buildClusterCircleRadiusExpr(): maplibregl.ExpressionSpecification {
+  return [
+    'step',
+    buildClusterExactCountExpr(),
+    15.5,
+    50,
+    19,
+    250,
+    23,
+    1000,
+    27.5,
+    5000,
+    31,
+    10000,
+    34,
+  ] as maplibregl.ExpressionSpecification;
+}
+
+export function buildClusterCountTextSizeExpr(): maplibregl.ExpressionSpecification {
+  return [
+    'step',
+    buildClusterExactCountExpr(),
+    11,
+    250,
+    11.5,
+  ] as maplibregl.ExpressionSpecification;
+}
+
+export function evaluateClusterCountLabel(props: {
+  stationSum?: number;
+  point_count?: number;
+}): string {
+  return String(
+    Math.max(
+      0,
+      Math.round(
+        typeof props.stationSum === 'number' &&
+          Number.isFinite(props.stationSum)
+          ? props.stationSum
+          : typeof props.point_count === 'number' &&
+              Number.isFinite(props.point_count)
+            ? props.point_count
+            : 0,
+      ),
+    ),
+  );
+}
+/* oxlint-enable react/only-export-components */
+
 function buildUnclusteredCircleRadiusExpr(
   disableClustering: boolean,
 ): maplibregl.ExpressionSpecification {
@@ -851,11 +915,7 @@ export function AntenasMap(props: AntenasMapProps) {
       lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
     }
 
-    const clusterCountExpr: maplibregl.ExpressionSpecification = [
-      'coalesce',
-      ['get', 'stationSum'],
-      ['get', 'point_count'],
-    ];
+    const clusterCountExpr = buildClusterExactCountExpr();
 
     if (!map.getLayer(LAYER_CLUSTERS)) {
       map.addLayer({
@@ -880,19 +940,7 @@ export function AntenasMap(props: AntenasMapProps) {
             5000,
             '#0F172A',
           ],
-          'circle-radius': [
-            'step',
-            clusterCountExpr,
-            15.5,
-            50,
-            19,
-            250,
-            23,
-            1000,
-            27.5,
-            5000,
-            32,
-          ],
+          'circle-radius': buildClusterCircleRadiusExpr(),
           'circle-stroke-width': 0,
         },
       });
@@ -906,31 +954,11 @@ export function AntenasMap(props: AntenasMapProps) {
         filter: ['has', 'point_count'],
         layout: {
           visibility: disableClusteringActive ? 'none' : 'visible',
-          'text-field': [
-            'step',
-            clusterCountExpr,
-            ['to-string', clusterCountExpr],
-            1000,
-            [
-              'concat',
-              [
-                'to-string',
-                ['/', ['round', ['/', clusterCountExpr, 100]], 10],
-              ],
-              'k',
-            ],
-          ],
+          'text-field': buildClusterCountTextFieldExpr(),
           'text-font': ['Noto Sans Regular'],
-          'text-size': [
-            'step',
-            clusterCountExpr,
-            11,
-            250,
-            12,
-            1000,
-            13,
-          ],
+          'text-size': buildClusterCountTextSizeExpr(),
           'text-allow-overlap': true,
+          'text-ignore-placement': true,
         },
         paint: {
           'text-color': '#FFFFFF',
