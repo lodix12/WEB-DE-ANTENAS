@@ -14,8 +14,14 @@ import {
   type ScanStatusPayload,
 } from '../types/antena';
 
+const GITHUB_GIT_REF_STATUS_URL =
+  'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/git/ref/heads/scan-status';
+
 const GITHUB_CONTENTS_STATUS_URL =
   'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/contents/scan-status.json?ref=scan-status';
+
+const GITHUB_RAW_REPO_BASE_URL =
+  'https://raw.githubusercontent.com/lodix12/WEB-DE-ANTENAS';
 
 const GITHUB_RAW_STATUS_URL =
   'https://raw.githubusercontent.com/lodix12/WEB-DE-ANTENAS/scan-status/scan-status.json';
@@ -26,9 +32,10 @@ const DEFAULT_LIVE_DELTA_BASE_URL =
 const GITHUB_WORKFLOW_RUNS_URL =
   'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/actions/workflows/update-and-deploy.yml/runs?per_page=4';
 
-/** Intervalo de sondeo rápido en vivo vía raw.githubusercontent.com (sin límite de 60 req/h) */
-const ACTIVE_POLL_INTERVAL_MS = 3_500;
-const IDLE_POLL_INTERVAL_MS = 15_000;
+/** Intervalo de sondeo en vivo fijado por SHA de commit (~12 min de escaneo completo = < 55 reqs < límite 60 req/h) */
+const ACTIVE_POLL_INTERVAL_MS = 10_000;
+const CONSERVATIVE_ACTIVE_POLL_INTERVAL_MS = 18_000;
+const IDLE_POLL_INTERVAL_MS = 20_000;
 
 /** Si un estado "running"/"handoff" supera 6 minutos sin latido, verificar si el job sigue vivo */
 const STALE_HEARTBEAT_MS = 6 * 60 * 1000;
@@ -59,12 +66,18 @@ const PERCENT_FORMATTER_ES = new Intl.NumberFormat('es-ES', {
 });
 
 interface EtagCache {
+  refEtag: string | null;
+  commitSha: string | null;
+  rateLimitRemaining: number;
   etag: string | null;
   payload: ScanStatusPayload | null;
   lastActionsCheckMs: number;
 }
 
 const etagCache: EtagCache = {
+  refEtag: null,
+  commitSha: null,
+  rateLimitRemaining: 60,
   etag: null,
   payload: null,
   lastActionsCheckMs: 0,
@@ -72,7 +85,7 @@ const etagCache: EtagCache = {
 
 interface LiveDeltaScanCache {
   scanId: string;
-  baseUrl: string;
+  customBaseUrl: string;
   sealedChunks: Map<number, LiveScanDeltaChunk>;
   tailSeq: number;
   tailChunk: LiveScanDeltaChunk | null;
@@ -793,12 +806,12 @@ export function computeInterpolatedScanMetrics(
     status.requestsPerSecond > 0;
   const boundedElapsedSec =
     status.state === 'running'
-      ? Math.min(hasFastRate ? 8 : 55, rawElapsedSec)
+      ? Math.min(hasFastRate ? 18 : 55, rawElapsedSec)
       : 0;
   const extraAntennas = hasFastRate
     ? Math.floor(
         boundedElapsedSec *
-          Math.min(80, (status.requestsPerSecond ?? 0) * 0.9),
+          Math.min(85, (status.requestsPerSecond ?? 0) * 0.9),
       )
     : Math.floor(boundedElapsedSec * 0.9);
   const maxAllowed = Math.max(status.scannedAntennas, totalAntennas - 1);
@@ -828,7 +841,10 @@ export function computeInterpolatedScanMetrics(
 }
 
 async function fetchRawBranchPrimary(): Promise<ScanStatusPayload | null> {
-  const resp = await fetch(`${GITHUB_RAW_STATUS_URL}?t=${Date.now()}`, {
+  const url = etagCache.commitSha
+    ? `${GITHUB_RAW_REPO_BASE_URL}/${etagCache.commitSha}/scan-status.json`
+    : `${GITHUB_RAW_STATUS_URL}?t=${Date.now()}`;
+  const resp = await fetch(url, {
     cache: 'no-store',
   });
   if (!resp.ok) {
@@ -836,6 +852,76 @@ async function fetchRawBranchPrimary(): Promise<ScanStatusPayload | null> {
   }
   const json: unknown = await resp.json();
   return parseScanStatusPayload(json);
+}
+
+async function fetchCommitPinnedRawStatus(): Promise<ScanStatusPayload | null> {
+  if (etagCache.rateLimitRemaining <= 3) {
+    return null;
+  }
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+  };
+  if (etagCache.refEtag) {
+    headers['If-None-Match'] = etagCache.refEtag;
+  }
+  const refResp = await fetch(
+    `${GITHUB_GIT_REF_STATUS_URL}?t=${Date.now()}`,
+    {
+      headers,
+      cache: 'no-store',
+    },
+  );
+  const remHeader = refResp.headers.get('X-RateLimit-Remaining');
+  if (remHeader !== null) {
+    const parsedRem = Number.parseInt(remHeader, 10);
+    if (Number.isFinite(parsedRem)) {
+      etagCache.rateLimitRemaining = parsedRem;
+    }
+  }
+
+  if (refResp.status === 304 && etagCache.payload) {
+    return etagCache.payload;
+  }
+  if (!refResp.ok) {
+    return null;
+  }
+
+  const nextRefEtag = refResp.headers.get('ETag');
+  const refJson: unknown = await refResp.json();
+  const sha =
+    isPlainObject(refJson) &&
+    isPlainObject(refJson.object) &&
+    typeof refJson.object.sha === 'string' &&
+    refJson.object.sha.trim().length > 0
+      ? refJson.object.sha.trim()
+      : '';
+  if (!sha) {
+    return null;
+  }
+
+  if (sha === etagCache.commitSha && etagCache.payload) {
+    if (nextRefEtag) {
+      etagCache.refEtag = nextRefEtag;
+    }
+    return etagCache.payload;
+  }
+
+  const rawResp = await fetch(
+    `${GITHUB_RAW_REPO_BASE_URL}/${sha}/scan-status.json`,
+    { cache: 'no-store' },
+  );
+  if (!rawResp.ok) {
+    return null;
+  }
+  const parsed = parseScanStatusPayload(await rawResp.json());
+  if (parsed) {
+    etagCache.commitSha = sha;
+    if (nextRefEtag) {
+      etagCache.refEtag = nextRefEtag;
+    }
+    etagCache.payload = parsed;
+  }
+  return parsed;
 }
 
 interface ActiveWorkflowRunInfo {
@@ -905,7 +991,7 @@ function getCustomOverrideUrl(): string | null {
   return null;
 }
 
-function getLiveDeltaBaseUrl(): string {
+function getCustomLiveDeltaBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const win = window as unknown as Record<string, unknown>;
     if (
@@ -914,6 +1000,17 @@ function getLiveDeltaBaseUrl(): string {
     ) {
       return win.__RADIOMAPA_LIVE_DELTA_BASE_URL__.trim().replace(/\/+$/, '');
     }
+  }
+  return '';
+}
+
+function getLiveDeltaBaseUrl(): string {
+  const custom = getCustomLiveDeltaBaseUrl();
+  if (custom) {
+    return custom;
+  }
+  if (etagCache.commitSha) {
+    return `${GITHUB_RAW_REPO_BASE_URL}/${etagCache.commitSha}`;
   }
   return DEFAULT_LIVE_DELTA_BASE_URL;
 }
@@ -928,18 +1025,30 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
 
   let payload: ScanStatusPayload | null = null;
 
-  // 1) Fuente primaria en tiempo real: raw.githubusercontent.com (sin límite de 60 req/h)
+  // 1) Fuente en tiempo real sin caché CDN de 5 min: git/ref + ETag -> raw fijado por commit SHA
   try {
-    const rawParsed = await fetchRawBranchPrimary();
-    if (rawParsed) {
-      etagCache.payload = rawParsed;
-      payload = rawParsed;
+    const pinnedParsed = await fetchCommitPinnedRawStatus();
+    if (pinnedParsed) {
+      payload = pinnedParsed;
     }
   } catch {
-    // Respaldo mediante GitHub Contents API + ETag
+    // Continuar hacia respaldo raw/contents
   }
 
-  // 2) Respaldo mediante GitHub Contents API con ETag (If-None-Match) solo si falla raw
+  // 2) Respaldo mediante raw.githubusercontent.com si se agotó cuota o falló git/ref
+  if (!payload) {
+    try {
+      const rawParsed = await fetchRawBranchPrimary();
+      if (rawParsed) {
+        etagCache.payload = rawParsed;
+        payload = rawParsed;
+      }
+    } catch {
+      // Respaldo mediante GitHub Contents API + ETag
+    }
+  }
+
+  // 3) Último respaldo mediante GitHub Contents API con ETag (If-None-Match)
   if (!payload) {
     try {
       const headers: Record<string, string> = {
@@ -978,7 +1087,7 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   const canCheckActions =
     now - etagCache.lastActionsCheckMs >= ACTIONS_CHECK_COOLDOWN_MS;
 
-  // 3) Si el documento indica "running"/"handoff" pero el latido lleva > 6 min congelado,
+  // 4) Si el documento indica "running"/"handoff" pero el latido lleva > 6 min congelado,
   // comprobar si la ejecución de GitHub Actions fue cancelada abruptamente.
   if (
     payload &&
@@ -1002,7 +1111,7 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
     return payload;
   }
 
-  // 4) Si el estado aparece inactivo/completado, verificar de forma ligera si acaba de arrancar
+  // 5) Si el estado aparece inactivo/completado, verificar de forma ligera si acaba de arrancar
   // un escaneo diario o forzado en los primeros segundos antes del primer push a `scan-status`.
   if (canCheckActions) {
     etagCache.lastActionsCheckMs = now;
@@ -1014,12 +1123,12 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
       (!payload || payload.scanId !== runCheck.runId)
     ) {
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         state: 'running',
         scanId: runCheck.runId,
         trigger: runCheck.event || 'workflow_dispatch',
         recordNovedades: runCheck.event === 'schedule',
-        part: '1/4',
+        part: '1/2',
         phase: 'censo',
         startedAt: runCheck.startedAt,
         updatedAt: new Date(now).toISOString(),
@@ -1066,12 +1175,17 @@ async function fetchLiveScanMergedDelta(
   chunkCount: number,
   completedDatasetUpdatedAt: string,
 ): Promise<LiveScanMergedDelta> {
+  const customBaseUrl = getCustomLiveDeltaBaseUrl();
   const baseUrl = getLiveDeltaBaseUrl();
   let cache = liveDeltaCacheByClient.get(cacheOwner);
-  if (!cache || cache.scanId !== scanId || cache.baseUrl !== baseUrl) {
+  if (
+    !cache ||
+    cache.scanId !== scanId ||
+    cache.customBaseUrl !== customBaseUrl
+  ) {
     cache = {
       scanId,
-      baseUrl,
+      customBaseUrl,
       sealedChunks: new Map<number, LiveScanDeltaChunk>(),
       tailSeq: 0,
       tailChunk: null,
@@ -1112,7 +1226,7 @@ async function fetchLiveScanMergedDelta(
     }
     try {
       const resp = await fetch(
-        `${baseUrl}/live-tail.json?scan=${encodeURIComponent(scanId)}&seq=${deltaSeq}&t=${Date.now()}`,
+        `${baseUrl}/live-tail.json?scan=${encodeURIComponent(scanId)}&seq=${deltaSeq}`,
         { cache: 'no-store' },
       );
       if (!resp.ok) return;
@@ -1127,7 +1241,7 @@ async function fetchLiveScanMergedDelta(
         throw err;
       }
     }
-  })();
+  });
 
   await Promise.all([
     runTasksWithConcurrency(chunkTasks, LIVE_CHUNK_FETCH_CONCURRENCY),
@@ -1165,9 +1279,12 @@ function useSharedScanStatusQuery() {
     staleTime: 3_000,
     refetchInterval: (query) => {
       const s = query.state.data?.state;
-      return s === 'running' || s === 'handoff'
-        ? ACTIVE_POLL_INTERVAL_MS
-        : IDLE_POLL_INTERVAL_MS;
+      if (s === 'running' || s === 'handoff') {
+        return etagCache.rateLimitRemaining <= 20
+          ? CONSERVATIVE_ACTIVE_POLL_INTERVAL_MS
+          : ACTIVE_POLL_INTERVAL_MS;
+      }
+      return IDLE_POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
