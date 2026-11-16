@@ -35,11 +35,15 @@ import {
   useFilteredAntenas,
 } from './useAntenasData';
 import {
+  NOVEDADES_PAGE_SIZE_OPTIONS,
+  buildPaginationTokens,
   classifyFrequencyBandMhz,
   filterNovedades,
   formatScanDateTimeDmyHms,
   getOperatorRowBackground,
   importNovedadesJsonDataset,
+  isValidNovedadesPageSize,
+  paginateNovedades,
   parseCustomNovedadesJson,
 } from './useNovedadesData';
 import {
@@ -1254,6 +1258,133 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(dailyScanHtml).toContain('Diario · 18:00');
     expect(dailyScanHtml).toMatch(/68,12\s*%/);
     expect(dailyScanHtml).toContain('Parte 3/4');
+
+    // Controles de paginación: selector exacto 10, 25, 50 y 100 + selector de página concreta
+    expect(baselineHtml).toContain('id="novedades-pagination-bar"');
+    const pageSizeSelectMatch = baselineHtml.match(
+      /<select[^>]*id="novedades-page-size-select"[^>]*>([\s\S]*?)<\/select>/,
+    );
+    expect(pageSizeSelectMatch).not.toBeNull();
+    const pageSizeOptions = Array.from(
+      (pageSizeSelectMatch?.[1] ?? '').matchAll(
+        /<option[^>]*value="(\d+)"[^>]*>(\d+)<\/option>/g,
+      ),
+      (m) => Number(m[1]),
+    );
+    expect(pageSizeOptions).toEqual([10, 25, 50, 100]);
+    expect(baselineHtml).toContain('id="novedades-page-input"');
+    expect(baselineHtml).toContain('id="novedades-page-jump-btn"');
+
+    // Dataset multipágina (65 filas -> 3 páginas con el tamaño por defecto de 25 filas/página)
+    const baseSample = createSampleNovedadesDataset();
+    const sixtyFiveRows = Array.from({ length: 65 }, (_, idx) => {
+      const code = String(2810000 + idx);
+      return {
+        ...baseSample.novedades[idx % 2],
+        id: `nov-row-${idx + 1}`,
+        codigo: code,
+        antennaId: `DIGI SPAIN TELECOM, S.L.U. - ${code}`,
+      };
+    });
+    const multiPageHtml = await renderNovedadesWithDataset({
+      ...baseSample,
+      total: 65,
+      antenasNuevas: 33,
+      frecuenciasNuevas: 32,
+      novedades: sixtyFiveRows,
+    });
+    expect(multiPageHtml.match(/class="novedades-row"/g)).toHaveLength(25);
+    expect(multiPageHtml).toContain('1–25');
+    expect(multiPageHtml).toContain('aria-label="Ir a la página 1"');
+    expect(multiPageHtml).toContain('aria-label="Ir a la página 2"');
+    expect(multiPageHtml).toContain('aria-label="Ir a la página 3"');
+    expect(multiPageHtml).toContain('aria-current="page"');
+    expect(multiPageHtml).toContain(
+      'aria-label="Seleccionar página concreta (1 a 3)"',
+    );
+  });
+
+  it('pagina correctamente con opciones 10, 25, 50 y 100 filas y construye numeración de páginas concretas', () => {
+    expect(NOVEDADES_PAGE_SIZE_OPTIONS).toEqual([10, 25, 50, 100]);
+    expect(isValidNovedadesPageSize(10)).toBe(true);
+    expect(isValidNovedadesPageSize(25)).toBe(true);
+    expect(isValidNovedadesPageSize(50)).toBe(true);
+    expect(isValidNovedadesPageSize(100)).toBe(true);
+    expect(isValidNovedadesPageSize(20)).toBe(false);
+    expect(isValidNovedadesPageSize(300)).toBe(false);
+
+    // Dataset vacío (0 filas)
+    const emptySlice = paginateNovedades([], 1, 25);
+    expect(emptySlice).toEqual({
+      items: [],
+      currentPage: 1,
+      pageSize: 25,
+      totalItems: 0,
+      totalPages: 1,
+      startRow: 0,
+      endRow: 0,
+    });
+
+    // Dataset con 137 filas probado con 10, 25, 50 y 100 filas/página y salto a página concreta
+    const rows = Array.from({ length: 137 }, (_, i) => i + 1);
+
+    const p10Page9 = paginateNovedades(rows, 9, 10);
+    expect(p10Page9.totalPages).toBe(14);
+    expect(p10Page9.currentPage).toBe(9);
+    expect(p10Page9.startRow).toBe(81);
+    expect(p10Page9.endRow).toBe(90);
+    expect(p10Page9.items).toEqual([81, 82, 83, 84, 85, 86, 87, 88, 89, 90]);
+
+    const p25Last = paginateNovedades(rows, 999, 25);
+    expect(p25Last.totalPages).toBe(6);
+    expect(p25Last.currentPage).toBe(6);
+    expect(p25Last.startRow).toBe(126);
+    expect(p25Last.endRow).toBe(137);
+    expect(p25Last.items).toHaveLength(12);
+
+    const p50FirstClamp = paginateNovedades(rows, 0, 50);
+    expect(p50FirstClamp.totalPages).toBe(3);
+    expect(p50FirstClamp.currentPage).toBe(1);
+    expect(p50FirstClamp.startRow).toBe(1);
+    expect(p50FirstClamp.endRow).toBe(50);
+
+    const p100Page2 = paginateNovedades(rows, 2, 100);
+    expect(p100Page2.totalPages).toBe(2);
+    expect(p100Page2.currentPage).toBe(2);
+    expect(p100Page2.startRow).toBe(101);
+    expect(p100Page2.endRow).toBe(137);
+    expect(p100Page2.items).toHaveLength(37);
+
+    // Tokens de paginación estables (sin salto de anchura cuando totalPages > 7)
+    expect(buildPaginationTokens(1, 1)).toEqual([1]);
+    expect(buildPaginationTokens(3, 6)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(buildPaginationTokens(2, 14)).toEqual([
+      1,
+      2,
+      3,
+      4,
+      5,
+      'ellipsis-end',
+      14,
+    ]);
+    expect(buildPaginationTokens(8, 14)).toEqual([
+      1,
+      'ellipsis-start',
+      7,
+      8,
+      9,
+      'ellipsis-end',
+      14,
+    ]);
+    expect(buildPaginationTokens(13, 14)).toEqual([
+      1,
+      'ellipsis-start',
+      10,
+      11,
+      12,
+      13,
+      14,
+    ]);
   });
 
   it('parsea scan-status.json (directo y Base64 Contents API) e interpola avance en tiempo real', () => {

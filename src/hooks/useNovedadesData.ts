@@ -202,6 +202,121 @@ export const STANDARD_NOVEDADES_BANDS = [
   '26 GHz',
 ] as const;
 
+export const NOVEDADES_PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
+
+export type NovedadesPageSize = (typeof NOVEDADES_PAGE_SIZE_OPTIONS)[number];
+
+export const DEFAULT_NOVEDADES_PAGE_SIZE: NovedadesPageSize = 25;
+
+export type PaginationToken = number | 'ellipsis-start' | 'ellipsis-end';
+
+export interface NovedadesPageSlice<T> {
+  items: T[];
+  currentPage: number;
+  pageSize: NovedadesPageSize;
+  totalItems: number;
+  totalPages: number;
+  startRow: number;
+  endRow: number;
+}
+
+export function isValidNovedadesPageSize(
+  value: number,
+): value is NovedadesPageSize {
+  return (NOVEDADES_PAGE_SIZE_OPTIONS as readonly number[]).includes(value);
+}
+
+/**
+ * Construye los elementos de numeración de páginas manteniendo una ventana
+ * estable de hasta 7 posiciones cuando existen más de 7 páginas totales.
+ */
+export function buildPaginationTokens(
+  currentPage: number,
+  totalPages: number,
+): PaginationToken[] {
+  const total = Math.max(1, Math.trunc(Number.isFinite(totalPages) ? totalPages : 1));
+  const current = Math.min(
+    Math.max(1, Math.trunc(Number.isFinite(currentPage) ? currentPage : 1)),
+    total,
+  );
+
+  if (total <= 7) {
+    const all: PaginationToken[] = [];
+    for (let p = 1; p <= total; p++) {
+      all.push(p);
+    }
+    return all;
+  }
+
+  if (current <= 4) {
+    return [1, 2, 3, 4, 5, 'ellipsis-end', total];
+  }
+
+  if (current >= total - 3) {
+    return [
+      1,
+      'ellipsis-start',
+      total - 4,
+      total - 3,
+      total - 2,
+      total - 1,
+      total,
+    ];
+  }
+
+  return [
+    1,
+    'ellipsis-start',
+    current - 1,
+    current,
+    current + 1,
+    'ellipsis-end',
+    total,
+  ];
+}
+
+/**
+ * Calcula el segmento paginado de filas de novedades acotando siempre la página
+ * solicitada al rango válido [1, totalPages].
+ */
+export function paginateNovedades<T>(
+  rows: readonly T[],
+  requestedPage: number,
+  pageSize: NovedadesPageSize,
+): NovedadesPageSlice<T> {
+  const totalItems = rows.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const currentPage = Math.min(
+    Math.max(1, Math.trunc(Number.isFinite(requestedPage) ? requestedPage : 1)),
+    totalPages,
+  );
+
+  if (totalItems === 0) {
+    return {
+      items: [],
+      currentPage: 1,
+      pageSize,
+      totalItems: 0,
+      totalPages: 1,
+      startRow: 0,
+      endRow: 0,
+    };
+  }
+
+  const startIdx = (currentPage - 1) * pageSize;
+  const endIdx = Math.min(startIdx + pageSize, totalItems);
+
+  return {
+    items: rows.slice(startIdx, endIdx),
+    currentPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    startRow: startIdx + 1,
+    endRow: endIdx,
+  };
+}
+
 /**
  * Devuelve el color de fondo de la fila con el color oficial de la operadora
  * asociada y un 50% de transparencia exacta (alpha = 0.5).

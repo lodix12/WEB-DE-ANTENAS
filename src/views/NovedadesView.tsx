@@ -1,6 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { Link } from '@tanstack/react-router';
 import {
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clock,
   Radio,
   RadioTower,
@@ -13,12 +24,18 @@ import {
 } from 'lucide-react';
 import { useAntenasData } from '../hooks/useAntenasData';
 import {
+  DEFAULT_NOVEDADES_PAGE_SIZE,
+  NOVEDADES_PAGE_SIZE_OPTIONS,
   STANDARD_NOVEDADES_BANDS,
+  buildPaginationTokens,
   extractScanDayDmy,
   filterNovedades,
   formatScanDateTimeDmyHms,
   getOperatorRowBackground,
+  isValidNovedadesPageSize,
+  paginateNovedades,
   useNovedadesData,
+  type NovedadesPageSize,
 } from '../hooks/useNovedadesData';
 import { useScanProgress } from '../hooks/useScanProgress';
 import {
@@ -27,9 +44,6 @@ import {
   type NovedadTipo,
   type OperatorKey,
 } from '../types/antena';
-
-const INITIAL_VISIBLE_ROWS = 300;
-const LOAD_MORE_STEP = 300;
 
 export function NovedadesView() {
   const {
@@ -42,6 +56,9 @@ export function NovedadesView() {
   const { derived } = useAntenasData();
   const scanProgress = useScanProgress(derived?.dataset.total ?? 62230);
 
+  const tableSectionRef = useRef<HTMLElement | null>(null);
+  const pageInputRef = useRef<HTMLInputElement | null>(null);
+
   const [tipoFilter, setTipoFilter] = useState<'all' | NovedadTipo>('all');
   const [operatorFilter, setOperatorFilter] = useState<'all' | OperatorKey>(
     'all',
@@ -50,9 +67,17 @@ export function NovedadesView() {
   const [locationFilter, setLocationFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [pagination, setPagination] = useState<{ key: string; limit: number }>({
+  const [pageSize, setPageSize] = useState<NovedadesPageSize>(
+    DEFAULT_NOVEDADES_PAGE_SIZE,
+  );
+  const [pageState, setPageState] = useState<{
+    key: string;
+    page: number;
+    draftInput: string | null;
+  }>({
     key: '',
-    limit: INITIAL_VISIBLE_ROWS,
+    page: 1,
+    draftInput: null,
   });
 
   useEffect(() => {
@@ -60,9 +85,8 @@ export function NovedadesView() {
       'Novedades · Censo de Antenas y Frecuencias Móviles en España';
   }, []);
 
-  const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${locationFilter}|${dateFilter}|${searchQuery}`;
-  const effectiveLimit =
-    pagination.key === filterKey ? pagination.limit : INITIAL_VISIBLE_ROWS;
+  const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${locationFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
+  const requestedPage = pageState.key === filterKey ? pageState.page : 1;
 
   const summaryCounts = useMemo(() => {
     const byOp: Record<OperatorKey, number> = {
@@ -167,7 +191,7 @@ export function NovedadesView() {
     setLocationFilter('all');
     setDateFilter('all');
     setSearchQuery('');
-    setPagination({ key: '', limit: INITIAL_VISIBLE_ROWS });
+    setPageState({ key: '', page: 1, draftInput: null });
   }
 
   if (isLoading && !dataset) {
@@ -215,13 +239,86 @@ export function NovedadesView() {
   }
 
   const lastScanFormatted = formatScanDateTimeDmyHms(dataset.updatedAt);
-  const visibleRows =
-    filteredRows.length > effectiveLimit
-      ? filteredRows.slice(0, effectiveLimit)
-      : filteredRows;
-  const remainingRows = Math.max(0, filteredRows.length - visibleRows.length);
+  const pageSlice = paginateNovedades(filteredRows, requestedPage, pageSize);
+  const {
+    items: visibleRows,
+    currentPage,
+    totalItems,
+    totalPages,
+    startRow,
+    endRow,
+  } = pageSlice;
+  const paginationTokens = buildPaginationTokens(currentPage, totalPages);
+  const displayedPageInput =
+    pageState.key === filterKey && pageState.draftInput !== null
+      ? pageState.draftInput
+      : String(currentPage);
   const selectedOperatorMeta =
     operatorFilter !== 'all' ? OPERATOR_META[operatorFilter] : null;
+
+  function scrollTableTopIfNeeded() {
+    const sectionEl = tableSectionRef.current;
+    if (!sectionEl) return;
+    const rect = sectionEl.getBoundingClientRect();
+    if (rect.top < 56) {
+      sectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  function goToPage(nextPage: number) {
+    const clamped = Math.min(Math.max(1, Math.trunc(nextPage)), totalPages);
+    setPageState({ key: filterKey, page: clamped, draftInput: null });
+    if (clamped !== currentPage) {
+      scrollTableTopIfNeeded();
+    }
+  }
+
+  function handlePageSizeChange(rawValue: string) {
+    const parsed = Number.parseInt(rawValue, 10);
+    if (isValidNovedadesPageSize(parsed)) {
+      setPageSize(parsed);
+      setPageState({ key: '', page: 1, draftInput: null });
+      scrollTableTopIfNeeded();
+    }
+  }
+
+  function handlePageJumpSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = displayedPageInput.trim();
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
+      setPageState({ key: filterKey, page: currentPage, draftInput: null });
+      return;
+    }
+    goToPage(parsed);
+  }
+
+  function handlePageInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Escape') {
+      setPageState({ key: filterKey, page: currentPage, draftInput: null });
+      event.currentTarget.blur();
+      return;
+    }
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      const base = Number.parseInt(displayedPageInput, 10);
+      const start = Number.isFinite(base) ? base : currentPage;
+      const delta = event.key === 'ArrowUp' ? 1 : -1;
+      const next = Math.min(Math.max(1, start + delta), totalPages);
+      setPageState({
+        key: filterKey,
+        page: currentPage,
+        draftInput: String(next),
+      });
+    }
+  }
+
+  function focusPageJumpInput() {
+    const inputEl = pageInputRef.current;
+    if (!inputEl || inputEl.disabled) return;
+    inputEl.focus();
+    inputEl.select();
+  }
 
   return (
     <main className="page-container novedades-page">
@@ -353,6 +450,7 @@ export function NovedadesView() {
       </section>
 
       <section
+        ref={tableSectionRef}
         className="section-block novedades-table-section"
         aria-labelledby="novedades-section-h2"
       >
@@ -631,7 +729,7 @@ export function NovedadesView() {
 
         {hasActiveFilters && dataset.novedades.length > 0 && (
           <div className="novedades-results-status" aria-live="polite">
-            Mostrando{' '}
+            Coinciden{' '}
             <strong className="mono">
               {filteredRows.length.toLocaleString('es-ES')}
             </strong>{' '}
@@ -844,53 +942,201 @@ export function NovedadesView() {
           </table>
         </div>
 
-        {remainingRows > 0 && (
-          <div className="novedades-pagination-bar">
-            <span className="novedades-pagination-info">
-              Mostrando{' '}
-              <strong className="mono">
-                {visibleRows.length.toLocaleString('es-ES')}
-              </strong>{' '}
-              de{' '}
-              <strong className="mono">
-                {filteredRows.length.toLocaleString('es-ES')}
-              </strong>{' '}
-              filas
+        <div
+          id="novedades-pagination-bar"
+          className="novedades-pagination-bar"
+          role="region"
+          aria-label="Controles de paginación de la tabla de novedades"
+        >
+          <div className="novedades-pagination-left">
+            <div className="novedades-page-size-group">
+              <label
+                htmlFor="novedades-page-size-select"
+                className="novedades-pagination-label"
+              >
+                Filas por página
+              </label>
+              <select
+                id="novedades-page-size-select"
+                className="select-control novedades-page-size-select"
+                value={pageSize}
+                onChange={(e) => handlePageSizeChange(e.target.value)}
+              >
+                {NOVEDADES_PAGE_SIZE_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <span className="novedades-pagination-info" aria-live="polite">
+              {totalItems > 0 ? (
+                <>
+                  Mostrando{' '}
+                  <strong className="mono">
+                    {startRow.toLocaleString('es-ES')}–
+                    {endRow.toLocaleString('es-ES')}
+                  </strong>{' '}
+                  de{' '}
+                  <strong className="mono">
+                    {totalItems.toLocaleString('es-ES')}
+                  </strong>{' '}
+                  {totalItems === 1 ? 'fila' : 'filas'}
+                </>
+              ) : (
+                <>
+                  Mostrando <strong className="mono">0</strong> filas
+                </>
+              )}
             </span>
-            <div className="novedades-pagination-actions">
+          </div>
+
+          <div className="novedades-pagination-right">
+            <nav
+              className="novedades-page-nav"
+              aria-label="Selector de páginas de novedades"
+            >
               <button
                 type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() =>
-                  setPagination({
-                    key: filterKey,
-                    limit: effectiveLimit + LOAD_MORE_STEP,
-                  })
-                }
+                id="novedades-page-first"
+                className="novedades-page-btn novedades-page-step-btn"
+                onClick={() => goToPage(1)}
+                disabled={currentPage <= 1}
+                title="Primera página"
+                aria-label="Primera página"
               >
-                Mostrar{' '}
-                {Math.min(LOAD_MORE_STEP, remainingRows).toLocaleString(
-                  'es-ES',
-                )}{' '}
-                más
+                <ChevronsLeft size={14} aria-hidden="true" />
               </button>
-              {remainingRows > LOAD_MORE_STEP && (
-                <button
-                  type="button"
-                  className="btn btn-subtle btn-sm"
-                  onClick={() =>
-                    setPagination({
-                      key: filterKey,
-                      limit: filteredRows.length,
-                    })
+
+              <button
+                type="button"
+                id="novedades-page-prev"
+                className="novedades-page-btn novedades-page-step-btn"
+                onClick={() => goToPage(currentPage - 1)}
+                disabled={currentPage <= 1}
+                title="Página anterior"
+                aria-label="Página anterior"
+              >
+                <ChevronLeft size={14} aria-hidden="true" />
+              </button>
+
+              <div className="novedades-page-numbers">
+                {paginationTokens.map((token) =>
+                  typeof token === 'number' ? (
+                    <button
+                      key={token}
+                      type="button"
+                      className={`novedades-page-btn mono${
+                        token === currentPage ? ' is-active' : ''
+                      }`}
+                      onClick={() => goToPage(token)}
+                      aria-label={`Ir a la página ${token}`}
+                      aria-current={token === currentPage ? 'page' : undefined}
+                    >
+                      {token.toLocaleString('es-ES')}
+                    </button>
+                  ) : (
+                    <button
+                      key={token}
+                      type="button"
+                      className="novedades-page-ellipsis mono"
+                      onClick={focusPageJumpInput}
+                      disabled={totalPages <= 1}
+                      title="Escribir número de página"
+                      aria-label="Escribir número de página concreta"
+                    >
+                      …
+                    </button>
+                  ),
+                )}
+              </div>
+
+              <button
+                type="button"
+                id="novedades-page-next"
+                className="novedades-page-btn novedades-page-step-btn"
+                onClick={() => goToPage(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                title="Página siguiente"
+                aria-label="Página siguiente"
+              >
+                <ChevronRight size={14} aria-hidden="true" />
+              </button>
+
+              <button
+                type="button"
+                id="novedades-page-last"
+                className="novedades-page-btn novedades-page-step-btn"
+                onClick={() => goToPage(totalPages)}
+                disabled={currentPage >= totalPages}
+                title="Última página"
+                aria-label="Última página"
+              >
+                <ChevronsRight size={14} aria-hidden="true" />
+              </button>
+            </nav>
+
+            <form
+              className="novedades-page-jump"
+              onSubmit={handlePageJumpSubmit}
+            >
+              <label
+                htmlFor="novedades-page-input"
+                className="novedades-pagination-label"
+              >
+                Ir a página
+              </label>
+              <input
+                ref={pageInputRef}
+                id="novedades-page-input"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className="novedades-page-input mono"
+                value={displayedPageInput}
+                onChange={(e) => {
+                  const digitsOnly = e.target.value.replace(/\D+/g, '');
+                  setPageState({
+                    key: filterKey,
+                    page: currentPage,
+                    draftInput: digitsOnly,
+                  });
+                }}
+                onBlur={(e) => {
+                  const nextFocused = e.relatedTarget;
+                  if (
+                    nextFocused instanceof HTMLElement &&
+                    nextFocused.id === 'novedades-page-jump-btn'
+                  ) {
+                    return;
                   }
-                >
-                  Mostrar todas ({filteredRows.length.toLocaleString('es-ES')})
-                </button>
-              )}
-            </div>
+                  setPageState((prev) => ({
+                    ...prev,
+                    draftInput: null,
+                  }));
+                }}
+                onKeyDown={handlePageInputKeyDown}
+                disabled={totalPages <= 1}
+                aria-label={`Seleccionar página concreta (1 a ${totalPages})`}
+              />
+              <span className="novedades-page-total">
+                de{' '}
+                <strong className="mono">
+                  {totalPages.toLocaleString('es-ES')}
+                </strong>
+              </span>
+              <button
+                type="submit"
+                id="novedades-page-jump-btn"
+                className="btn btn-secondary btn-sm novedades-page-jump-btn"
+                disabled={totalPages <= 1}
+              >
+                Ir
+              </button>
+            </form>
           </div>
-        )}
+        </div>
       </section>
     </main>
   );
