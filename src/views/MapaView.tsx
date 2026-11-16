@@ -3,7 +3,6 @@ import { useSearch } from '@tanstack/react-router';
 import {
   PanelLeftOpen,
   RefreshCw,
-  Ruler,
   SlidersHorizontal,
 } from 'lucide-react';
 import { AntenasMap } from '../components/map/AntenasMap';
@@ -207,7 +206,7 @@ export function MapaView() {
           </button>
         )}
 
-        {/* Barra flotante superior en móvil */}
+        {/* Botón flotante superior izquierdo en móvil para abrir filtros */}
         <div className="mobile-controls-bar">
           <button
             type="button"
@@ -223,21 +222,6 @@ export function MapaView() {
               </span>
             </span>
           </button>
-
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button
-              type="button"
-              id="mobile-radar-mode-btn"
-              className={`btn btn-sm ${
-                measureModeActive ? 'btn-active' : 'btn-secondary'
-              }`}
-              onClick={toggleMeasureMode}
-              title="Seleccionar 2 puntos en el mapa para medir distancia"
-            >
-              <Ruler size={13} aria-hidden="true" />
-              <span>Medir</span>
-            </button>
-          </div>
         </div>
 
         {isLoading && !derived ? (

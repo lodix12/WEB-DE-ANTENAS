@@ -23,7 +23,9 @@ import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
+import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
+import { WorkspaceProvider } from './WorkspaceProvider';
 import {
   buildDerivedAntenasStructures,
   filterAntenas,
@@ -1292,4 +1294,47 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(m20.scannedAntennas).toBe(518);
     expect(m20.percent).toBeGreaterThanOrEqual(0.83);
   });
+
+  it('renderiza en MapaView un único control de medición (#map-toggle-radar-btn) sin botón flotante duplicado (#mobile-radar-mode-btn)', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      validateSearch: (s: Record<string, unknown>) => ({
+        gid: typeof s.gid === 'string' ? s.gid : undefined,
+        id: typeof s.id === 'string' ? s.id : undefined,
+      }),
+      component: MapaView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    await testRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: testRouter }),
+        ),
+      ),
+    );
+
+    expect(html).not.toContain('mobile-radar-mode-btn');
+    expect(html).toContain('id="mobile-open-filters-btn"');
+    expect(html).toContain('id="map-locate-gps-btn"');
+    expect(html).toContain('id="map-toggle-radar-btn"');
+    expect(html).toContain('id="map-style-switcher-btn"');
+    expect(html.match(/id="map-toggle-radar-btn"/g)).toHaveLength(1);
+  });
 });
+
