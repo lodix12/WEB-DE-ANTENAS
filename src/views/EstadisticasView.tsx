@@ -61,8 +61,11 @@ export function EstadisticasView() {
   const navigate = useNavigate();
   const { derived, isLoading, isError, error } = useAntenasData();
   const {
+    setSelectedComunidad,
     setSelectedProvince,
-    setSelectedBand,
+    clearBands,
+    toggleBand,
+    setExclusiveBands,
     selectAllOperators,
     toggleOperator,
     activeOperators,
@@ -167,7 +170,8 @@ export function EstadisticasView() {
 
   function handleInspectProvinceOnMap(provincia: string) {
     selectAllOperators();
-    setSelectedBand('');
+    clearBands();
+    setExclusiveBands(false);
     setSelectedProvince(provincia);
     const centroid = derived?.provinceCentroids.get(provincia);
     if (centroid) {
@@ -177,7 +181,8 @@ export function EstadisticasView() {
   }
 
   function handleFilterSingleOperatorOnMap(targetOp: OperatorKey) {
-    setSelectedBand('');
+    clearBands();
+    setExclusiveBands(false);
     // Dejar activo únicamente el operador elegido
     for (const op of OPERATOR_ORDER) {
       const currentlyOn = activeOperators.includes(op);
@@ -189,8 +194,13 @@ export function EstadisticasView() {
 
   function handleInspectBandOnMap(band: string) {
     selectAllOperators();
+    setSelectedComunidad('');
     setSelectedProvince('');
-    setSelectedBand(band);
+    clearBands();
+    setExclusiveBands(false);
+    if (band) {
+      toggleBand(band);
+    }
     void navigate({ to: '/', search: {} });
   }
 

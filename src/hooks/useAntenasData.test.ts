@@ -10,10 +10,16 @@ import {
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as AntenasMapModule from '../components/map/AntenasMap';
+import antenasMapRawSource from '../components/map/AntenasMap.tsx?raw';
+import { FilterPanel } from '../components/ui/FilterPanel';
 import {
+  OPERATOR_META,
   OPERATOR_ORDER,
   type AntenasDataset,
+  type LiveScanDeltaChunk,
   type NovedadesDataset,
+  type OperatorKey,
   type ScanStatusPayload,
 } from '../types/antena';
 import {
@@ -30,7 +36,10 @@ import {
   buildDerivedAntenasStructures,
   filterAntenas,
   fuseVodafoneAntennasInDataset,
+  getComunidadAutonomaByProvince,
   importAntenasJsonDataset,
+  matchesAntennaBandsFilter,
+  mergeLiveDeltaIntoAntenasDataset,
   parseCustomAntenasJson,
   useFilteredAntenas,
 } from './useAntenasData';
@@ -43,13 +52,17 @@ import {
   getOperatorRowBackground,
   importNovedadesJsonDataset,
   isValidNovedadesPageSize,
+  mergeLiveDeltaIntoNovedadesDataset,
   paginateNovedades,
   parseCustomNovedadesJson,
 } from './useNovedadesData';
 import {
+  accumulateLiveDeltaChunks,
   computeInterpolatedScanMetrics,
   formatScanPercentEs,
+  parseLiveScanDeltaChunk,
   parseScanStatusPayload,
+  type LiveScanMergedDelta,
 } from './useScanProgress';
 
 function createSampleCustomDataset(): AntenasDataset {
@@ -1431,6 +1444,7 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
       defaultOptions: { queries: { retry: false } },
     });
     queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['scan-status'], null);
 
     const testRoot = createRootRoute({ component: Outlet });
     const testMap = createRoute({
@@ -1469,3 +1483,1681 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
   });
 });
 
+describe('Iconos planos sin bordes ni separadores blancos (createMultiOperatorSprite y capas WebGL)', () => {
+  interface RecordedArcCall {
+    x: number;
+    y: number;
+    radius: number;
+    startAngle: number;
+    endAngle: number;
+  }
+
+  class PolyfillImageData {
+    readonly width: number;
+    readonly height: number;
+    readonly data: Uint8ClampedArray<ArrayBuffer>;
+    readonly colorSpace = 'srgb' as const;
+
+    constructor(
+      dataOrWidth: Uint8ClampedArray<ArrayBuffer> | number,
+      widthOrHeight: number,
+      maybeHeight?: number,
+    ) {
+      if (typeof dataOrWidth === 'number') {
+        this.width = dataOrWidth;
+        this.height = widthOrHeight;
+        this.data = new Uint8ClampedArray(this.width * this.height * 4);
+      } else {
+        this.data = dataOrWidth;
+        this.width = widthOrHeight;
+        this.height = maybeHeight ?? 0;
+      }
+    }
+  }
+
+  function parseHexRgb(color: string): [number, number, number] {
+    const cleaned = color.trim().replace(/^#/, '');
+    if (cleaned.length === 6) {
+      return [
+        Number.parseInt(cleaned.slice(0, 2), 16),
+        Number.parseInt(cleaned.slice(2, 4), 16),
+        Number.parseInt(cleaned.slice(4, 6), 16),
+      ];
+    }
+    return [0, 0, 0];
+  }
+
+  function extractCreateMultiOperatorSpriteSource(source: string): string {
+    const marker = 'function createMultiOperatorSprite';
+    const fnStart = source.indexOf(marker);
+    if (fnStart < 0) {
+      throw new Error(
+        'No se encontró createMultiOperatorSprite en src/components/map/AntenasMap.tsx',
+      );
+    }
+    const openBrace = source.indexOf('{', fnStart);
+    let depth = 0;
+    for (let i = openBrace; i < source.length; i++) {
+      const ch = source[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          return source.slice(fnStart, i + 1);
+        }
+      }
+    }
+    throw new Error('Bloque createMultiOperatorSprite sin cierre balanceado');
+  }
+
+  it('createMultiOperatorSprite(["movistar", "vodafone", "digi"]) dibuja sectores planos sólidos sin borde blanco, sin separadores blancos, sin sombra ni núcleo central', () => {
+    const antenasMapSource = antenasMapRawSource;
+    const spriteFnSource =
+      extractCreateMultiOperatorSpriteSource(antenasMapSource);
+
+    // Verificación estructural del código fuente de AntenasMap.tsx:
+    // ni createMultiOperatorSprite ni las capas de puntos/clústeres aplican trazos blancos exteriores
+    expect(spriteFnSource).not.toMatch(/#ffffff|#fff\b/i);
+    expect(spriteFnSource).not.toContain('.stroke(');
+    expect(spriteFnSource).not.toContain('strokeStyle');
+    expect(spriteFnSource).not.toContain('shadowBlur');
+    expect(antenasMapSource).not.toContain('LAYER_CLUSTERS_HALO');
+    expect(antenasMapSource).toMatch(
+      /id:\s*LAYER_UNCLUSTERED[\s\S]*?'circle-stroke-width':\s*0/,
+    );
+    expect(antenasMapSource).toMatch(
+      /id:\s*LAYER_CLUSTERS[\s\S]*?'circle-stroke-width':\s*0/,
+    );
+
+    // Mock instrumentado de CanvasRenderingContext2D con rasterizador real sobre Uint8ClampedArray
+    const fillStylesAssigned: string[] = [];
+    const strokeStylesAssigned: string[] = [];
+    const shadowBlursAssigned: number[] = [];
+    const arcCalls: RecordedArcCall[] = [];
+    let strokeCallCount = 0;
+    let fillCallCount = 0;
+    let lineToCallCount = 0;
+
+    let canvasWidth = 64;
+    let canvasHeight = 64;
+    let pixelBuffer = new Uint8ClampedArray(canvasWidth * canvasHeight * 4);
+    let currentFillStyle = '#000000';
+    let currentStrokeStyle = '#000000';
+    let currentShadowBlur = 0;
+    let currentMoveToCenter = false;
+    let currentArc: RecordedArcCall | null = null;
+
+    const mockCtx = {
+      get fillStyle(): string {
+        return currentFillStyle;
+      },
+      set fillStyle(val: string) {
+        currentFillStyle = String(val);
+        fillStylesAssigned.push(currentFillStyle);
+      },
+      get strokeStyle(): string {
+        return currentStrokeStyle;
+      },
+      set strokeStyle(val: string) {
+        currentStrokeStyle = String(val);
+        strokeStylesAssigned.push(currentStrokeStyle);
+      },
+      get shadowBlur(): number {
+        return currentShadowBlur;
+      },
+      set shadowBlur(val: number) {
+        currentShadowBlur = Number(val);
+        shadowBlursAssigned.push(currentShadowBlur);
+      },
+      lineWidth: 1,
+      lineCap: 'butt',
+      save(): void {},
+      restore(): void {},
+      beginPath(): void {
+        currentMoveToCenter = false;
+        currentArc = null;
+      },
+      closePath(): void {},
+      moveTo(x: number, y: number): void {
+        if (
+          Math.abs(x - canvasWidth / 2) < 0.01 &&
+          Math.abs(y - canvasHeight / 2) < 0.01
+        ) {
+          currentMoveToCenter = true;
+        }
+      },
+      lineTo(): void {
+        lineToCallCount += 1;
+      },
+      arc(
+        x: number,
+        y: number,
+        radius: number,
+        startAngle: number,
+        endAngle: number,
+      ): void {
+        const rec: RecordedArcCall = { x, y, radius, startAngle, endAngle };
+        arcCalls.push(rec);
+        currentArc = rec;
+      },
+      stroke(): void {
+        strokeCallCount += 1;
+      },
+      fill(): void {
+        fillCallCount += 1;
+        if (!currentArc) return;
+        const [rCol, gCol, bCol] = parseHexRgb(currentFillStyle);
+        const span = currentArc.endAngle - currentArc.startAngle;
+        const isFullCircle =
+          !currentMoveToCenter && span >= Math.PI * 2 - 1e-6;
+        const twoPi = Math.PI * 2;
+
+        for (let py = 0; py < canvasHeight; py++) {
+          for (let px = 0; px < canvasWidth; px++) {
+            const dx = px + 0.5 - currentArc.x;
+            const dy = py + 0.5 - currentArc.y;
+            if (Math.hypot(dx, dy) > currentArc.radius) continue;
+
+            let inside = isFullCircle;
+            if (!inside) {
+              const rawAngle = Math.atan2(dy, dx);
+              const rel =
+                (((rawAngle - currentArc.startAngle) % twoPi) + twoPi) % twoPi;
+              inside = rel <= span + 1e-9;
+            }
+            if (inside) {
+              const offset = (py * canvasWidth + px) * 4;
+              pixelBuffer[offset] = rCol;
+              pixelBuffer[offset + 1] = gCol;
+              pixelBuffer[offset + 2] = bCol;
+              pixelBuffer[offset + 3] = 255;
+            }
+          }
+        }
+      },
+      getImageData(
+        _sx: number,
+        _sy: number,
+        sw: number,
+        sh: number,
+      ): ImageData {
+        return new PolyfillImageData(
+          new Uint8ClampedArray(pixelBuffer),
+          sw,
+          sh,
+        ) as unknown as ImageData;
+      },
+    };
+
+    const mockDocument = {
+      createElement(tag: string) {
+        if (tag !== 'canvas') {
+          throw new Error(`Elemento inesperado en test de sprite: ${tag}`);
+        }
+        return {
+          get width(): number {
+            return canvasWidth;
+          },
+          set width(w: number) {
+            canvasWidth = w;
+            pixelBuffer = new Uint8ClampedArray(canvasWidth * canvasHeight * 4);
+          },
+          get height(): number {
+            return canvasHeight;
+          },
+          set height(h: number) {
+            canvasHeight = h;
+            pixelBuffer = new Uint8ClampedArray(canvasWidth * canvasHeight * 4);
+          },
+          getContext(kind: string) {
+            return kind === '2d' ? mockCtx : null;
+          },
+        };
+      },
+    };
+
+    const maybeExported = (
+      AntenasMapModule as Record<string, unknown>
+    ).createMultiOperatorSprite;
+
+    let spriteImage: ImageData;
+    if (typeof maybeExported === 'function') {
+      const prevDoc = globalThis.document;
+      const prevImgData = globalThis.ImageData;
+      Object.defineProperty(globalThis, 'document', {
+        value: mockDocument,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, 'ImageData', {
+        value: PolyfillImageData,
+        configurable: true,
+        writable: true,
+      });
+      try {
+        spriteImage = (
+          maybeExported as (ops: OperatorKey[]) => ImageData
+        )(['movistar', 'vodafone', 'digi']);
+      } finally {
+        Object.defineProperty(globalThis, 'document', {
+          value: prevDoc,
+          configurable: true,
+          writable: true,
+        });
+        Object.defineProperty(globalThis, 'ImageData', {
+          value: prevImgData,
+          configurable: true,
+          writable: true,
+        });
+      }
+    } else {
+      const strippedJs = spriteFnSource
+        .replace(/:\s*OperatorKey\[\]/g, '')
+        .replace(/\):\s*ImageData\s*\{/, ') {')
+        .replace(/:\s*boolean/g, '');
+      const buildSpriteFn = globalThis.Function(
+        'document',
+        'ImageData',
+        'OPERATOR_META',
+        'Math',
+        `${strippedJs}\nreturn createMultiOperatorSprite;`,
+      ) as (
+        doc: typeof mockDocument,
+        imgCtor: typeof PolyfillImageData,
+        opMeta: typeof OPERATOR_META,
+        mathObj: Math,
+      ) => (ops: OperatorKey[]) => ImageData;
+      const compiledFn = buildSpriteFn(
+        mockDocument,
+        PolyfillImageData,
+        OPERATOR_META,
+        Math,
+      );
+      spriteImage = compiledFn(['movistar', 'vodafone', 'digi']);
+    }
+
+    expect(spriteImage.width).toBe(64);
+    expect(spriteImage.height).toBe(64);
+
+    // Cero trazos exteriores, cero líneas radiales separadoras, cero sombras, cero blanco (#FFFFFF)
+    expect(strokeCallCount).toBe(0);
+    expect(lineToCallCount).toBe(0);
+    expect(strokeStylesAssigned).toEqual([]);
+    expect(shadowBlursAssigned.every((v) => v <= 0)).toBe(true);
+    for (const style of fillStylesAssigned) {
+      expect(style.toUpperCase()).not.toBe('#FFFFFF');
+      expect(style.toUpperCase()).not.toBe('#FFF');
+      expect(style.toLowerCase()).not.toBe('white');
+    }
+
+    // Todos los rellenos usan únicamente los colores planos oficiales de los 3 operadores
+    const allowedOperatorColors = new Set<string>([
+      OPERATOR_META.movistar.color,
+      OPERATOR_META.vodafone.color,
+      OPERATOR_META.digi.color,
+    ]);
+    expect(fillCallCount).toBeGreaterThanOrEqual(4);
+    for (const style of fillStylesAssigned) {
+      expect(allowedOperatorColors.has(style)).toBe(true);
+    }
+
+    // Ningún arco pequeño de punto/núcleo central (todos los arcos usan el radio exterior completo 27)
+    expect(arcCalls.length).toBeGreaterThanOrEqual(4);
+    for (const call of arcCalls) {
+      expect(call.radius).toBe(27);
+    }
+
+    // Verificación pixel a pixel en el ImageData resultante: cero píxeles blancos y sectores exactos
+    const rgba = spriteImage.data;
+    let opaquePixels = 0;
+    for (let i = 0; i < rgba.length; i += 4) {
+      const a = rgba[i + 3];
+      if (a > 0) {
+        opaquePixels += 1;
+        const isWhite =
+          rgba[i] === 255 && rgba[i + 1] === 255 && rgba[i + 2] === 255;
+        expect(isWhite).toBe(false);
+      }
+    }
+    expect(opaquePixels).toBeGreaterThan(2000);
+
+    const readPixelHex = (px: number, py: number): string => {
+      const idx = (py * 64 + px) * 4;
+      const hex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
+      return `#${hex(rgba[idx])}${hex(rgba[idx + 1])}${hex(rgba[idx + 2])}`;
+    };
+
+    // Sector superior derecho (-30°): Movistar (#0066CC)
+    expect(readPixelHex(44, 25)).toBe(OPERATOR_META.movistar.color);
+    // Sector inferior (+90°): Vodafone (#DC2626)
+    expect(readPixelHex(32, 46)).toBe(OPERATOR_META.vodafone.color);
+    // Sector superior izquierdo (+210°): DIGI (#7C3AED)
+    expect(readPixelHex(20, 25)).toBe(OPERATOR_META.digi.color);
+    // Centro exacto (32, 32): sin núcleo blanco (#FFFFFF) ni punto oscuro (#0F172A)
+    expect(readPixelHex(32, 32)).not.toBe('#FFFFFF');
+    expect(readPixelHex(32, 32)).not.toBe('#0F172A');
+    expect(allowedOperatorColors.has(readPixelHex(32, 32))).toBe(true);
+  });
+});
+
+describe('Filtro territorial de 2 desplegables (Comunidad Autónoma + Provincia) y eliminación de presets', () => {
+  it('mapea con exactitud las 19 Comunidades y Ciudades Autónomas españolas incluyendo variantes cooficiales y sin tildes', () => {
+    // Variantes explícitas requeridas (cooficiales, insulares, ciudades autónomas y con/sin tilde)
+    expect(getComunidadAutonomaByProvince('A CORUÑA')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('LA CORUÑA')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('OURENSE')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('ORENSE')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('LUGO')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('PONTEVEDRA')).toBe('Galicia');
+    expect(getComunidadAutonomaByProvince('ILLES BALEARS')).toBe(
+      'Illes Balears',
+    );
+    expect(getComunidadAutonomaByProvince('ISLAS BALEARES')).toBe(
+      'Illes Balears',
+    );
+    expect(getComunidadAutonomaByProvince('BIZKAIA')).toBe('País Vasco');
+    expect(getComunidadAutonomaByProvince('GIPUZKOA')).toBe('País Vasco');
+    expect(getComunidadAutonomaByProvince('ÁLAVA')).toBe('País Vasco');
+    expect(getComunidadAutonomaByProvince('ARABA/ÁLAVA')).toBe('País Vasco');
+    expect(getComunidadAutonomaByProvince('LAS PALMAS')).toBe('Canarias');
+    expect(getComunidadAutonomaByProvince('SANTA CRUZ DE TENERIFE')).toBe(
+      'Canarias',
+    );
+    expect(getComunidadAutonomaByProvince('CEUTA')).toBe('Ceuta');
+    expect(getComunidadAutonomaByProvince('MELILLA')).toBe('Melilla');
+
+    // Cobertura completa de las 19 Comunidades / Ciudades Autónomas oficiales de España
+    const representativeProvinces: ReadonlyArray<
+      readonly [prov: string, expectedCcaa: string]
+    > = [
+      ['SEVILLA', 'Andalucía'],
+      ['ZARAGOZA', 'Aragón'],
+      ['ASTURIAS', 'Principado de Asturias'],
+      ['ILLES BALEARS', 'Illes Balears'],
+      ['LAS PALMAS', 'Canarias'],
+      ['CANTABRIA', 'Cantabria'],
+      ['TOLEDO', 'Castilla-La Mancha'],
+      ['VALLADOLID', 'Castilla y León'],
+      ['BARCELONA', 'Cataluña'],
+      ['VALÈNCIA', 'Comunidad Valenciana'],
+      ['CÁCERES', 'Extremadura'],
+      ['A CORUÑA', 'Galicia'],
+      ['MADRID', 'Comunidad de Madrid'],
+      ['MURCIA', 'Región de Murcia'],
+      ['NAVARRA', 'Comunidad Foral de Navarra'],
+      ['BIZKAIA', 'País Vasco'],
+      ['LA RIOJA', 'La Rioja'],
+      ['CEUTA', 'Ceuta'],
+      ['MELILLA', 'Melilla'],
+    ];
+
+    const resolvedComunidades = new Set<string>();
+    for (const [prov, expectedCcaa] of representativeProvinces) {
+      const ccaa = getComunidadAutonomaByProvince(prov);
+      expect(ccaa).toBe(expectedCcaa);
+      // También funciona en minúsculas y sin tildes
+      expect(getComunidadAutonomaByProvince(normalizeSearchText(prov))).toBe(
+        expectedCcaa,
+      );
+      resolvedComunidades.add(ccaa);
+    }
+    expect(resolvedComunidades.size).toBe(19);
+    expect(getComunidadAutonomaByProvince('')).toBe('');
+    expect(getComunidadAutonomaByProvince('SIN PROVINCIA')).toBe('');
+  });
+
+  it('puebla comunidadesByAlpha, provincesByComunidad y comunidadCentroids y filtra por selectedComunidad y selectedProvince', () => {
+    const base = createSampleCustomDataset();
+    const multiCcaaDataset: AntenasDataset = {
+      ...base,
+      total: 7,
+      provinces: [
+        { provincia: 'MADRID', count: 2, byOperator: { movistar: 1, orange: 1 } },
+        { provincia: 'ÁLAVA', count: 1, byOperator: { movistar: 1 } },
+        { provincia: 'A CORUÑA', count: 1, byOperator: { movistar: 1 } },
+        { provincia: 'LUGO', count: 1, byOperator: { orange: 1 } },
+        { provincia: 'OURENSE', count: 1, byOperator: { digi: 1 } },
+        { provincia: 'PONTEVEDRA', count: 1, byOperator: { masmovil: 1 } },
+      ],
+      antenas: [
+        ...base.antenas,
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 1500001',
+          gid: '1500001',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 43.3623,
+          lon: -8.4115,
+          dir: 'CANTÓN GRANDE 1',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - 2700001',
+          gid: '2700001',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.0097,
+          lon: -7.5568,
+          dir: 'PRAZA MAIOR 1',
+          mun: 'LUGO',
+          prov: 'LUGO',
+        },
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 3200001',
+          gid: '3200001',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 42.3358,
+          lon: -7.8639,
+          dir: 'RÚA DO PASEO 10',
+          mun: 'OURENSE',
+          prov: 'OURENSE',
+        },
+        {
+          id: 'XFERA MOVILES, S.A.U. - 3600001',
+          gid: '3600001',
+          op: 'masmovil',
+          opRaw: 'XFERA MOVILES, S.A.U.',
+          lat: 42.2406,
+          lon: -8.7207,
+          dir: 'PORTA DO SOL 5',
+          mun: 'VIGO',
+          prov: 'PONTEVEDRA',
+        },
+      ],
+    };
+
+    const derived = buildDerivedAntenasStructures(multiCcaaDataset);
+
+    expect(derived.comunidadesByAlpha.map((c) => c.comunidad)).toEqual([
+      'Comunidad de Madrid',
+      'Galicia',
+      'País Vasco',
+    ]);
+
+    const galiciaSummary = derived.comunidadesByAlpha.find(
+      (c) => c.comunidad === 'Galicia',
+    );
+    expect(galiciaSummary?.count).toBe(4);
+    expect(
+      derived.provincesByComunidad.get('Galicia')?.map((p) => p.provincia),
+    ).toEqual(['A CORUÑA', 'LUGO', 'OURENSE', 'PONTEVEDRA']);
+
+    const galiciaCentroid = derived.comunidadCentroids.get('Galicia');
+    expect(galiciaCentroid).toBeDefined();
+    expect(galiciaCentroid?.lat).toBeCloseTo(
+      (43.3623 + 43.0097 + 42.3358 + 42.2406) / 4,
+      4,
+    );
+    expect(galiciaCentroid?.lon).toBeCloseTo(
+      (-8.4115 - 7.5568 - 7.8639 - 8.7207) / 4,
+      4,
+    );
+
+    // Filtrado exclusivo por Comunidad Autónoma ('Galicia') -> devuelve las 4 provincias gallegas
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: 'Galicia',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid),
+    ).toEqual(['1500001', '2700001', '3200001', '3600001']);
+
+    // Combinado selectedComunidad + selectedProvince
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: 'Galicia',
+        selectedProvince: 'OURENSE',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid),
+    ).toEqual(['3200001']);
+
+    // Provincia ajena a la Comunidad Autónoma seleccionada -> vacío
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: 'Galicia',
+        selectedProvince: 'MADRID',
+        activeOperators: [...OPERATOR_ORDER],
+      }),
+    ).toEqual([]);
+  });
+
+  it('renderiza en SSR #map-ccaa-select y #map-province-select sin #map-municipality-select ni botones .region-presets-row / preset-chip', async () => {
+    const sample = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures(sample);
+
+    const filterPanelHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: 'País Vasco',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: true,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+
+    expect(filterPanelHtml).toContain('id="map-ccaa-select"');
+    expect(filterPanelHtml).toContain('id="map-province-select"');
+    expect(filterPanelHtml).toContain('Todas en País Vasco (1)');
+    expect(filterPanelHtml).not.toContain('map-municipality-select');
+    expect(filterPanelHtml).not.toContain('region-presets-row');
+    expect(filterPanelHtml).not.toContain('preset-chip');
+
+    // Verificación completa también sobre MapaView montado con Router y WorkspaceProvider
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], sample);
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      validateSearch: (s: Record<string, unknown>) => ({
+        gid: typeof s.gid === 'string' ? s.gid : undefined,
+        id: typeof s.id === 'string' ? s.id : undefined,
+      }),
+      component: MapaView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    await testRouter.load();
+
+    const mapaViewHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: testRouter }),
+        ),
+      ),
+    );
+
+    expect(mapaViewHtml).toContain('id="map-search-input"');
+    expect(mapaViewHtml).toContain('id="map-ccaa-select"');
+    expect(mapaViewHtml).toContain('id="map-province-select"');
+    expect(mapaViewHtml).not.toContain('map-municipality-select');
+    expect(mapaViewHtml).not.toContain('region-presets-row');
+    expect(mapaViewHtml).not.toContain('preset-chip');
+  });
+});
+
+describe('Filtro multifrecuencia ilimitado y casilla "Exclusivamente"', () => {
+  function createMultiBandTestDataset(): AntenasDataset {
+    const base = createSampleCustomDataset();
+    return {
+      ...base,
+      total: 6,
+      antenas: [
+        {
+          ...base.antenas[0],
+          gid: '2801001',
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2801001',
+          bandas: ['3500 MHz'],
+        },
+        {
+          ...base.antenas[1],
+          gid: '2801002',
+          id: 'ORANGE ESPAGNE, S.A.U. - 2801002',
+          bandas: ['900 MHz', '3500 MHz'],
+        },
+        {
+          ...base.antenas[2],
+          gid: '0101003',
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 0101003',
+          // Mismas 3 bandas exactas pero en distinto orden
+          bandas: ['3500 MHz', '800 MHz', '1800 MHz'],
+        },
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2801004',
+          gid: '2801004',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.43,
+          lon: -3.69,
+          dir: 'CASTELLANA 100',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          // Subconjunto ("ni menos")
+          bandas: ['800 MHz', '1800 MHz'],
+        },
+        {
+          id: 'XFERA MOVILES, S.A.U. - 2801005',
+          gid: '2801005',
+          op: 'masmovil',
+          opRaw: 'XFERA MOVILES, S.A.U.',
+          lat: 40.44,
+          lon: -3.68,
+          dir: 'CASTELLANA 200',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          // Superconjunto ("ni más")
+          bandas: ['700 MHz', '800 MHz', '1800 MHz', '3500 MHz'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 2801006',
+          gid: '2801006',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.45,
+          lon: -3.67,
+          dir: 'ALCALÁ 300',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: undefined,
+        },
+      ],
+    };
+  }
+
+  it('modo unión/OR por defecto (exclusiveBands: false): admite 3+ bandas simultáneas y devuelve antenas con al menos 1 de ellas', () => {
+    const selected = ['700 MHz', '2100 MHz', '3500 MHz'];
+
+    expect(
+      matchesAntennaBandsFilter(['800 MHz', '900 MHz', '3500 MHz'], selected, false),
+    ).toBe(true);
+    expect(
+      matchesAntennaBandsFilter(['700 MHz', '900 MHz'], selected, false),
+    ).toBe(true);
+    expect(
+      matchesAntennaBandsFilter(['800 MHz', '900 MHz', '1800 MHz'], selected, false),
+    ).toBe(false);
+    expect(matchesAntennaBandsFilter([], selected, false)).toBe(false);
+    expect(matchesAntennaBandsFilter(undefined, selected, false)).toBe(false);
+
+    const derived = buildDerivedAntenasStructures(createMultiBandTestDataset());
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: selected,
+        exclusiveBands: false,
+      }).map((a) => a.gid),
+    ).toEqual(['2801001', '2801002', '0101003', '2801005']);
+  });
+
+  it('modo "Exclusivamente" (exclusiveBands: true) con 1 frecuencia rechaza antenas con bandas adicionales, vacías o undefined', () => {
+    expect(matchesAntennaBandsFilter(['3500 MHz'], ['3500 MHz'], true)).toBe(
+      true,
+    );
+    expect(
+      matchesAntennaBandsFilter(['900 MHz', '3500 MHz'], ['3500 MHz'], true),
+    ).toBe(false);
+    expect(matchesAntennaBandsFilter([], ['3500 MHz'], true)).toBe(false);
+    expect(matchesAntennaBandsFilter(undefined, ['3500 MHz'], true)).toBe(
+      false,
+    );
+
+    const derived = buildDerivedAntenasStructures(createMultiBandTestDataset());
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: ['3500 MHz'],
+        exclusiveBands: true,
+      }).map((a) => a.gid),
+    ).toEqual(['2801001']);
+  });
+
+  it('modo "Exclusivamente" (exclusiveBands: true) con múltiples frecuencias exige igualdad exacta de conjunto ("ni más ni menos") sin importar el orden', () => {
+    const targetThree = ['800 MHz', '1800 MHz', '3500 MHz'];
+
+    // Igualdad exacta de conjunto independientemente del orden
+    expect(
+      matchesAntennaBandsFilter(
+        ['3500 MHz', '800 MHz', '1800 MHz'],
+        targetThree,
+        true,
+      ),
+    ).toBe(true);
+    // Subconjunto ("ni menos") -> rechazado
+    expect(
+      matchesAntennaBandsFilter(['800 MHz', '1800 MHz'], targetThree, true),
+    ).toBe(false);
+    // Superconjunto ("ni más") -> rechazado
+    expect(
+      matchesAntennaBandsFilter(
+        ['700 MHz', '800 MHz', '1800 MHz', '3500 MHz'],
+        targetThree,
+        true,
+      ),
+    ).toBe(false);
+    // Selección de 4 frecuencias exactas sin límite superior artificial
+    expect(
+      matchesAntennaBandsFilter(
+        ['3500 MHz', '700 MHz', '1800 MHz', '800 MHz'],
+        ['700 MHz', '800 MHz', '1800 MHz', '3500 MHz'],
+        true,
+      ),
+    ).toBe(true);
+
+    const derived = buildDerivedAntenasStructures(createMultiBandTestDataset());
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: targetThree,
+        exclusiveBands: true,
+      }).map((a) => a.gid),
+    ).toEqual(['0101003']);
+  });
+
+  it('renderiza en FilterPanel SSR las píldoras multifrecuencia activas simultáneamente y el checkbox #filter-bands-exclusive-checkbox ("Exclusivamente")', () => {
+    const derived = buildDerivedAntenasStructures(createMultiBandTestDataset());
+
+    const html = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: [derived.dataset.antenas[2]],
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: ['800 MHz', '1800 MHz', '3500 MHz'],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: true,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: true,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+
+    expect(html).toContain('id="filter-band-800-mhz"');
+    expect(html).toContain('id="filter-band-1800-mhz"');
+    expect(html).toContain('id="filter-band-3500-mhz"');
+    expect(html.match(/class="band-filter-pill is-active"/g)).toHaveLength(3);
+    expect(html).toContain('id="bands-select-all-btn"');
+    expect(html).toContain('id="filter-bands-exclusive-checkbox"');
+    expect(html).toContain('Exclusivamente');
+    expect(html).toContain('ni más ni menos');
+    expect(html).toContain('checked=""');
+  });
+});
+
+describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulateLiveDeltaChunks, mergeLiveDeltaIntoAntenasDataset y mergeLiveDeltaIntoNovedadesDataset)', () => {
+  it('parseLiveScanDeltaChunk valida el esquema JSON propio (directo y Base64) y rechaza explícitamente GeoJSON (FeatureCollection / Feature)', () => {
+    // Rechaza raíz FeatureCollection y Feature
+    expect(() =>
+      parseLiveScanDeltaChunk({
+        type: 'FeatureCollection',
+        features: [],
+      }),
+    ).toThrow(/GeoJSON/i);
+
+    expect(() =>
+      parseLiveScanDeltaChunk({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [-3.7038, 40.4168] },
+        properties: { Gis_ID: '2800001' },
+      }),
+    ).toThrow(/GeoJSON/i);
+
+    // Rechaza entidades GeoJSON infiltradas dentro de newAntennas, bandPatches o envoltorio Base64
+    expect(() =>
+      parseLiveScanDeltaChunk({
+        schemaVersion: 2,
+        scanId: 'scan-live-1',
+        seq: 1,
+        chunkIndex: 0,
+        isTail: true,
+        updatedAt: '2026-11-15T18:01:00Z',
+        recordNovedades: true,
+        previousScanAt: '2026-11-14T18:00:00Z',
+        newAntennas: [
+          {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [-3.7038, 40.4168] },
+            properties: {},
+          },
+        ],
+        bandPatches: [],
+        novedades: [],
+      }),
+    ).toThrow(/GeoJSON/i);
+
+    const b64GeoJson = btoa(
+      JSON.stringify({ type: 'FeatureCollection', features: [] }),
+    );
+    expect(() =>
+      parseLiveScanDeltaChunk({
+        content: b64GeoJson,
+        encoding: 'base64',
+      }),
+    ).toThrow(/GeoJSON/i);
+
+    // Entradas inválidas o no-objeto devuelven null sin lanzar excepción
+    expect(parseLiveScanDeltaChunk(null)).toBeNull();
+    expect(parseLiveScanDeltaChunk({ scanId: '' })).toBeNull();
+    expect(
+      parseLiveScanDeltaChunk({ scanId: 'scan-bad', newAntennas: 'invalid' }),
+    ).toBeNull();
+
+    // Valida chunk válido tanto directo como envuelto en Base64 de GitHub Contents API
+    const validChunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'daily-2026-11-15',
+      seq: 2,
+      chunkIndex: 0,
+      isTail: false,
+      updatedAt: '2026-11-15T18:02:10Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-14T18:00:00Z',
+      replacesNewAntennas: false,
+      newAntennas: [
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          gid: '2808801',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.421,
+          lon: -3.701,
+          dir: 'FUENCARRAL 45',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+      bandPatches: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          gid: '2800001',
+          bandas: ['800 MHz', '3500 MHz'],
+          frecuencias: ['801.00 - 811.00', '3460.00 - 3600.00'],
+          concesiones: [{ ref: 'M M -2205199', freq: '3460.00 - 3600.00' }],
+          bandsScannedAt: '2026-11-15T18:02:09Z',
+        },
+      ],
+      novedades: [
+        {
+          id: 'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2808801',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:02:05Z',
+          fecha: '15/11/2026 19:02:05',
+        },
+      ],
+    };
+
+    expect(parseLiveScanDeltaChunk(validChunk)).toEqual(validChunk);
+
+    const b64Valid = btoa(
+      String.fromCharCode(...new TextEncoder().encode(JSON.stringify(validChunk))),
+    );
+    expect(
+      parseLiveScanDeltaChunk({
+        content: `${b64Valid.slice(0, 32)}\n${b64Valid.slice(32)}`,
+        encoding: 'base64',
+      }),
+    ).toEqual(validChunk);
+  });
+
+  it('accumulateLiveDeltaChunks acumula múltiples chunks + tail, aplica replacesNewAntennas tras la fusión de Vodafone y enriquece bandas al instante', () => {
+    // Chunk 0: descubrimiento provisional en fase de censo (con 2 Vodafone aún sin fusionar)
+    const chunk0: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'scan-stream-100',
+      seq: 1,
+      chunkIndex: 0,
+      isTail: false,
+      updatedAt: '2026-11-15T18:01:00Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-14T18:00:00Z',
+      newAntennas: [
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 0289900',
+          gid: '0289900',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.425,
+          lon: -3.695,
+          dir: 'SERRANO 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          gid: '289900',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42508, // ~8.9 m (< 35 m)
+          lon: -3.695,
+          dir: 'SERRANO 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+      bandPatches: [],
+      novedades: [
+        {
+          id: 'antena::VODAFONE ESPAÑA, S.A.U. - 0289900',
+          tipo: 'antena',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '0289900',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0289900',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:00:55Z',
+          fecha: '15/11/2026 19:00:55',
+        },
+        {
+          id: 'antena::VODAFONE ESPAÑA, S.A.U. - 289900',
+          tipo: 'antena',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '289900',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:00:56Z',
+          fecha: '15/11/2026 19:00:56',
+        },
+      ],
+    };
+
+    // Chunk 1: fin del censo con replacesNewAntennas: true (Vodafone ya fusionada en estación canónica + nueva DIGI)
+    const chunk1: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'scan-stream-100',
+      seq: 2,
+      chunkIndex: 1,
+      isTail: false,
+      updatedAt: '2026-11-15T18:02:00Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-14T18:00:00Z',
+      replacesNewAntennas: true,
+      newAntennas: [
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          gid: '289900',
+          mergedGids: ['289900', '0289900'],
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42508,
+          lon: -3.695,
+          dir: 'SERRANO 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          gid: '2808801',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.421,
+          lon: -3.701,
+          dir: 'FUENCARRAL 45',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+      bandPatches: [],
+      novedades: [
+        {
+          id: 'antena::VODAFONE ESPAÑA, S.A.U. - 289900',
+          tipo: 'antena',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '289900',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:01:58Z',
+          fecha: '15/11/2026 19:01:58',
+        },
+        {
+          id: 'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2808801',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:01:59Z',
+          fecha: '15/11/2026 19:01:59',
+        },
+      ],
+    };
+
+    // Tail: fase de frecuencias con bandPatches sobre antena existente y sobre nuevas antenas + novedad de frecuencia
+    const tailChunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'scan-stream-100',
+      seq: 3,
+      chunkIndex: 2,
+      isTail: true,
+      updatedAt: '2026-11-15T18:03:30Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-14T18:00:00Z',
+      newAntennas: [],
+      bandPatches: [
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          gid: '2808801',
+          bandas: ['700 MHz', '3500 MHz'],
+          frecuencias: ['758.00 - 768.00', '3400.00 - 3420.00'],
+          concesiones: [{ ref: 'DG-700-1', freq: '758.00 - 768.00' }],
+          bandsScannedAt: '2026-11-15T18:03:10Z',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          gid: '289900',
+          mergedGids: ['289900', '0289900'],
+          bandas: ['800 MHz', '2100 MHz'],
+          frecuencias: ['791.00 - 801.00', '2155.00 - 2170.00'],
+          concesiones: [{ ref: 'VF-800-1', freq: '791.00 - 801.00' }],
+          bandsScannedAt: '2026-11-15T18:03:20Z',
+        },
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          gid: '2800001',
+          bandas: ['800 MHz', '2600 MHz', '3500 MHz'],
+          frecuencias: [
+            '801.00 - 811.00',
+            '2620.00 - 2640.00',
+            '3460.00 - 3600.00',
+          ],
+          concesiones: [{ ref: 'M M -2205199', freq: '3460.00 - 3600.00' }],
+          bandsScannedAt: '2026-11-15T18:03:29Z',
+        },
+      ],
+      novedades: [
+        {
+          id: 'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:03:29Z',
+          fecha: '15/11/2026 19:03:29',
+        },
+      ],
+    };
+
+    // Un chunk huérfano de otro scanId debe ser ignorado por completo
+    const staleOtherScanChunk: LiveScanDeltaChunk = {
+      ...tailChunk,
+      scanId: 'scan-other-old',
+      seq: 99,
+    };
+
+    const accumulated = accumulateLiveDeltaChunks(
+      [chunk0, chunk1, tailChunk, staleOtherScanChunk],
+      'scan-stream-100',
+    );
+
+    expect(accumulated.scanId).toBe('scan-stream-100');
+    expect(accumulated.deltaSeq).toBe(3);
+    expect(accumulated.recordNovedades).toBe(true);
+    expect(accumulated.previousScanAt).toBe('2026-11-14T18:00:00Z');
+    expect(accumulated.updatedAt).toBe('2026-11-15T18:03:30Z');
+
+    // Las antenas provisionales de chunk0 fueron sustituidas por las canónicas de chunk1 y enriquecidas por tailChunk
+    expect(accumulated.newAntennas).toHaveLength(2);
+    expect(accumulated.newAntennas.map((a) => a.gid)).toEqual([
+      '289900',
+      '2808801',
+    ]);
+    expect(accumulated.newAntennas[0]?.mergedGids).toEqual([
+      '289900',
+      '0289900',
+    ]);
+    expect(accumulated.newAntennas[0]?.bandas).toEqual(['800 MHz', '2100 MHz']);
+    expect(accumulated.newAntennas[1]?.bandas).toEqual(['700 MHz', '3500 MHz']);
+
+    // Índice de parches por GID incluye tanto gid primario como mergedGids
+    expect(accumulated.bandPatchesByGid.get('0289900')?.bandas).toEqual([
+      '800 MHz',
+      '2100 MHz',
+    ]);
+
+    // Novedad provisional 0289900 eliminada tras replacesNewAntennas; ordenadas de más reciente a más antigua
+    expect(accumulated.novedades.map((n) => n.codigo)).toEqual([
+      '2800001',
+      '2808801',
+      '289900',
+    ]);
+  });
+
+  it('mergeLiveDeltaIntoAntenasDataset incorpora antenas nuevas (sin fusionar Movistar < 35 m), actualiza bandas/frecuencias/concesiones al instante y hace no-op sin copia al completarse', () => {
+    const base = createSampleCustomDataset();
+
+    const liveChunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'scan-live-antenas',
+      seq: 5,
+      chunkIndex: 0,
+      isTail: true,
+      updatedAt: '2026-11-15T18:10:00Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-15T04:00:00Z',
+      newAntennas: [
+        // Nueva DIGI en Madrid con 700 MHz + 3500 MHz
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          gid: '2808801',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.421,
+          lon: -3.701,
+          dir: 'FUENCARRAL 45',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '3500 MHz'],
+          frecuencias: ['758.00 - 768.00', '3400.00 - 3420.00'],
+          concesiones: [{ ref: 'DG-700-1', freq: '758.00 - 768.00' }],
+          bandsScannedAt: '2026-11-15T18:09:40Z',
+        },
+        // Nueva Movistar a ~8.9 m (< 35 m) de la Movistar existente 2800001 (40.4168, -3.7038):
+        // ¡JAMÁS debe fusionarse consigo misma!
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800097',
+          gid: '2800097',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.41688,
+          lon: -3.7038,
+          dir: 'GRAN VIA 28 DUP',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['1800 MHz'],
+          frecuencias: ['1825.00 - 1845.00'],
+          concesiones: [{ ref: 'M M -1800097', freq: '1825.00 - 1845.00' }],
+          bandsScannedAt: '2026-11-15T18:09:50Z',
+        },
+        // Par de nuevas Vodafone a ~11 m (< 35 m) entre sí: sí se fusionan en 1 sola antena Vodafone
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 289900',
+          gid: '289900',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.43,
+          lon: -3.69,
+          dir: 'CASTELLANA 80',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['800 MHz'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 0289900',
+          gid: '0289900',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.4301,
+          lon: -3.69,
+          dir: 'CASTELLANA 80',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2100 MHz'],
+        },
+      ],
+      bandPatches: [
+        // Parche en vivo sobre la antena existente TELEFONICA - 2800001
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          gid: '2800001',
+          bandas: ['800 MHz', '2600 MHz', '3500 MHz'],
+          frecuencias: [
+            '801.00 - 811.00',
+            '2620.00 - 2640.00',
+            '3460.00 - 3600.00',
+          ],
+          concesiones: [{ ref: 'M M -2205199', freq: '3460.00 - 3600.00' }],
+          bandsScannedAt: '2026-11-15T18:09:59Z',
+        },
+      ],
+      novedades: [],
+    };
+
+    const delta = accumulateLiveDeltaChunks([liveChunk], 'scan-live-antenas');
+    const mergedDataset = mergeLiveDeltaIntoAntenasDataset(base, delta);
+
+    // 3 base + 1 DIGI + 1 Movistar (< 35 m, NO fusionada) + 1 Vodafone (2 fusionadas) = 6 antenas
+    expect(mergedDataset.total).toBe(6);
+    expect(mergedDataset.operators.movistar.count).toBe(3);
+    expect(mergedDataset.operators.digi.count).toBe(1);
+    expect(mergedDataset.operators.vodafone.count).toBe(1);
+
+    const derived = buildDerivedAntenasStructures(mergedDataset);
+
+    // Movistar 2800001 y Movistar 2800097 (< 35 m) se mantienen estrictamente separadas
+    const movExisting = derived.byGid.get('2800001');
+    const movNewClose = derived.byGid.get('2800097');
+    expect(movExisting).toBeDefined();
+    expect(movNewClose).toBeDefined();
+    expect(movExisting).not.toBe(movNewClose);
+    expect(movExisting?.mergedGids).toBeUndefined();
+    expect(movNewClose?.mergedGids).toBeUndefined();
+
+    // La antena existente 2800001 refleja de inmediato sus bandas, frecuencias y concesiones
+    expect(movExisting?.bandas).toEqual(['800 MHz', '2600 MHz', '3500 MHz']);
+    expect(movExisting?.frecuencias).toEqual([
+      '801.00 - 811.00',
+      '2620.00 - 2640.00',
+      '3460.00 - 3600.00',
+    ]);
+    expect(movExisting?.concesiones).toEqual([
+      { ref: 'M M -2205199', freq: '3460.00 - 3600.00' },
+    ]);
+
+    // availableBands y filterAntenas reconocen de inmediato las nuevas bandas en vivo
+    expect(derived.availableBands.map((b) => b.band)).toEqual([
+      '700 MHz',
+      '800 MHz',
+      '1800 MHz',
+      '2100 MHz',
+      '2600 MHz',
+      '3500 MHz',
+    ]);
+
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: ['2600 MHz'],
+        exclusiveBands: false,
+      }).map((a) => a.gid),
+    ).toEqual(['2800001']);
+
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: ['700 MHz', '3500 MHz'],
+        exclusiveBands: true,
+      }).map((a) => a.gid),
+    ).toEqual(['2808801']);
+
+    // Zero-copy no-op cuando delta es null/undefined o cuando baseDataset.updatedAt >= delta.completedDatasetUpdatedAt
+    expect(mergeLiveDeltaIntoAntenasDataset(base, null)).toBe(base);
+    expect(mergeLiveDeltaIntoAntenasDataset(base, undefined)).toBe(base);
+
+    const completedStaticDataset: AntenasDataset = {
+      ...mergedDataset,
+      updatedAt: '2026-11-15T18:25:00Z',
+    };
+    const deltaCompletedEqual: LiveScanMergedDelta = {
+      ...delta,
+      completedDatasetUpdatedAt: '2026-11-15T18:25:00Z',
+    };
+    const deltaCompletedOlder: LiveScanMergedDelta = {
+      ...delta,
+      completedDatasetUpdatedAt: '2026-11-15T18:20:00Z',
+    };
+
+    expect(
+      mergeLiveDeltaIntoAntenasDataset(
+        completedStaticDataset,
+        deltaCompletedEqual,
+      ),
+    ).toBe(completedStaticDataset);
+    expect(
+      mergeLiveDeltaIntoAntenasDataset(
+        completedStaticDataset,
+        deltaCompletedOlder,
+      ),
+    ).toBe(completedStaticDataset);
+  });
+
+  it('mergeLiveDeltaIntoNovedadesDataset incorpora antenas y frecuencias nuevas con recordNovedades === true y deja intacto NovedadesDataset con recordNovedades === false', () => {
+    const baseNovedades: NovedadesDataset = {
+      updatedAt: '2026-11-14T18:20:00Z',
+      scanId: 'daily-2026-11-14',
+      previousScanAt: '2026-11-13T18:19:00Z',
+      isBaselineScan: false,
+      total: 1,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 0,
+      novedades: [
+        {
+          id: 'antena::ORANGE ESPAGNE, S.A.U. - 2800002',
+          tipo: 'antena',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          codigo: '2800002',
+          antennaId: 'ORANGE ESPAGNE, S.A.U. - 2800002',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-14T18:15:00Z',
+          fecha: '14/11/2026 19:15:00',
+        },
+      ],
+    };
+
+    const dailyChunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'daily-2026-11-15',
+      seq: 4,
+      chunkIndex: 0,
+      isTail: true,
+      updatedAt: '2026-11-15T18:06:00Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-14T18:20:00Z',
+      newAntennas: [],
+      bandPatches: [],
+      novedades: [
+        {
+          id: 'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2808801',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2808801',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:05:10Z',
+          fecha: '15/11/2026 19:05:10',
+        },
+        {
+          id: 'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:05:50Z',
+          fecha: '15/11/2026 19:05:50',
+        },
+        {
+          id: 'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -1100800::801.00 - 811.00 MHz',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -1100800',
+          frecuencia: '801.00 - 811.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-15T18:05:55Z',
+          fecha: '15/11/2026 19:05:55',
+        },
+      ],
+    };
+
+    const dailyDelta = accumulateLiveDeltaChunks(
+      [dailyChunk],
+      'daily-2026-11-15',
+    );
+    const mergedDaily = mergeLiveDeltaIntoNovedadesDataset(
+      baseNovedades,
+      dailyDelta,
+    );
+
+    expect(mergedDaily.scanId).toBe('daily-2026-11-15');
+    expect(mergedDaily.previousScanAt).toBe('2026-11-14T18:20:00Z');
+    expect(mergedDaily.isBaselineScan).toBe(false);
+    expect(mergedDaily.antenasNuevas).toBe(1);
+    expect(mergedDaily.frecuenciasNuevas).toBe(2);
+    expect(mergedDaily.total).toBe(3);
+    expect(mergedDaily.novedades.map((n) => n.id)).toEqual([
+      'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -1100800::801.00 - 811.00 MHz',
+      'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
+      'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
+    ]);
+
+    // Escaneo forzado de línea base (recordNovedades === false): deja NovedadesDataset intacto (misma referencia)
+    const forcedBaselineChunk: LiveScanDeltaChunk = {
+      ...dailyChunk,
+      scanId: 'forced-baseline-2026-11-15',
+      recordNovedades: false,
+    };
+    const forcedDelta = accumulateLiveDeltaChunks(
+      [forcedBaselineChunk],
+      'forced-baseline-2026-11-15',
+    );
+    expect(forcedDelta.recordNovedades).toBe(false);
+    expect(mergeLiveDeltaIntoNovedadesDataset(baseNovedades, forcedDelta)).toBe(
+      baseNovedades,
+    );
+    expect(mergeLiveDeltaIntoNovedadesDataset(baseNovedades, null)).toBe(
+      baseNovedades,
+    );
+
+    // Zero-copy no-op cuando el dataset estático ya incluye el escaneo completado
+    const completedNov: NovedadesDataset = {
+      ...mergedDaily,
+      updatedAt: '2026-11-15T18:30:00Z',
+    };
+    expect(
+      mergeLiveDeltaIntoNovedadesDataset(completedNov, {
+        ...dailyDelta,
+        completedDatasetUpdatedAt: '2026-11-15T18:30:00Z',
+      }),
+    ).toBe(completedNov);
+  });
+
+  it('renderiza en SSR en tiempo real las antenas, frecuencias y novedades en vivo desde la caché de live-scan-delta', async () => {
+    const baseAntenas = createSampleCustomDataset();
+    const baseNovedades: NovedadesDataset = {
+      updatedAt: '2026-11-14T18:20:00Z',
+      scanId: 'daily-2026-11-14',
+      previousScanAt: null,
+      isBaselineScan: true,
+      total: 0,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 0,
+      novedades: [],
+    };
+
+    const liveScanStatus: ScanStatusPayload = {
+      schemaVersion: 2,
+      state: 'running',
+      scanId: 'live-ssr-77',
+      trigger: 'schedule',
+      recordNovedades: true,
+      part: '1/1',
+      phase: 'frecuencias',
+      startedAt: '2026-11-15T18:00:00Z',
+      updatedAt: '2026-11-15T18:05:00Z',
+      censusBoxesVisited: 239,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 4,
+      scannedAntennas: 2,
+      totalAntennas: 4,
+      percent: 50,
+      deltaSeq: 2,
+      chunkCount: 1,
+    };
+
+    const liveDelta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'live-ssr-77',
+          seq: 2,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-15T18:05:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-14T18:20:00Z',
+          newAntennas: [
+            {
+              id: 'DIGI SPAIN TELECOM, S.L.U. - 2809955',
+              gid: '2809955',
+              op: 'digi',
+              opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+              lat: 40.422,
+              lon: -3.702,
+              dir: 'HORTALEZA 10',
+              mun: 'MADRID',
+              prov: 'MADRID',
+              bandas: ['2600 MHz'],
+              frecuencias: ['2620.00 - 2640.00'],
+              concesiones: [{ ref: 'DG-2600-SSR', freq: '2620.00 - 2640.00' }],
+              bandsScannedAt: '2026-11-15T18:04:55Z',
+            },
+          ],
+          bandPatches: [],
+          novedades: [
+            {
+              id: 'antena::DIGI SPAIN TELECOM, S.L.U. - 2809955',
+              tipo: 'antena',
+              op: 'digi',
+              opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+              codigo: '2809955',
+              antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809955',
+              codigoBanda: '',
+              frecuencia: '',
+              ubicacion: 'MADRID',
+              prov: 'MADRID',
+              scannedAt: '2026-11-15T18:04:55Z',
+              fecha: '15/11/2026 19:04:55',
+            },
+          ],
+        },
+      ],
+      'live-ssr-77',
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], baseAntenas);
+    queryClient.setQueryData(['novedades-dataset'], baseNovedades);
+    queryClient.setQueryData(['scan-status'], liveScanStatus);
+    queryClient.setQueryData(
+      ['live-scan-delta', 'live-ssr-77', 2, 1, ''],
+      liveDelta,
+    );
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      validateSearch: (s: Record<string, unknown>) => ({
+        gid: typeof s.gid === 'string' ? s.gid : undefined,
+        id: typeof s.id === 'string' ? s.id : undefined,
+      }),
+      component: MapaView,
+    });
+    const testNov = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+
+    const mapRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    await mapRouter.load();
+
+    const mapHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: mapRouter }),
+        ),
+      ),
+    );
+    // El mapa muestra ya 4 estaciones (3 base + 1 DIGI en vivo) y expone la píldora de 2600 MHz
+    expect(mapHtml).toContain('id="filter-band-2600-mhz"');
+    expect(mapHtml).toContain('>4<');
+
+    const novRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await novRouter.load();
+
+    const novHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: novRouter }),
+      ),
+    );
+    expect(novHtml).toContain('2809955');
+    expect(novHtml).toContain('15/11/2026 19:04:55');
+  });
+});

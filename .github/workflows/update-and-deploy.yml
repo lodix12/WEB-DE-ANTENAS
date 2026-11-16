@@ -81,7 +81,7 @@ jobs:
           echo "scan_trigger=$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"
 
   scan-part-1:
-    name: Escaneo Nacional MINETUR (Parte 1/4 · Censo + Bandas)
+    name: Escaneo Nacional MINETUR (Parte 1/2 · Censo + Bandas Keep-Alive)
     needs: [check-trigger]
     if: needs.check-trigger.outputs.should_scan == 'true'
     runs-on: ubuntu-latest
@@ -103,22 +103,25 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Recolectar censo nacional y primer lote de bandas (<= 1.0 req/s)
+      - name: Recolectar censo nacional y bandas RF en paralelo Keep-Alive con stream en vivo
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
           SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          mkdir -p /tmp/scan-live
           python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
+            --status-file /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
             --mode watch \
-            --interval 50 \
+            --interval 8 \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
-            --part "1/4" \
-            --started-at "$SCAN_STARTED_AT" &
+            --part "1/2" \
+            --started-at "$SCAN_STARTED_AT" \
+            --antenas-file public/data/antenas.json &
           WATCH_PID=$!
           trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
 
@@ -128,31 +131,60 @@ jobs:
           fi
           python3 scripts/fetch_antenas.py \
             --output public/data/antenas.json \
-            --delay 1.0 \
+            --delay 0.02 \
+            --workers 16 \
+            --census-workers 8 \
             --preserve-from public/data/antenas.json \
             --fetch-bands \
-            --max-band-seconds 17400 \
+            --max-band-seconds 18000 \
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
             --novedades-mode reset \
             --scan-id "$SCAN_ID" \
-            --status-output /tmp/scan-status.json \
+            --status-output /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
+            --live-mode reset \
             --scan-trigger "$SCAN_TRIGGER" \
-            --scan-part "1/4" \
+            --scan-part "1/2" \
             "${EXTRA_ARGS[@]}"
 
-      - name: Confirmar y publicar avance (Parte 1/4)
+          kill "$WATCH_PID" 2>/dev/null || true
+          wait "$WATCH_PID" 2>/dev/null || true
+
+      - name: Confirmar y publicar avance sin conflictos (Parte 1/2)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/antenas.json public/data/novedades.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 1/4)"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          else
-            echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+          mkdir -p /tmp/scan-commit-backup
+          cp -f public/data/antenas.json /tmp/scan-commit-backup/antenas.json
+          if [ -f public/data/novedades.json ]; then
+            cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
+
+          for ATTEMPT in 1 2 3; do
+            git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
+            if [ "$ATTEMPT" -gt 1 ]; then
+              git fetch origin main
+              git reset --hard origin/main
+            else
+              git pull --rebase origin main
+            fi
+            cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
+            if [ -f /tmp/scan-commit-backup/novedades.json ]; then
+              cp -f /tmp/scan-commit-backup/novedades.json public/data/novedades.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json
+            if git diff --cached --quiet; then
+              echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              break
+            fi
+            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 1/2)"
+            if git push origin HEAD:main; then
+              break
+            fi
+            echo "Reintentando push hacia main (intento $ATTEMPT/3)..."
+            sleep 2
+          done
 
       - name: Comprobar estaciones pendientes de escaneo de bandas
         id: check_remaining
@@ -173,12 +205,12 @@ jobs:
               or str(a.get("bandsScannedAt")) < started
           )
           has_more = "true" if remaining > 0 else "false"
-          print(f"Estaciones pendientes tras Parte 1/4 (desde {started}): {remaining} -> has_more={has_more}")
+          print(f"Estaciones pendientes tras Parte 1/2 (desde {started}): {remaining} -> has_more={has_more}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"has_more={has_more}\n")
           PY
 
-      - name: Actualizar estado en vivo tras Parte 1/4
+      - name: Actualizar estado en vivo tras Parte 1/2
         if: always()
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
@@ -189,18 +221,20 @@ jobs:
           HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
         run: |
           python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
+            --status-file /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
             --mode finalize \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
-            --part "1/4" \
+            --part "1/2" \
             --started-at "$SCAN_STARTED_AT" \
+            --antenas-file public/data/antenas.json \
             --job-status "$JOB_STATUS" \
             --has-more "${HAS_MORE:-false}"
 
   scan-part-2:
-    name: Escaneo Nacional MINETUR (Parte 2/4 · Bandas RF)
+    name: Escaneo Nacional MINETUR (Parte 2/2 · Continuación Bandas RF)
     needs: [check-trigger, scan-part-1]
     if: needs.scan-part-1.result == 'success' && needs.scan-part-1.outputs.has_more == 'true'
     runs-on: ubuntu-latest
@@ -222,22 +256,31 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Continuar escaneo de bandas y frecuencias (Parte 2/4, <= 1.0 req/s)
+      - name: Restaurar flujo en vivo y completar bandas pendientes (Parte 2/2)
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
           SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
           SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
           RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
         run: |
+          mkdir -p /tmp/scan-live
           python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
+            --status-file /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
+            --mode restore \
+            --scan-id "$SCAN_ID"
+
+          python3 scripts/publish_scan_status.py \
+            --status-file /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
             --mode watch \
-            --interval 50 \
+            --interval 8 \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
-            --part "2/4" \
-            --started-at "$SCAN_STARTED_AT" &
+            --part "2/2" \
+            --started-at "$SCAN_STARTED_AT" \
+            --antenas-file public/data/antenas.json &
           WATCH_PID=$!
           trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
 
@@ -249,29 +292,57 @@ jobs:
             --enrich-bands-only \
             --input public/data/antenas.json \
             --output public/data/antenas.json \
-            --delay 1.0 \
-            --max-band-seconds 18600 \
+            --delay 0.02 \
+            --workers 16 \
+            --max-band-seconds 18000 \
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
             --scan-id "$SCAN_ID" \
-            --status-output /tmp/scan-status.json \
+            --status-output /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
+            --live-mode append \
             --scan-trigger "$SCAN_TRIGGER" \
-            --scan-part "2/4" \
+            --scan-part "2/2" \
             "${EXTRA_ARGS[@]}"
 
-      - name: Confirmar y publicar avance (Parte 2/4)
+          kill "$WATCH_PID" 2>/dev/null || true
+          wait "$WATCH_PID" 2>/dev/null || true
+
+      - name: Confirmar y publicar avance sin conflictos (Parte 2/2)
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/antenas.json public/data/novedades.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 2/4)"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          else
-            echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+          mkdir -p /tmp/scan-commit-backup
+          cp -f public/data/antenas.json /tmp/scan-commit-backup/antenas.json
+          if [ -f public/data/novedades.json ]; then
+            cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
+
+          for ATTEMPT in 1 2 3; do
+            git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
+            if [ "$ATTEMPT" -gt 1 ]; then
+              git fetch origin main
+              git reset --hard origin/main
+            else
+              git pull --rebase origin main
+            fi
+            cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
+            if [ -f /tmp/scan-commit-backup/novedades.json ]; then
+              cp -f /tmp/scan-commit-backup/novedades.json public/data/novedades.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json
+            if git diff --cached --quiet; then
+              echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              break
+            fi
+            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 2/2)"
+            if git push origin HEAD:main; then
+              break
+            fi
+            echo "Reintentando push hacia main (intento $ATTEMPT/3)..."
+            sleep 2
+          done
 
       - name: Comprobar estaciones pendientes de escaneo de bandas
         id: check_remaining
@@ -292,12 +363,12 @@ jobs:
               or str(a.get("bandsScannedAt")) < started
           )
           has_more = "true" if remaining > 0 else "false"
-          print(f"Estaciones pendientes tras Parte 2/4 (desde {started}): {remaining} -> has_more={has_more}")
+          print(f"Estaciones pendientes tras Parte 2/2 (desde {started}): {remaining} -> has_more={has_more}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"has_more={has_more}\n")
           PY
 
-      - name: Actualizar estado en vivo tras Parte 2/4
+      - name: Actualizar estado en vivo tras Parte 2/2
         if: always()
         env:
           SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
@@ -308,257 +379,21 @@ jobs:
           HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
         run: |
           python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
+            --status-file /tmp/scan-live/scan-status.json \
+            --live-dir /tmp/scan-live \
             --mode finalize \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
-            --part "2/4" \
+            --part "2/2" \
             --started-at "$SCAN_STARTED_AT" \
-            --job-status "$JOB_STATUS" \
-            --has-more "${HAS_MORE:-false}"
-
-  scan-part-3:
-    name: Escaneo Nacional MINETUR (Parte 3/4 · Bandas RF)
-    needs: [check-trigger, scan-part-2]
-    if: needs.scan-part-2.result == 'success' && needs.scan-part-2.outputs.has_more == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 340
-    concurrency:
-      group: 'infoantenas-crawl-worker'
-      cancel-in-progress: false
-    outputs:
-      has_more: ${{ steps.check_remaining.outputs.has_more }}
-    steps:
-      - name: Descargar repositorio (rama main)
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Configurar Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Continuar escaneo de bandas y frecuencias (Parte 3/4, <= 1.0 req/s)
-        env:
-          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
-          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
-        run: |
-          python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
-            --mode watch \
-            --interval 50 \
-            --scan-id "$SCAN_ID" \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --record-novedades "$RECORD_NOVEDADES" \
-            --part "3/4" \
-            --started-at "$SCAN_STARTED_AT" &
-          WATCH_PID=$!
-          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
-
-          EXTRA_ARGS=()
-          if [ "$RECORD_NOVEDADES" = "false" ]; then
-            EXTRA_ARGS+=(--skip-novedades)
-          fi
-          python3 scripts/fetch_antenas.py \
-            --enrich-bands-only \
-            --input public/data/antenas.json \
-            --output public/data/antenas.json \
-            --delay 1.0 \
-            --max-band-seconds 18600 \
-            --rescan-since "$SCAN_STARTED_AT" \
-            --novedades-output public/data/novedades.json \
-            --novedades-mode append \
-            --scan-id "$SCAN_ID" \
-            --status-output /tmp/scan-status.json \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --scan-part "3/4" \
-            "${EXTRA_ARGS[@]}"
-
-      - name: Confirmar y publicar avance (Parte 3/4)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/antenas.json public/data/novedades.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 3/4)"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          else
-            echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
-          fi
-
-      - name: Comprobar estaciones pendientes de escaneo de bandas
-        id: check_remaining
-        env:
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          started = os.environ["SCAN_STARTED_AT"]
-          with open("public/data/antenas.json", encoding="utf-8") as fh:
-              data = json.load(fh)
-          remaining = sum(
-              1
-              for a in data.get("antenas", [])
-              if not isinstance(a.get("bandas"), list)
-              or not isinstance(a.get("concesiones"), list)
-              or not a.get("bandsScannedAt")
-              or str(a.get("bandsScannedAt")) < started
-          )
-          has_more = "true" if remaining > 0 else "false"
-          print(f"Estaciones pendientes tras Parte 3/4 (desde {started}): {remaining} -> has_more={has_more}")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"has_more={has_more}\n")
-          PY
-
-      - name: Actualizar estado en vivo tras Parte 3/4
-        if: always()
-        env:
-          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
-          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
-          JOB_STATUS: ${{ job.status }}
-          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
-        run: |
-          python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
-            --mode finalize \
-            --scan-id "$SCAN_ID" \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --record-novedades "$RECORD_NOVEDADES" \
-            --part "3/4" \
-            --started-at "$SCAN_STARTED_AT" \
-            --job-status "$JOB_STATUS" \
-            --has-more "${HAS_MORE:-false}"
-
-  scan-part-4:
-    name: Escaneo Nacional MINETUR (Parte 4/4 · Bandas RF)
-    needs: [check-trigger, scan-part-3]
-    if: needs.scan-part-3.result == 'success' && needs.scan-part-3.outputs.has_more == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 340
-    concurrency:
-      group: 'infoantenas-crawl-worker'
-      cancel-in-progress: false
-    outputs:
-      has_more: ${{ steps.check_remaining.outputs.has_more }}
-    steps:
-      - name: Descargar repositorio (rama main)
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Configurar Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Completar escaneo de bandas y frecuencias (Parte 4/4, <= 1.0 req/s)
-        env:
-          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
-          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
-        run: |
-          python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
-            --mode watch \
-            --interval 50 \
-            --scan-id "$SCAN_ID" \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --record-novedades "$RECORD_NOVEDADES" \
-            --part "4/4" \
-            --started-at "$SCAN_STARTED_AT" &
-          WATCH_PID=$!
-          trap 'kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true' EXIT
-
-          EXTRA_ARGS=()
-          if [ "$RECORD_NOVEDADES" = "false" ]; then
-            EXTRA_ARGS+=(--skip-novedades)
-          fi
-          python3 scripts/fetch_antenas.py \
-            --enrich-bands-only \
-            --input public/data/antenas.json \
-            --output public/data/antenas.json \
-            --delay 1.0 \
-            --max-band-seconds 18600 \
-            --rescan-since "$SCAN_STARTED_AT" \
-            --novedades-output public/data/novedades.json \
-            --novedades-mode append \
-            --scan-id "$SCAN_ID" \
-            --status-output /tmp/scan-status.json \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --scan-part "4/4" \
-            "${EXTRA_ARGS[@]}"
-
-      - name: Confirmar y publicar avance (Parte 4/4)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/antenas.json public/data/novedades.json
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 4/4)"
-            git pull --rebase origin main
-            git push origin HEAD:main
-          else
-            echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
-          fi
-
-      - name: Comprobar estaciones pendientes de escaneo de bandas
-        id: check_remaining
-        env:
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          started = os.environ["SCAN_STARTED_AT"]
-          with open("public/data/antenas.json", encoding="utf-8") as fh:
-              data = json.load(fh)
-          remaining = sum(
-              1
-              for a in data.get("antenas", [])
-              if not isinstance(a.get("bandas"), list)
-              or not isinstance(a.get("concesiones"), list)
-              or not a.get("bandsScannedAt")
-              or str(a.get("bandsScannedAt")) < started
-          )
-          has_more = "true" if remaining > 0 else "false"
-          print(f"Estaciones pendientes tras Parte 4/4 (desde {started}): {remaining} -> has_more={has_more}")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"has_more={has_more}\n")
-          PY
-
-      - name: Actualizar estado en vivo tras Parte 4/4
-        if: always()
-        env:
-          SCAN_ID: ${{ needs.check-trigger.outputs.scan_id }}
-          SCAN_STARTED_AT: ${{ needs.check-trigger.outputs.scan_started_at }}
-          SCAN_TRIGGER: ${{ needs.check-trigger.outputs.scan_trigger }}
-          RECORD_NOVEDADES: ${{ needs.check-trigger.outputs.record_novedades }}
-          JOB_STATUS: ${{ job.status }}
-          HAS_MORE: ${{ steps.check_remaining.outputs.has_more }}
-        run: |
-          python3 scripts/publish_scan_status.py \
-            --status-file /tmp/scan-status.json \
-            --mode finalize \
-            --scan-id "$SCAN_ID" \
-            --scan-trigger "$SCAN_TRIGGER" \
-            --record-novedades "$RECORD_NOVEDADES" \
-            --part "4/4" \
-            --started-at "$SCAN_STARTED_AT" \
+            --antenas-file public/data/antenas.json \
             --job-status "$JOB_STATUS" \
             --has-more "${HAS_MORE:-false}"
 
   build-and-deploy:
     name: Compilar Aplicación y Publicar en GitHub Pages
-    needs: [check-trigger, scan-part-1, scan-part-2, scan-part-3, scan-part-4]
+    needs: [check-trigger, scan-part-1, scan-part-2]
     if: always() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && needs.check-trigger.outputs.should_scan != 'true') || needs.scan-part-1.result == 'success')
     runs-on: ubuntu-latest
     concurrency:

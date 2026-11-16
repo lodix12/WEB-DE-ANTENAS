@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  ScanLifecycleState,
-  ScanPhase,
-  ScanStatusPayload,
+import {
+  OPERATOR_ORDER,
+  type AntennaRecord,
+  type ConcesionBanda,
+  type LiveBandPatch,
+  type LiveScanDeltaChunk,
+  type NovedadRecord,
+  type NovedadTipo,
+  type OperatorKey,
+  type ScanLifecycleState,
+  type ScanPhase,
+  type ScanStatusPayload,
 } from '../types/antena';
 
 const GITHUB_CONTENTS_STATUS_URL =
@@ -12,17 +20,26 @@ const GITHUB_CONTENTS_STATUS_URL =
 const GITHUB_RAW_STATUS_URL =
   'https://raw.githubusercontent.com/lodix12/WEB-DE-ANTENAS/scan-status/scan-status.json';
 
+const DEFAULT_LIVE_DELTA_BASE_URL =
+  'https://raw.githubusercontent.com/lodix12/WEB-DE-ANTENAS/scan-status';
+
 const GITHUB_WORKFLOW_RUNS_URL =
   'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/actions/workflows/update-and-deploy.yml/runs?per_page=4';
 
-/** Intervalo de sondeo compatible con la cuota pública de GitHub API (<= 55 req/h + ETag 304) */
-const POLL_INTERVAL_MS = 65_000;
+/** Intervalo de sondeo rápido en vivo vía raw.githubusercontent.com (sin límite de 60 req/h) */
+const ACTIVE_POLL_INTERVAL_MS = 3_500;
+const IDLE_POLL_INTERVAL_MS = 15_000;
 
 /** Si un estado "running"/"handoff" supera 6 minutos sin latido, verificar si el job sigue vivo */
 const STALE_HEARTBEAT_MS = 6 * 60 * 1000;
 
 /** Evitar consultar /actions/runs más de una vez cada 2 minutos */
 const ACTIONS_CHECK_COOLDOWN_MS = 120_000;
+
+const LIVE_CHUNK_FETCH_CONCURRENCY = 6;
+
+const GEOJSON_LIVE_ERROR_MSG =
+  'Formato GeoJSON no admitido en el flujo en vivo: RadioMapa utiliza exclusivamente su esquema JSON propio.';
 
 const VALID_STATES = new Set<string>([
   'running',
@@ -33,6 +50,8 @@ const VALID_STATES = new Set<string>([
 ]);
 
 const VALID_PHASES = new Set<string>(['censo', 'frecuencias']);
+const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
+const VALID_NOVEDAD_TIPOS = new Set<string>(['antena', 'frecuencia']);
 
 const PERCENT_FORMATTER_ES = new Intl.NumberFormat('es-ES', {
   minimumFractionDigits: 2,
@@ -51,8 +70,43 @@ const etagCache: EtagCache = {
   lastActionsCheckMs: 0,
 };
 
+interface LiveDeltaScanCache {
+  scanId: string;
+  baseUrl: string;
+  sealedChunks: Map<number, LiveScanDeltaChunk>;
+  tailSeq: number;
+  tailChunk: LiveScanDeltaChunk | null;
+}
+
+const liveDeltaCacheByClient = new WeakMap<object, LiveDeltaScanCache>();
+const invalidatedCompletedScanByClient = new WeakMap<object, string>();
+
+export interface LiveScanMergedDelta {
+  scanId: string;
+  deltaSeq: number;
+  recordNovedades: boolean;
+  previousScanAt: string | null;
+  updatedAt: string;
+  completedDatasetUpdatedAt: string;
+  newAntennas: AntennaRecord[];
+  bandPatchesById: Map<string, LiveBandPatch>;
+  bandPatchesByGid: Map<string, LiveBandPatch>;
+  novedades: NovedadRecord[];
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertNotGeoJson(obj: Record<string, unknown>): void {
+  if (
+    obj.type === 'FeatureCollection' ||
+    obj.type === 'Feature' ||
+    Array.isArray(obj.features) ||
+    'geometry' in obj
+  ) {
+    throw new Error(GEOJSON_LIVE_ERROR_MSG);
+  }
 }
 
 function decodeBase64Utf8(b64: string): string {
@@ -63,6 +117,17 @@ function decodeBase64Utf8(b64: string): string {
     bytes[i] = binary.charCodeAt(i);
   }
   return new TextDecoder('utf-8').decode(bytes);
+}
+
+function pickLatestIsoTimestamp(currentIso: string, nextIso: string): string {
+  if (!nextIso) return currentIso;
+  if (!currentIso) return nextIso;
+  const curMs = Date.parse(currentIso);
+  const nextMs = Date.parse(nextIso);
+  if (Number.isFinite(curMs) && Number.isFinite(nextMs)) {
+    return nextMs >= curMs ? nextIso : currentIso;
+  }
+  return nextIso >= currentIso ? nextIso : currentIso;
 }
 
 /**
@@ -117,6 +182,41 @@ export function parseScanStatusPayload(raw: unknown): ScanStatusPayload | null {
         ? Math.min(100, (scannedAntennas / totalAntennas) * 100)
         : 0;
 
+  const deltaSeq =
+    typeof raw.deltaSeq === 'number' && Number.isFinite(raw.deltaSeq)
+      ? Math.max(0, Math.round(raw.deltaSeq))
+      : undefined;
+  const chunkCount =
+    typeof raw.chunkCount === 'number' && Number.isFinite(raw.chunkCount)
+      ? Math.max(0, Math.round(raw.chunkCount))
+      : undefined;
+  const liveNewAntennasCount =
+    typeof raw.liveNewAntennasCount === 'number' &&
+    Number.isFinite(raw.liveNewAntennasCount)
+      ? Math.max(0, Math.round(raw.liveNewAntennasCount))
+      : undefined;
+  const liveUpdatedAntennasCount =
+    typeof raw.liveUpdatedAntennasCount === 'number' &&
+    Number.isFinite(raw.liveUpdatedAntennasCount)
+      ? Math.max(0, Math.round(raw.liveUpdatedAntennasCount))
+      : undefined;
+  const liveNovedadesCount =
+    typeof raw.liveNovedadesCount === 'number' &&
+    Number.isFinite(raw.liveNovedadesCount)
+      ? Math.max(0, Math.round(raw.liveNovedadesCount))
+      : undefined;
+  const requestsPerSecond =
+    typeof raw.requestsPerSecond === 'number' &&
+    Number.isFinite(raw.requestsPerSecond) &&
+    raw.requestsPerSecond >= 0
+      ? raw.requestsPerSecond
+      : undefined;
+  const completedDatasetUpdatedAt =
+    typeof raw.completedDatasetUpdatedAt === 'string' &&
+    raw.completedDatasetUpdatedAt.trim().length > 0
+      ? raw.completedDatasetUpdatedAt.trim()
+      : undefined;
+
   return {
     schemaVersion:
       typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 1,
@@ -151,6 +251,443 @@ export function parseScanStatusPayload(raw: unknown): ScanStatusPayload | null {
     scannedAntennas,
     totalAntennas,
     percent,
+    ...(deltaSeq !== undefined ? { deltaSeq } : {}),
+    ...(chunkCount !== undefined ? { chunkCount } : {}),
+    ...(liveNewAntennasCount !== undefined ? { liveNewAntennasCount } : {}),
+    ...(liveUpdatedAntennasCount !== undefined
+      ? { liveUpdatedAntennasCount }
+      : {}),
+    ...(liveNovedadesCount !== undefined ? { liveNovedadesCount } : {}),
+    ...(requestsPerSecond !== undefined ? { requestsPerSecond } : {}),
+    ...(completedDatasetUpdatedAt !== undefined
+      ? { completedDatasetUpdatedAt }
+      : {}),
+  };
+}
+
+function validateLiveAntennaRecord(item: unknown): AntennaRecord | null {
+  if (!isPlainObject(item)) {
+    return null;
+  }
+  assertNotGeoJson(item);
+
+  if (
+    typeof item.id !== 'string' ||
+    typeof item.gid !== 'string' ||
+    typeof item.op !== 'string' ||
+    !VALID_OPERATORS.has(item.op) ||
+    typeof item.opRaw !== 'string' ||
+    typeof item.lat !== 'number' ||
+    !Number.isFinite(item.lat) ||
+    typeof item.lon !== 'number' ||
+    !Number.isFinite(item.lon) ||
+    typeof item.dir !== 'string' ||
+    typeof item.mun !== 'string' ||
+    typeof item.prov !== 'string'
+  ) {
+    return null;
+  }
+
+  if (
+    item.mergedGids !== undefined &&
+    (!Array.isArray(item.mergedGids) ||
+      !item.mergedGids.every((gid): gid is string => typeof gid === 'string'))
+  ) {
+    return null;
+  }
+  if (
+    item.bandas !== undefined &&
+    (!Array.isArray(item.bandas) ||
+      !item.bandas.every((band): band is string => typeof band === 'string'))
+  ) {
+    return null;
+  }
+  if (
+    item.frecuencias !== undefined &&
+    (!Array.isArray(item.frecuencias) ||
+      !item.frecuencias.every(
+        (freq): freq is string => typeof freq === 'string',
+      ))
+  ) {
+    return null;
+  }
+  if (
+    item.concesiones !== undefined &&
+    (!Array.isArray(item.concesiones) ||
+      !item.concesiones.every(
+        (c): c is ConcesionBanda =>
+          isPlainObject(c) &&
+          typeof c.ref === 'string' &&
+          typeof c.freq === 'string',
+      ))
+  ) {
+    return null;
+  }
+  if (
+    item.bandsScannedAt !== undefined &&
+    typeof item.bandsScannedAt !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    gid: item.gid,
+    op: item.op as OperatorKey,
+    opRaw: item.opRaw,
+    lat: item.lat,
+    lon: item.lon,
+    dir: item.dir,
+    mun: item.mun,
+    prov: item.prov,
+    ...(item.mergedGids !== undefined ? { mergedGids: item.mergedGids } : {}),
+    ...(item.bandas !== undefined ? { bandas: item.bandas } : {}),
+    ...(item.frecuencias !== undefined
+      ? { frecuencias: item.frecuencias }
+      : {}),
+    ...(item.concesiones !== undefined
+      ? { concesiones: item.concesiones }
+      : {}),
+    ...(item.bandsScannedAt !== undefined
+      ? { bandsScannedAt: item.bandsScannedAt }
+      : {}),
+  };
+}
+
+function validateLiveBandPatch(item: unknown): LiveBandPatch | null {
+  if (!isPlainObject(item)) {
+    return null;
+  }
+  assertNotGeoJson(item);
+
+  if (
+    typeof item.id !== 'string' ||
+    item.id.length === 0 ||
+    typeof item.gid !== 'string' ||
+    !Array.isArray(item.bandas) ||
+    !item.bandas.every((band): band is string => typeof band === 'string')
+  ) {
+    return null;
+  }
+
+  if (
+    item.mergedGids !== undefined &&
+    (!Array.isArray(item.mergedGids) ||
+      !item.mergedGids.every((gid): gid is string => typeof gid === 'string'))
+  ) {
+    return null;
+  }
+  if (
+    item.frecuencias !== undefined &&
+    (!Array.isArray(item.frecuencias) ||
+      !item.frecuencias.every(
+        (freq): freq is string => typeof freq === 'string',
+      ))
+  ) {
+    return null;
+  }
+  if (
+    item.concesiones !== undefined &&
+    (!Array.isArray(item.concesiones) ||
+      !item.concesiones.every(
+        (c): c is ConcesionBanda =>
+          isPlainObject(c) &&
+          typeof c.ref === 'string' &&
+          typeof c.freq === 'string',
+      ))
+  ) {
+    return null;
+  }
+  if (
+    item.bandsScannedAt !== undefined &&
+    typeof item.bandsScannedAt !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    gid: item.gid,
+    ...(item.mergedGids !== undefined ? { mergedGids: item.mergedGids } : {}),
+    bandas: item.bandas,
+    frecuencias: item.frecuencias ?? [],
+    concesiones: item.concesiones ?? [],
+    bandsScannedAt: item.bandsScannedAt ?? '',
+  };
+}
+
+function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
+  if (!isPlainObject(item)) {
+    return null;
+  }
+  assertNotGeoJson(item);
+
+  if (
+    typeof item.id !== 'string' ||
+    typeof item.tipo !== 'string' ||
+    !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
+    typeof item.op !== 'string' ||
+    !VALID_OPERATORS.has(item.op) ||
+    typeof item.opRaw !== 'string' ||
+    typeof item.codigo !== 'string' ||
+    typeof item.antennaId !== 'string' ||
+    typeof item.codigoBanda !== 'string' ||
+    typeof item.frecuencia !== 'string' ||
+    typeof item.ubicacion !== 'string' ||
+    (item.prov !== undefined && typeof item.prov !== 'string') ||
+    typeof item.scannedAt !== 'string' ||
+    typeof item.fecha !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    tipo: item.tipo as NovedadTipo,
+    op: item.op as OperatorKey,
+    opRaw: item.opRaw,
+    codigo: item.codigo,
+    antennaId: item.antennaId,
+    codigoBanda: item.codigoBanda,
+    frecuencia: item.frecuencia,
+    ubicacion: item.ubicacion,
+    ...(item.prov !== undefined ? { prov: item.prov } : {}),
+    scannedAt: item.scannedAt,
+    fecha: item.fecha,
+  };
+}
+
+/**
+ * Valida y normaliza un bloque de delta en vivo (`live-chunk-*.json` o `live-tail.json`)
+ * exigiendo estrictamente el esquema JSON propio y rechazando cualquier entidad GeoJSON.
+ */
+export function parseLiveScanDeltaChunk(raw: unknown): LiveScanDeltaChunk | null {
+  if (!isPlainObject(raw)) {
+    return null;
+  }
+
+  assertNotGeoJson(raw);
+
+  // Soporte de envoltorio Base64 de GitHub Contents API
+  if (typeof raw.content === 'string' && raw.encoding === 'base64') {
+    let inner: unknown;
+    try {
+      const decodedText = decodeBase64Utf8(raw.content);
+      inner = JSON.parse(decodedText);
+    } catch {
+      return null;
+    }
+    return parseLiveScanDeltaChunk(inner);
+  }
+
+  if (typeof raw.scanId !== 'string' || raw.scanId.trim().length === 0) {
+    return null;
+  }
+
+  if (typeof raw.state === 'string' && VALID_STATES.has(raw.state.trim())) {
+    return null;
+  }
+
+  if (raw.newAntennas !== undefined && !Array.isArray(raw.newAntennas)) {
+    return null;
+  }
+  if (raw.bandPatches !== undefined && !Array.isArray(raw.bandPatches)) {
+    return null;
+  }
+  if (raw.novedades !== undefined && !Array.isArray(raw.novedades)) {
+    return null;
+  }
+  if (
+    raw.previousScanAt !== undefined &&
+    raw.previousScanAt !== null &&
+    typeof raw.previousScanAt !== 'string'
+  ) {
+    return null;
+  }
+
+  const rawNewAntennas = raw.newAntennas ?? [];
+  const newAntennas: AntennaRecord[] = new Array(rawNewAntennas.length);
+  for (let i = 0; i < rawNewAntennas.length; i++) {
+    const validated = validateLiveAntennaRecord(rawNewAntennas[i]);
+    if (!validated) return null;
+    newAntennas[i] = validated;
+  }
+
+  const rawBandPatches = raw.bandPatches ?? [];
+  const bandPatches: LiveBandPatch[] = new Array(rawBandPatches.length);
+  for (let i = 0; i < rawBandPatches.length; i++) {
+    const validated = validateLiveBandPatch(rawBandPatches[i]);
+    if (!validated) return null;
+    bandPatches[i] = validated;
+  }
+
+  const rawNovedades = raw.novedades ?? [];
+  const novedades: NovedadRecord[] = new Array(rawNovedades.length);
+  for (let i = 0; i < rawNovedades.length; i++) {
+    const validated = validateLiveNovedadRecord(rawNovedades[i]);
+    if (!validated) return null;
+    novedades[i] = validated;
+  }
+
+  return {
+    schemaVersion:
+      typeof raw.schemaVersion === 'number' && Number.isFinite(raw.schemaVersion)
+        ? raw.schemaVersion
+        : 2,
+    scanId: raw.scanId,
+    seq:
+      typeof raw.seq === 'number' && Number.isFinite(raw.seq)
+        ? Math.max(0, Math.round(raw.seq))
+        : 0,
+    chunkIndex:
+      typeof raw.chunkIndex === 'number' && Number.isFinite(raw.chunkIndex)
+        ? Math.max(0, Math.round(raw.chunkIndex))
+        : 0,
+    isTail: typeof raw.isTail === 'boolean' ? raw.isTail : false,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+    recordNovedades:
+      typeof raw.recordNovedades === 'boolean' ? raw.recordNovedades : true,
+    previousScanAt:
+      typeof raw.previousScanAt === 'string' ? raw.previousScanAt : null,
+    ...(typeof raw.replacesNewAntennas === 'boolean'
+      ? { replacesNewAntennas: raw.replacesNewAntennas }
+      : {}),
+    newAntennas,
+    bandPatches,
+    novedades,
+  };
+}
+
+/**
+ * Acumula de forma pura y determinista la secuencia ordenada de bloques de delta en vivo
+ * aplicando fusiones canónicas (`replacesNewAntennas`), enriquecimiento instantáneo de bandas
+ * sobre antenas recién descubiertas y ordenación cronológica inversa de novedades.
+ */
+export function accumulateLiveDeltaChunks(
+  chunks: readonly LiveScanDeltaChunk[],
+  scanId: string,
+  completedDatasetUpdatedAt = '',
+): LiveScanMergedDelta {
+  const targetScanId = scanId.trim();
+  const newAntennasMap = new Map<string, AntennaRecord>();
+  const bandPatchesById = new Map<string, LiveBandPatch>();
+  const bandPatchesByGid = new Map<string, LiveBandPatch>();
+  const novedadesMap = new Map<string, NovedadRecord>();
+
+  let resolvedScanId = targetScanId;
+  let deltaSeq = 0;
+  let recordNovedades = false;
+  let hasMatchingChunk = false;
+  let previousScanAt: string | null = null;
+  let updatedAt = '';
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (targetScanId && chunk.scanId !== targetScanId) {
+      continue;
+    }
+
+    if (!resolvedScanId && chunk.scanId) {
+      resolvedScanId = chunk.scanId;
+    }
+    hasMatchingChunk = true;
+    deltaSeq = Math.max(deltaSeq, chunk.seq);
+    recordNovedades = chunk.recordNovedades;
+    if (chunk.previousScanAt !== null) {
+      previousScanAt = chunk.previousScanAt;
+    }
+    updatedAt = pickLatestIsoTimestamp(updatedAt, chunk.updatedAt);
+
+    if (chunk.replacesNewAntennas === true) {
+      newAntennasMap.clear();
+      if (chunk.recordNovedades) {
+        for (const [novId, nov] of novedadesMap.entries()) {
+          if (nov.tipo === 'antena') {
+            novedadesMap.delete(novId);
+          }
+        }
+      }
+    }
+
+    for (let a = 0; a < chunk.newAntennas.length; a++) {
+      const ant = chunk.newAntennas[a];
+      newAntennasMap.set(ant.id, ant);
+    }
+
+    for (let p = 0; p < chunk.bandPatches.length; p++) {
+      const patch = chunk.bandPatches[p];
+      bandPatchesById.set(patch.id, patch);
+      if (patch.gid) {
+        bandPatchesByGid.set(patch.gid, patch);
+      }
+      if (patch.mergedGids) {
+        for (let g = 0; g < patch.mergedGids.length; g++) {
+          const mgid = patch.mergedGids[g];
+          if (mgid) {
+            bandPatchesByGid.set(mgid, patch);
+          }
+        }
+      }
+    }
+
+    for (let n = 0; n < chunk.novedades.length; n++) {
+      const nov = chunk.novedades[n];
+      novedadesMap.set(nov.id, nov);
+    }
+  }
+
+  const newAntennas: AntennaRecord[] = [];
+  for (const ant of newAntennasMap.values()) {
+    let patch = bandPatchesById.get(ant.id);
+    if (!patch && ant.op === 'vodafone' && ant.mergedGids) {
+      for (let g = 0; g < ant.mergedGids.length; g++) {
+        const candidatePatch = bandPatchesByGid.get(ant.mergedGids[g]);
+        if (candidatePatch) {
+          patch = candidatePatch;
+          break;
+        }
+      }
+    }
+    const isNewer =
+      patch !== undefined &&
+      (!ant.bandsScannedAt ||
+        !patch.bandsScannedAt ||
+        pickLatestIsoTimestamp(ant.bandsScannedAt, patch.bandsScannedAt) ===
+          patch.bandsScannedAt);
+    if (patch && isNewer) {
+      const nextMergedGids = patch.mergedGids ?? ant.mergedGids;
+      newAntennas.push({
+        ...ant,
+        ...(nextMergedGids !== undefined ? { mergedGids: nextMergedGids } : {}),
+        bandas: patch.bandas,
+        frecuencias: patch.frecuencias,
+        concesiones: patch.concesiones,
+        bandsScannedAt: patch.bandsScannedAt,
+      });
+    } else {
+      newAntennas.push(ant);
+    }
+  }
+
+  const novedades = Array.from(novedadesMap.values()).sort((a, b) => {
+    const msA = Date.parse(a.scannedAt);
+    const msB = Date.parse(b.scannedAt);
+    const safeA = Number.isFinite(msA) ? msA : 0;
+    const safeB = Number.isFinite(msB) ? msB : 0;
+    return safeB - safeA;
+  });
+
+  return {
+    scanId: resolvedScanId,
+    deltaSeq,
+    recordNovedades: hasMatchingChunk ? recordNovedades : false,
+    previousScanAt,
+    updatedAt,
+    completedDatasetUpdatedAt,
+    newAntennas,
+    bandPatchesById,
+    bandPatchesByGid,
+    novedades,
   };
 }
 
@@ -169,7 +706,8 @@ export interface InterpolatedScanMetrics {
 
 /**
  * Calcula de forma pura las métricas instantáneas interpoladas entre latidos del servidor
- * respetando la cadencia real del escáner (`>= 1.0 s` por petición HTTP).
+ * soportando tanto escáneres paralelos de alta velocidad (schemaVersion >= 2 / requestsPerSecond)
+ * como el esquema histórico secuencial (schemaVersion === 1).
  */
 export function computeInterpolatedScanMetrics(
   status: ScanStatusPayload | null | undefined,
@@ -214,15 +752,22 @@ export function computeInterpolatedScanMetrics(
   const rawElapsedSec = Number.isFinite(updatedMs)
     ? Math.max(0, (nowMs - updatedMs) / 1000)
     : 0;
-  // Acotar la extrapolación local a 55 s hasta recibir el siguiente latido real
-  const boundedElapsedSec =
-    status.state === 'running' ? Math.min(55, rawElapsedSec) : 0;
 
   if (status.phase === 'censo') {
+    const maxCensoElapsed = status.schemaVersion >= 2 ? 8 : 55;
+    const boundedElapsedSec =
+      status.state === 'running' ? Math.min(maxCensoElapsed, rawElapsedSec) : 0;
+    const rate =
+      typeof status.requestsPerSecond === 'number' &&
+      status.requestsPerSecond > 0
+        ? Math.min(40, status.requestsPerSecond)
+        : status.schemaVersion >= 2
+          ? 8
+          : 0.85;
     const estBoxes = Math.max(239, status.estimatedCensusBoxes);
     const liveBoxes = Math.min(
       estBoxes,
-      status.censusBoxesVisited + Math.floor(boundedElapsedSec * 0.85),
+      status.censusBoxesVisited + Math.floor(boundedElapsedSec * rate),
     );
     const livePct = Math.min(
       0.39,
@@ -242,8 +787,20 @@ export function computeInterpolatedScanMetrics(
     };
   }
 
-  // Fase de frecuencias: ~0.90 antenas/s conservadoras (el crawler real avanza >= 1.0 - 1.15/s)
-  const extraAntennas = Math.floor(boundedElapsedSec * 0.9);
+  // Fase de frecuencias: alta velocidad con requestsPerSecond o modo conservador ~0.90 antenas/s
+  const hasFastRate =
+    typeof status.requestsPerSecond === 'number' &&
+    status.requestsPerSecond > 0;
+  const boundedElapsedSec =
+    status.state === 'running'
+      ? Math.min(hasFastRate ? 8 : 55, rawElapsedSec)
+      : 0;
+  const extraAntennas = hasFastRate
+    ? Math.floor(
+        boundedElapsedSec *
+          Math.min(80, (status.requestsPerSecond ?? 0) * 0.9),
+      )
+    : Math.floor(boundedElapsedSec * 0.9);
   const maxAllowed = Math.max(status.scannedAntennas, totalAntennas - 1);
   const liveScanned = Math.min(
     maxAllowed,
@@ -251,7 +808,7 @@ export function computeInterpolatedScanMetrics(
   );
   const rawPct = totalAntennas > 0 ? (liveScanned / totalAntennas) * 100 : 0;
   const minFloor =
-    status.part === '' || status.part === '1/4'
+    status.part === '' || status.part.startsWith('1/')
       ? Math.max(0.4, status.percent)
       : status.percent;
   const livePct = Math.min(99.99, Math.max(minFloor, rawPct));
@@ -270,9 +827,8 @@ export function computeInterpolatedScanMetrics(
   };
 }
 
-async function fetchRawBranchFallback(): Promise<ScanStatusPayload | null> {
-  const bucket = Math.floor(Date.now() / 45_000);
-  const resp = await fetch(`${GITHUB_RAW_STATUS_URL}?t=${bucket}`, {
+async function fetchRawBranchPrimary(): Promise<ScanStatusPayload | null> {
+  const resp = await fetch(`${GITHUB_RAW_STATUS_URL}?t=${Date.now()}`, {
     cache: 'no-store',
   });
   if (!resp.ok) {
@@ -349,6 +905,19 @@ function getCustomOverrideUrl(): string | null {
   return null;
 }
 
+function getLiveDeltaBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const win = window as unknown as Record<string, unknown>;
+    if (
+      typeof win.__RADIOMAPA_LIVE_DELTA_BASE_URL__ === 'string' &&
+      win.__RADIOMAPA_LIVE_DELTA_BASE_URL__.trim()
+    ) {
+      return win.__RADIOMAPA_LIVE_DELTA_BASE_URL__.trim().replace(/\/+$/, '');
+    }
+  }
+  return DEFAULT_LIVE_DELTA_BASE_URL;
+}
+
 export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   const customUrl = getCustomOverrideUrl();
   if (customUrl) {
@@ -359,37 +928,47 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
 
   let payload: ScanStatusPayload | null = null;
 
+  // 1) Fuente primaria en tiempo real: raw.githubusercontent.com (sin límite de 60 req/h)
   try {
-    const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
-    };
-    if (etagCache.etag) {
-      headers['If-None-Match'] = etagCache.etag;
-    }
-    const resp = await fetch(GITHUB_CONTENTS_STATUS_URL, {
-      headers,
-      cache: 'no-store',
-    });
-
-    if (resp.status === 304 && etagCache.payload) {
-      payload = etagCache.payload;
-    } else if (resp.ok) {
-      const nextEtag = resp.headers.get('ETag');
-      const json: unknown = await resp.json();
-      const parsed = parseScanStatusPayload(json);
-      if (parsed) {
-        if (nextEtag) {
-          etagCache.etag = nextEtag;
-        }
-        etagCache.payload = parsed;
-        payload = parsed;
-      }
-    } else if (resp.status === 403 || resp.status === 429) {
-      payload = await fetchRawBranchFallback();
+    const rawParsed = await fetchRawBranchPrimary();
+    if (rawParsed) {
+      etagCache.payload = rawParsed;
+      payload = rawParsed;
     }
   } catch {
+    // Respaldo mediante GitHub Contents API + ETag
+  }
+
+  // 2) Respaldo mediante GitHub Contents API con ETag (If-None-Match) solo si falla raw
+  if (!payload) {
     try {
-      payload = await fetchRawBranchFallback();
+      const headers: Record<string, string> = {
+        Accept: 'application/vnd.github+json',
+      };
+      if (etagCache.etag) {
+        headers['If-None-Match'] = etagCache.etag;
+      }
+      const resp = await fetch(GITHUB_CONTENTS_STATUS_URL, {
+        headers,
+        cache: 'no-store',
+      });
+
+      if (resp.status === 304 && etagCache.payload) {
+        payload = etagCache.payload;
+      } else if (resp.ok) {
+        const nextEtag = resp.headers.get('ETag');
+        const json: unknown = await resp.json();
+        const parsed = parseScanStatusPayload(json);
+        if (parsed) {
+          if (nextEtag) {
+            etagCache.etag = nextEtag;
+          }
+          etagCache.payload = parsed;
+          payload = parsed;
+        }
+      } else {
+        payload = etagCache.payload;
+      }
     } catch {
       payload = etagCache.payload;
     }
@@ -399,7 +978,7 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   const canCheckActions =
     now - etagCache.lastActionsCheckMs >= ACTIONS_CHECK_COOLDOWN_MS;
 
-  // 1) Si el documento indica "running"/"handoff" pero el latido lleva > 6 min congelado,
+  // 3) Si el documento indica "running"/"handoff" pero el latido lleva > 6 min congelado,
   // comprobar si la ejecución de GitHub Actions fue cancelada abruptamente.
   if (
     payload &&
@@ -423,7 +1002,7 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
     return payload;
   }
 
-  // 2) Si el estado aparece inactivo/completado, verificar de forma ligera si acaba de arrancar
+  // 4) Si el estado aparece inactivo/completado, verificar de forma ligera si acaba de arrancar
   // un escaneo diario o forzado en los primeros segundos antes del primer push a `scan-status`.
   if (canCheckActions) {
     etagCache.lastActionsCheckMs = now;
@@ -457,6 +1036,219 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   return payload;
 }
 
+async function runTasksWithConcurrency<T>(
+  tasks: ReadonlyArray<() => Promise<T>>,
+  concurrency: number,
+): Promise<T[]> {
+  if (tasks.length === 0) return [];
+  const results = new Array<T>(tasks.length);
+  let nextIdx = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), tasks.length);
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(
+      (async () => {
+        while (nextIdx < tasks.length) {
+          const idx = nextIdx++;
+          results[idx] = await tasks[idx]();
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+async function fetchLiveScanMergedDelta(
+  cacheOwner: object,
+  scanId: string,
+  deltaSeq: number,
+  chunkCount: number,
+  completedDatasetUpdatedAt: string,
+): Promise<LiveScanMergedDelta> {
+  const baseUrl = getLiveDeltaBaseUrl();
+  let cache = liveDeltaCacheByClient.get(cacheOwner);
+  if (!cache || cache.scanId !== scanId || cache.baseUrl !== baseUrl) {
+    cache = {
+      scanId,
+      baseUrl,
+      sealedChunks: new Map<number, LiveScanDeltaChunk>(),
+      tailSeq: 0,
+      tailChunk: null,
+    };
+    liveDeltaCacheByClient.set(cacheOwner, cache);
+  }
+
+  const activeCache = cache;
+  const missingIndices: number[] = [];
+  for (let i = 0; i < chunkCount; i++) {
+    if (!activeCache.sealedChunks.has(i)) {
+      missingIndices.push(i);
+    }
+  }
+
+  const chunkTasks = missingIndices.map((idx) => async () => {
+    try {
+      const resp = await fetch(
+        `${baseUrl}/live-chunk-${idx}.json?scan=${encodeURIComponent(scanId)}`,
+        { cache: 'no-store' },
+      );
+      if (!resp.ok) return;
+      const json: unknown = await resp.json();
+      const parsed = parseLiveScanDeltaChunk(json);
+      if (parsed && parsed.scanId === scanId) {
+        activeCache.sealedChunks.set(idx, parsed);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === GEOJSON_LIVE_ERROR_MSG) {
+        throw err;
+      }
+    }
+  });
+
+  const tailPromise = (async () => {
+    if (activeCache.tailSeq === deltaSeq) {
+      return;
+    }
+    try {
+      const resp = await fetch(
+        `${baseUrl}/live-tail.json?scan=${encodeURIComponent(scanId)}&seq=${deltaSeq}&t=${Date.now()}`,
+        { cache: 'no-store' },
+      );
+      if (!resp.ok) return;
+      const json: unknown = await resp.json();
+      const parsed = parseLiveScanDeltaChunk(json);
+      if (parsed && parsed.scanId === scanId) {
+        activeCache.tailChunk = parsed;
+        activeCache.tailSeq = deltaSeq;
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === GEOJSON_LIVE_ERROR_MSG) {
+        throw err;
+      }
+    }
+  })();
+
+  await Promise.all([
+    runTasksWithConcurrency(chunkTasks, LIVE_CHUNK_FETCH_CONCURRENCY),
+    tailPromise,
+  ]);
+
+  const orderedChunks: LiveScanDeltaChunk[] = [];
+  for (let i = 0; i < chunkCount; i++) {
+    const sealed = activeCache.sealedChunks.get(i);
+    if (sealed) {
+      orderedChunks.push(sealed);
+    }
+  }
+
+  const tail = activeCache.tailChunk;
+  if (
+    tail &&
+    (tail.chunkIndex >= chunkCount ||
+      !activeCache.sealedChunks.has(tail.chunkIndex))
+  ) {
+    orderedChunks.push(tail);
+  }
+
+  return accumulateLiveDeltaChunks(
+    orderedChunks,
+    scanId,
+    completedDatasetUpdatedAt,
+  );
+}
+
+function useSharedScanStatusQuery() {
+  return useQuery<ScanStatusPayload | null>({
+    queryKey: ['scan-status'],
+    queryFn: fetchLiveScanStatus,
+    staleTime: 3_000,
+    refetchInterval: (query) => {
+      const s = query.state.data?.state;
+      return s === 'running' || s === 'handoff'
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: 1,
+  });
+}
+
+function useInvalidateDatasetsOnScanCompletion(
+  status: ScanStatusPayload | null,
+): void {
+  const queryClient = useQueryClient();
+  const prevActiveScanIdRef = useRef<string | null>(null);
+  const isActive =
+    status?.state === 'running' || status?.state === 'handoff';
+
+  useEffect(() => {
+    if (isActive && status?.scanId) {
+      prevActiveScanIdRef.current = status.scanId;
+    } else if (
+      status?.state === 'completed' &&
+      prevActiveScanIdRef.current &&
+      prevActiveScanIdRef.current === status.scanId
+    ) {
+      prevActiveScanIdRef.current = null;
+      if (invalidatedCompletedScanByClient.get(queryClient) !== status.scanId) {
+        invalidatedCompletedScanByClient.set(queryClient, status.scanId);
+        void queryClient.invalidateQueries({ queryKey: ['novedades-dataset'] });
+        void queryClient.invalidateQueries({ queryKey: ['antenas-dataset'] });
+      }
+    }
+  }, [isActive, status?.scanId, status?.state, queryClient]);
+}
+
+/**
+ * Suscribe a los bloques de delta en vivo (`live-chunk-*.json` + `live-tail.json`)
+ * compartiendo la caché de `['scan-status']` sin duplicar peticiones de red.
+ */
+export function useLiveScanDelta(): LiveScanMergedDelta | null {
+  const queryClient = useQueryClient();
+  const statusQuery = useSharedScanStatusQuery();
+  const status = statusQuery.data ?? null;
+
+  useInvalidateDatasetsOnScanCompletion(status);
+
+  const scanId = status?.scanId ?? '';
+  const deltaSeq = status?.deltaSeq ?? 0;
+  const chunkCount = status?.chunkCount ?? 0;
+  const completedDatasetUpdatedAt = status?.completedDatasetUpdatedAt ?? '';
+  const hasLiveStream = Boolean(scanId && deltaSeq > 0);
+
+  const deltaQuery = useQuery<LiveScanMergedDelta>({
+    queryKey: [
+      'live-scan-delta',
+      scanId,
+      deltaSeq,
+      chunkCount,
+      completedDatasetUpdatedAt,
+    ],
+    queryFn: () =>
+      fetchLiveScanMergedDelta(
+        queryClient,
+        scanId,
+        deltaSeq,
+        chunkCount,
+        completedDatasetUpdatedAt,
+      ),
+    enabled: hasLiveStream,
+    staleTime: Infinity,
+    gcTime: 10 * 60 * 1000,
+    placeholderData: (previousData) =>
+      previousData?.scanId === scanId ? previousData : undefined,
+    retry: 1,
+  });
+
+  if (!hasLiveStream) {
+    return null;
+  }
+
+  return deltaQuery.data ?? null;
+}
+
 export interface UseScanProgressResult extends InterpolatedScanMetrics {
   status: ScanStatusPayload | null;
   isLoadingInitial: boolean;
@@ -466,17 +1258,7 @@ export interface UseScanProgressResult extends InterpolatedScanMetrics {
 export function useScanProgress(
   fallbackTotalAntennas = 62230,
 ): UseScanProgressResult {
-  const queryClient = useQueryClient();
-  const query = useQuery<ScanStatusPayload | null>({
-    queryKey: ['scan-status'],
-    queryFn: fetchLiveScanStatus,
-    staleTime: 15_000,
-    refetchInterval: POLL_INTERVAL_MS,
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    retry: 1,
-  });
-
+  const query = useSharedScanStatusQuery();
   const status = query.data ?? null;
   const isActive =
     status?.state === 'running' || status?.state === 'handoff';
@@ -493,22 +1275,7 @@ export function useScanProgress(
     highPercent: status?.percent ?? 0,
   }));
 
-  const prevActiveScanIdRef = useRef<string | null>(null);
-
-  // Cuando un escaneo en curso pasa a "completed", refrescar automáticamente novedades y censo
-  useEffect(() => {
-    if (isActive && status?.scanId) {
-      prevActiveScanIdRef.current = status.scanId;
-    } else if (
-      status?.state === 'completed' &&
-      prevActiveScanIdRef.current &&
-      prevActiveScanIdRef.current === status.scanId
-    ) {
-      prevActiveScanIdRef.current = null;
-      void queryClient.invalidateQueries({ queryKey: ['novedades-dataset'] });
-      void queryClient.invalidateQueries({ queryKey: ['antenas-dataset'] });
-    }
-  }, [isActive, status?.scanId, status?.state, queryClient]);
+  useInvalidateDatasetsOnScanCompletion(status);
 
   // Reloj de interpolación en tiempo real (1 Hz) activo únicamente mientras hay escaneo en marcha
   useEffect(() => {

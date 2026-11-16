@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import {
   PanelLeftOpen,
@@ -9,6 +9,8 @@ import { AntenasMap } from '../components/map/AntenasMap';
 import { FilterPanel } from '../components/ui/FilterPanel';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
+  getComunidadAutonomaByProvince,
+  matchesAntennaBandsFilter,
   useAntenasData,
   useFilteredAntenas,
 } from '../hooks/useAntenasData';
@@ -21,12 +23,15 @@ export function MapaView() {
     setStyleId,
     searchQuery,
     setSearchQuery,
+    selectedComunidad,
+    setSelectedComunidad,
     selectedProvince,
     setSelectedProvince,
-    selectedMunicipality,
-    setSelectedMunicipality,
-    selectedBand,
-    setSelectedBand,
+    selectedBands,
+    toggleBand,
+    clearBands,
+    exclusiveBands,
+    setExclusiveBands,
     activeOperators,
     toggleOperator,
     selectAllOperators,
@@ -73,13 +78,21 @@ export function MapaView() {
       (targetGid ? derived.byGid.get(targetGid) : undefined);
     if (found) {
       appliedGidRef.current = targetKey;
+      if (
+        selectedComunidad &&
+        getComunidadAutonomaByProvince(found.prov) !== selectedComunidad
+      ) {
+        setSelectedComunidad('');
+      }
       if (selectedProvince && selectedProvince !== found.prov) {
         setSelectedProvince('');
-      } else if (selectedMunicipality && selectedMunicipality !== found.mun) {
-        setSelectedMunicipality('');
       }
-      if (selectedBand && !found.bandas?.includes(selectedBand)) {
-        setSelectedBand('');
+      if (
+        selectedBands.length > 0 &&
+        !matchesAntennaBandsFilter(found.bandas, selectedBands, exclusiveBands)
+      ) {
+        clearBands();
+        setExclusiveBands(false);
       }
       if (searchQuery.trim().length > 0) {
         setSearchQuery('');
@@ -90,13 +103,15 @@ export function MapaView() {
     searchParams.id,
     searchParams.gid,
     derived,
+    selectedComunidad,
     selectedProvince,
-    selectedMunicipality,
-    selectedBand,
+    selectedBands,
+    exclusiveBands,
     searchQuery,
+    setSelectedComunidad,
     setSelectedProvince,
-    setSelectedMunicipality,
-    setSelectedBand,
+    clearBands,
+    setExclusiveBands,
     setSearchQuery,
     focusAntennaOnMap,
   ]);
@@ -104,11 +119,21 @@ export function MapaView() {
   const filteredAntenas = useFilteredAntenas({
     derived,
     searchQuery,
+    selectedComunidad,
     selectedProvince,
-    selectedMunicipality,
     activeOperators,
-    selectedBand,
+    selectedBands,
+    exclusiveBands,
   });
+
+  const liveSelectedAntenna = useMemo(() => {
+    if (!selectedAntenna || !derived) return selectedAntenna;
+    return (
+      derived.byId.get(selectedAntenna.id) ??
+      derived.byGid.get(selectedAntenna.gid) ??
+      selectedAntenna
+    );
+  }, [selectedAntenna, derived]);
 
   if (isError) {
     return (
@@ -171,12 +196,15 @@ export function MapaView() {
         onCloseMobile={() => setMobilePanelOpen(false)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        selectedComunidad={selectedComunidad}
+        onComunidadChange={setSelectedComunidad}
         selectedProvince={selectedProvince}
         onProvinceChange={setSelectedProvince}
-        selectedMunicipality={selectedMunicipality}
-        onMunicipalityChange={setSelectedMunicipality}
-        selectedBand={selectedBand}
-        onBandChange={setSelectedBand}
+        selectedBands={selectedBands}
+        onToggleBand={toggleBand}
+        onClearBands={clearBands}
+        exclusiveBands={exclusiveBands}
+        onExclusiveBandsChange={setExclusiveBands}
         activeOperators={activeOperators}
         onToggleOperator={toggleOperator}
         onSelectAllOperators={selectAllOperators}
@@ -234,7 +262,7 @@ export function MapaView() {
         ) : (
           <AntenasMap
             antenas={filteredAntenas}
-            selectedAntenna={selectedAntenna}
+            selectedAntenna={liveSelectedAntenna}
             onSelectAntenna={setSelectedAntenna}
             styleId={styleId}
             onStyleChange={setStyleId}
@@ -252,7 +280,7 @@ export function MapaView() {
       </div>
 
       <StationDetailDrawer
-        antenna={selectedAntenna}
+        antenna={liveSelectedAntenna}
         allAntenas={derived?.dataset.antenas ?? []}
         onClose={() => setSelectedAntenna(null)}
         onSelectAntenna={(ant) => focusAntennaOnMap(ant)}

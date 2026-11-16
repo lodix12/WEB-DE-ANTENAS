@@ -46,7 +46,6 @@ const LAYER_MEASURE_POINTS = 'measure-points';
 const LAYER_MEASURE_POINT_LABELS = 'measure-point-labels';
 const LAYER_MEASURE_DISTANCE_LABEL = 'measure-distance-label';
 
-const LAYER_CLUSTERS_HALO = 'antenas-clusters-halo';
 const LAYER_CLUSTERS = 'antenas-clusters';
 const LAYER_CLUSTER_COUNT = 'antenas-cluster-count';
 const LAYER_UNCLUSTERED = 'antenas-unclustered';
@@ -145,18 +144,15 @@ function parseOperatorsFromIconKey(iconKey: string): OperatorKey[] {
 }
 
 /**
- * Genera en Canvas 2D (`64x64` px, `pixelRatio: 2`) un icono circular multicolor de alta legibilidad
- * cartográfica con sectores iguales de los operadores integrados, separadores radiales blancos nítidos,
- * núcleo técnico central y borde exterior blanco de alto contraste.
+ * Genera en Canvas 2D (`64x64` px, `pixelRatio: 2`) un icono circular multicolor de relleno
+ * plano y sólido sin bordes exteriores ni líneas separadoras blancas, repartiendo en sectores
+ * iguales los colores de los operadores integrados sin costuras de antialiasing.
  */
-function createMultiOperatorSprite(
-  operators: OperatorKey[],
-  isDark: boolean,
-): ImageData {
+function createMultiOperatorSprite(operators: OperatorKey[]): ImageData {
   const size = 64;
   const cx = size / 2;
   const cy = size / 2;
-  const radius = 24.5;
+  const radius = 27;
 
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -166,77 +162,33 @@ function createMultiOperatorSprite(
     return new ImageData(size, size);
   }
 
-  // Sombra/contorno exterior oscuro sutil para garantizar contraste en fondos claros u oscuros
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy + 0.8, radius + 3.2, 0, Math.PI * 2);
-  ctx.fillStyle = isDark
-    ? 'rgba(2, 6, 23, 0.74)'
-    : 'rgba(15, 23, 42, 0.30)';
-  ctx.fill();
-  ctx.restore();
-
   const ops: OperatorKey[] = operators.length > 0 ? operators : ['otros'];
-  const sliceAngle = (Math.PI * 2) / ops.length;
-  const startBase = -Math.PI / 2;
+  const firstColor = OPERATOR_META[ops[0]]?.color ?? OPERATOR_META.otros.color;
 
-  for (let i = 0; i < ops.length; i++) {
-    const startAngle = startBase + i * sliceAngle;
-    const endAngle = startAngle + sliceAngle;
-    const meta = OPERATOR_META[ops[i]] ?? OPERATOR_META.otros;
-
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, radius, startAngle, endAngle);
-    ctx.closePath();
-    ctx.fillStyle = meta.color;
-    ctx.fill();
-  }
-
-  // Separadores radiales blancos nítidos (`lineWidth = 3` a 2x) para distinguir colores cálidos adyacentes
-  if (ops.length >= 2) {
-    ctx.save();
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'butt';
-    for (let i = 0; i < ops.length; i++) {
-      const angle = startBase + i * sliceAngle;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(
-        cx + Math.cos(angle) * radius,
-        cy + Math.sin(angle) * radius,
-      );
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  // Pequeño núcleo central limpio
-  ctx.beginPath();
-  ctx.arc(cx, cy, 4.8, 0, Math.PI * 2);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, 2.2, 0, Math.PI * 2);
-  ctx.fillStyle = '#0F172A';
-  ctx.fill();
-
-  // Borde exterior blanco de alto contraste (`lineWidth = 4.5` a 2x) + perfil técnico exterior
+  // Círculo base completo con el primer operador para un antialiasing exterior uniforme y sin huecos
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = 4.5;
-  ctx.stroke();
+  ctx.fillStyle = firstColor;
+  ctx.fill();
 
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius + 2.5, 0, Math.PI * 2);
-  ctx.strokeStyle = isDark
-    ? 'rgba(2, 6, 23, 0.86)'
-    : 'rgba(15, 23, 42, 0.36)';
-  ctx.lineWidth = 1.2;
-  ctx.stroke();
+  if (ops.length >= 2) {
+    const sliceAngle = (Math.PI * 2) / ops.length;
+    const startBase = -Math.PI / 2;
+
+    for (let i = 0; i < ops.length; i++) {
+      const startAngle = startBase + i * sliceAngle;
+      const endAngle =
+        startAngle + sliceAngle + (i < ops.length - 1 ? 0.014 : 0);
+      const meta = OPERATOR_META[ops[i]] ?? OPERATOR_META.otros;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, startAngle, endAngle);
+      ctx.closePath();
+      ctx.fillStyle = meta.color;
+      ctx.fill();
+    }
+  }
 
   return ctx.getImageData(0, 0, size, size);
 }
@@ -244,7 +196,6 @@ function createMultiOperatorSprite(
 function registerMultiOperatorSprite(
   map: maplibregl.Map,
   iconKey: string,
-  isDark: boolean,
 ): void {
   if (!iconKey.startsWith('multi:') || map.hasImage(iconKey)) {
     return;
@@ -253,10 +204,10 @@ function registerMultiOperatorSprite(
   if (operators.length === 0) {
     return;
   }
-  const cacheKey = `${isDark ? 'dark' : 'light'}:${iconKey}`;
+  const cacheKey = `flat:${iconKey}`;
   let imageData = MULTI_SPRITE_CACHE.get(cacheKey);
   if (!imageData) {
-    imageData = createMultiOperatorSprite(operators, isDark);
+    imageData = createMultiOperatorSprite(operators);
     MULTI_SPRITE_CACHE.set(cacheKey, imageData);
   }
   if (!map.hasImage(iconKey)) {
@@ -690,7 +641,7 @@ export function AntenasMap(props: AntenasMapProps) {
     // Registrar todos los sprites multicolor activos en el atlas WebGL del estilo actual
     const activeIconKeys = multiIconKeysRef.current;
     for (let i = 0; i < activeIconKeys.length; i++) {
-      registerMultiOperatorSprite(map, activeIconKeys[i], isDark);
+      registerMultiOperatorSprite(map, activeIconKeys[i]);
     }
 
     // 1. Fuente principal clusterizada con suma exacta de estaciones integradas (`stationSum`)
@@ -713,44 +664,6 @@ export function AntenasMap(props: AntenasMapProps) {
       ['get', 'stationSum'],
       ['get', 'point_count'],
     ];
-
-    if (!map.getLayer(LAYER_CLUSTERS_HALO)) {
-      map.addLayer({
-        id: LAYER_CLUSTERS_HALO,
-        type: 'circle',
-        source: ANTENAS_SOURCE_ID,
-        filter: ['has', 'point_count'],
-        paint: {
-          'circle-color': [
-            'step',
-            clusterCountExpr,
-            '#0284C7',
-            50,
-            '#0369A1',
-            250,
-            '#0F4C81',
-            1000,
-            '#1E293B',
-            5000,
-            '#0F172A',
-          ],
-          'circle-radius': [
-            'step',
-            clusterCountExpr,
-            20,
-            50,
-            24,
-            250,
-            28,
-            1000,
-            33,
-            5000,
-            38,
-          ],
-          'circle-opacity': isDark ? 0.28 : 0.18,
-        },
-      });
-    }
 
     if (!map.getLayer(LAYER_CLUSTERS)) {
       map.addLayer({
@@ -785,8 +698,7 @@ export function AntenasMap(props: AntenasMapProps) {
             5000,
             32,
           ],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': isDark ? '#E2E8F0' : '#FFFFFF',
+          'circle-stroke-width': 0,
         },
       });
     }
@@ -861,30 +773,17 @@ export function AntenasMap(props: AntenasMapProps) {
             ['linear'],
             ['zoom'],
             5,
-            3.2,
+            3.6,
             8,
-            4.5,
-            11,
-            5.8,
-            14,
-            7.6,
-            17,
-            10.5,
-          ],
-          'circle-stroke-color': '#FFFFFF',
-          'circle-stroke-width': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
             5,
-            0.9,
-            8,
-            1.3,
-            13,
-            1.8,
+            11,
+            6.5,
+            14,
+            8.5,
             17,
-            2.4,
+            11.5,
           ],
+          'circle-stroke-width': 0,
         },
       });
     }
@@ -1181,7 +1080,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const handleStyleImageMissing = (event: { id: string }) => {
       if (event.id.startsWith('multi:')) {
-        registerMultiOperatorSprite(map, event.id, isDarkStyleRef.current);
+        registerMultiOperatorSprite(map, event.id);
       }
     };
 
@@ -1504,11 +1403,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
     if (map.getStyle()) {
       for (let i = 0; i < multiIconKeys.length; i++) {
-        registerMultiOperatorSprite(
-          map,
-          multiIconKeys[i],
-          isDarkStyleRef.current,
-        );
+        registerMultiOperatorSprite(map, multiIconKeys[i]);
       }
     }
     const source = map.getSource(ANTENAS_SOURCE_ID) as

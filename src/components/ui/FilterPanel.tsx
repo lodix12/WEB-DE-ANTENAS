@@ -14,7 +14,6 @@ import {
   type OperatorKey,
 } from '../../types/antena';
 import { parseCoordinateInput } from '../../utils/export';
-import { SPAIN_REGION_PRESETS } from '../../utils/geo';
 import { ExportMenu } from './ExportMenu';
 
 export interface FilterPanelProps {
@@ -27,12 +26,15 @@ export interface FilterPanelProps {
 
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  selectedComunidad: string;
+  onComunidadChange: (ccaa: string) => void;
   selectedProvince: string;
   onProvinceChange: (prov: string) => void;
-  selectedMunicipality: string;
-  onMunicipalityChange: (mun: string) => void;
-  selectedBand: string;
-  onBandChange: (band: string) => void;
+  selectedBands: string[];
+  onToggleBand: (band: string) => void;
+  onClearBands: () => void;
+  exclusiveBands: boolean;
+  onExclusiveBandsChange: (exclusive: boolean) => void;
   activeOperators: OperatorKey[];
   onToggleOperator: (op: OperatorKey) => void;
   onSelectAllOperators: () => void;
@@ -52,12 +54,15 @@ export function FilterPanel({
   onCloseMobile,
   searchQuery,
   onSearchChange,
+  selectedComunidad,
+  onComunidadChange,
   selectedProvince,
   onProvinceChange,
-  selectedMunicipality,
-  onMunicipalityChange,
-  selectedBand,
-  onBandChange,
+  selectedBands,
+  onToggleBand,
+  onClearBands,
+  exclusiveBands,
+  onExclusiveBandsChange,
   activeOperators,
   onToggleOperator,
   onSelectAllOperators,
@@ -71,12 +76,31 @@ export function FilterPanel({
     [searchQuery],
   );
 
-  const municipalities = useMemo(() => {
-    if (!derived || !selectedProvince) return [];
-    return derived.municipalitiesByProvince.get(selectedProvince) ?? [];
-  }, [derived, selectedProvince]);
+  const availableProvinces = useMemo(() => {
+    if (!derived) return [];
+    if (selectedComunidad) {
+      return derived.provincesByComunidad.get(selectedComunidad) ?? [];
+    }
+    return derived.provincesByAlpha;
+  }, [derived, selectedComunidad]);
 
   const totalStations = derived?.dataset.total ?? 0;
+
+  function handleComunidadSelect(ccaa: string) {
+    onComunidadChange(ccaa);
+    if (ccaa && derived) {
+      const centroid = derived.comunidadCentroids.get(ccaa);
+      if (centroid) {
+        const zoom =
+          ccaa === 'Canarias'
+            ? 7.3
+            : (derived.provincesByComunidad.get(ccaa)?.length ?? 1) > 1
+              ? 7.2
+              : 8.2;
+        onFlyTo(centroid.lat, centroid.lon, zoom);
+      }
+    }
+  }
 
   function handleProvinceSelect(prov: string) {
     onProvinceChange(prov);
@@ -84,19 +108,6 @@ export function FilterPanel({
       const centroid = derived.provinceCentroids.get(prov);
       if (centroid) {
         onFlyTo(centroid.lat, centroid.lon, 8.3);
-      }
-    }
-  }
-
-  function handleMunicipalitySelect(mun: string) {
-    onMunicipalityChange(mun);
-    if (mun && derived) {
-      const match = derived.dataset.antenas.find(
-        (a) =>
-          (!selectedProvince || a.prov === selectedProvince) && a.mun === mun,
-      );
-      if (match) {
-        onFlyTo(match.lat, match.lon, 13.2);
       }
     }
   }
@@ -150,7 +161,7 @@ export function FilterPanel({
       </div>
 
       <div className="sidebar-scroll">
-        {/* Búsqueda instantánea + Coordenadas WGS84 + Regiones */}
+        {/* Búsqueda instantánea + Coordenadas WGS84 */}
         <section className="panel-section">
           <div className="field-label">
             <label htmlFor="map-search-input">
@@ -227,31 +238,40 @@ export function FilterPanel({
               </button>
             </div>
           )}
-
-          <div className="region-presets-row" aria-label="Accesos rápidos territoriales">
-            {SPAIN_REGION_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                className="preset-chip"
-                onClick={() => {
-                  onFlyTo(preset.lat, preset.lon, preset.zoom);
-                  onCloseMobile();
-                }}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
         </section>
 
-        {/* Provincia y Municipio en cascada */}
+        {/* Comunidad Autónoma y Provincia */}
         <section className="panel-section">
           <div className="field-label">
             <span>Ámbito Territorial</span>
           </div>
-          <div className="form-grid-2">
-            <div>
+          <div className="territorial-selects-stack">
+            <div className="territorial-select-field">
+              <label htmlFor="map-ccaa-select" className="sub-field-label">
+                Comunidad autónoma
+              </label>
+              <select
+                id="map-ccaa-select"
+                aria-label="Filtrar por comunidad autónoma"
+                className="select-control"
+                value={selectedComunidad}
+                onChange={(e) => handleComunidadSelect(e.target.value)}
+              >
+                <option value="">
+                  Todas las comunidades ({derived?.comunidadesByAlpha.length ?? 19})
+                </option>
+                {derived?.comunidadesByAlpha.map((c) => (
+                  <option key={c.comunidad} value={c.comunidad}>
+                    {c.comunidad} ({c.count.toLocaleString('es-ES')})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="territorial-select-field">
+              <label htmlFor="map-province-select" className="sub-field-label">
+                Provincia
+              </label>
               <select
                 id="map-province-select"
                 aria-label="Filtrar por provincia"
@@ -260,33 +280,13 @@ export function FilterPanel({
                 onChange={(e) => handleProvinceSelect(e.target.value)}
               >
                 <option value="">
-                  Todas ({derived?.provincesByAlpha.length ?? 52} prov.)
+                  {selectedComunidad
+                    ? `Todas en ${selectedComunidad} (${availableProvinces.length})`
+                    : `Todas las provincias (${availableProvinces.length || 52})`}
                 </option>
-                {derived?.provincesByAlpha.map((p) => (
+                {availableProvinces.map((p) => (
                   <option key={p.provincia} value={p.provincia}>
                     {p.provincia} ({p.count.toLocaleString('es-ES')})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <select
-                id="map-municipality-select"
-                aria-label="Filtrar por municipio"
-                className="select-control"
-                value={selectedMunicipality}
-                disabled={!selectedProvince}
-                onChange={(e) => handleMunicipalitySelect(e.target.value)}
-              >
-                <option value="">
-                  {selectedProvince
-                    ? `Todos (${municipalities.length} mun.)`
-                    : 'Elige provincia'}
-                </option>
-                {municipalities.map((m) => (
-                  <option key={m.mun} value={m.mun}>
-                    {m.mun} ({m.count})
                   </option>
                 ))}
               </select>
@@ -352,19 +352,22 @@ export function FilterPanel({
           </div>
         </section>
 
-        {/* Filtro por Banda de Frecuencia (MHz) */}
+        {/* Filtro por Bandas de Frecuencia (MHz) */}
         {derived && derived.availableBands.length > 0 && (
           <section className="panel-section">
             <div className="field-label">
-              <span>Banda de Frecuencia (MHz)</span>
-              {selectedBand && (
+              <span>
+                Frecuencias (MHz)
+                {selectedBands.length > 0 ? ` · ${selectedBands.length}` : ''}
+              </span>
+              {selectedBands.length > 0 && (
                 <button
                   type="button"
                   className="text-link-btn"
-                  onClick={() => onBandChange('')}
+                  onClick={onClearBands}
                   id="bands-select-all-btn"
                 >
-                  Todas
+                  Limpiar
                 </button>
               )}
             </div>
@@ -372,10 +375,10 @@ export function FilterPanel({
             <div
               className="band-pills-grid"
               role="group"
-              aria-label="Filtrar por banda de frecuencia en MHz"
+              aria-label="Filtrar por bandas de frecuencia en MHz"
             >
               {derived.availableBands.map((item) => {
-                const isSelected = selectedBand === item.band;
+                const isSelected = selectedBands.includes(item.band);
                 return (
                   <button
                     key={item.band}
@@ -384,7 +387,7 @@ export function FilterPanel({
                     className={`band-filter-pill ${
                       isSelected ? 'is-active' : ''
                     }`}
-                    onClick={() => onBandChange(isSelected ? '' : item.band)}
+                    onClick={() => onToggleBand(item.band)}
                     aria-pressed={isSelected}
                   >
                     <span className="band-filter-pill-label mono">
@@ -397,6 +400,27 @@ export function FilterPanel({
                 );
               })}
             </div>
+
+            <label
+              htmlFor="filter-bands-exclusive-checkbox"
+              className={`bands-exclusive-row${exclusiveBands ? ' is-active' : ''}`}
+            >
+              <input
+                id="filter-bands-exclusive-checkbox"
+                type="checkbox"
+                className="bands-exclusive-checkbox"
+                checked={exclusiveBands}
+                onChange={(e) => onExclusiveBandsChange(e.target.checked)}
+              />
+              <span className="bands-exclusive-copy">
+                <span className="bands-exclusive-title">Exclusivamente</span>
+                <span className="bands-exclusive-hint">
+                  {exclusiveBands
+                    ? 'Solo antenas con exactamente las frecuencias marcadas (ni más ni menos)'
+                    : 'Por defecto: antenas con al menos 1 de las frecuencias marcadas'}
+                </span>
+              </span>
+            </label>
           </section>
         )}
       </div>

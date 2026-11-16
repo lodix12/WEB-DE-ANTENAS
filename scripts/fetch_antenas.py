@@ -10,8 +10,10 @@ Características clave:
 - Decodificación estricta ISO-8859-1 -> UTF-8 preservando eñes y tildes españolas.
 - Subdivisión adaptativa en quadtree (4 cuadrantes con solape de 0.0001°) cuando
   una celda alcanza el límite del servidor de 1.000 estaciones.
-- Espera estricta >= 1.0 s entre peticiones HTTP consecutivas y reintentos con
-  backoff exponencial (2s, 4s, 8s).
+- Conexiones persistentes HTTP/1.1 Keep-Alive multihilo con reutilización TLS y
+  reintentos con backoff exponencial (2s, 4s, 8s).
+- Emisión en tiempo real de deltas (`live-chunk-*.json` + `live-tail.json`) para
+  sincronización instantánea con el mapa y la vista de Novedades.
 - Deduplicación global por identificador oficial y salida JSON compacta compatible
   al 100% con `AntenasDataset` (`src/types/antena.ts`).
 """
@@ -19,17 +21,23 @@ Características clave:
 from __future__ import annotations
 
 import argparse
+import base64
+from collections import deque
+import concurrent.futures
 from datetime import datetime, timezone
 import gzip
 from html.parser import HTMLParser
 import http.client
+import io
 import json
 import logging
 import math
 import os
 from pathlib import Path
 import re
+import ssl
 import sys
+import threading
 import time
 from typing import Any, Callable
 import unicodedata
@@ -38,12 +46,18 @@ import urllib.parse
 import urllib.request
 from zoneinfo import ZoneInfo
 
+_ORIGINAL_URLOPEN = urllib.request.urlopen
+
 ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/infoantenasGeoJSON.do"
 DETAIL_ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do"
 PORTAL_SOURCE_URL = "https://geoportal.minetur.gob.es/VCTEL/vcne.do"
 SERVER_FEATURE_CAP = 1000
 DEFAULT_ZOOM = 7
-DEFAULT_DELAY_SECONDS = 1.0
+DEFAULT_DELAY_SECONDS = 0.02
+DEFAULT_BAND_WORKERS = 16
+DEFAULT_CENSUS_WORKERS = 8
+LIVE_DELTA_CHUNK_CAPACITY = 500
+MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S = 25.0
 DEFAULT_BAND_CHECKPOINT_EVERY = 50
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
@@ -610,8 +624,342 @@ def build_bbox_url(bbox: BBox, zoom: int = DEFAULT_ZOOM) -> str:
     return f"{ENDPOINT_URL}?idCapa=null&bbox={bbox_param}&zoom={zoom}"
 
 
+EARTH_RADIUS_M = 6_371_008.8
+DEFAULT_VODAFONE_FUSION_M = 35.0
+VODAFONE_DEDUP_DISTANCE_M = DEFAULT_VODAFONE_FUSION_M
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia geodésica Haversine en metros entre dos coordenadas WGS84."""
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlon / 2.0) ** 2
+    )
+    return 2.0 * EARTH_RADIUS_M * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
+class _ThreadLocalKeepAliveClient:
+    """
+    Cliente HTTP/1.1 persistente (`Connection: keep-alive` + reutilización TLS por hilo)
+    construido exclusivamente con la librería estándar de Python.
+    Delega automáticamente en `urllib.request.urlopen` cuando los tests unitarios lo parchean.
+    """
+
+    def __init__(self) -> None:
+        self._tls = threading.local()
+        self._lock = threading.Lock()
+        self._all_conns: list[http.client.HTTPConnection] = []
+        self._ssl_ctx: ssl.SSLContext | None = None
+        self._cooldown_until: float = 0.0
+
+    def _get_ssl_context(self) -> ssl.SSLContext:
+        with self._lock:
+            if self._ssl_ctx is None:
+                self._ssl_ctx = ssl.create_default_context()
+            return self._ssl_ctx
+
+    @staticmethod
+    def _resolve_proxy(scheme: str, target_host: str) -> str:
+        if target_host in ("127.0.0.1", "localhost", "::1"):
+            return ""
+        try:
+            if urllib.request.proxy_bypass(target_host):
+                return ""
+        except Exception:
+            pass
+        if scheme == "https":
+            return (
+                os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+                or ""
+            ).strip()
+        return (
+            os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+            or ""
+        ).strip()
+
+    def _create_connection(
+        self,
+        scheme: str,
+        target_host: str,
+        target_port: int,
+        proxy_raw: str,
+        timeout: float,
+    ) -> tuple[http.client.HTTPConnection, dict[str, str], bool]:
+        if proxy_raw:
+            proxy_norm = proxy_raw if "://" in proxy_raw else f"http://{proxy_raw}"
+            parsed_proxy = urllib.parse.urlsplit(proxy_norm)
+            proxy_host = parsed_proxy.hostname or ""
+            proxy_port = parsed_proxy.port or (
+                443 if parsed_proxy.scheme == "https" else 8080
+            )
+            proxy_headers: dict[str, str] = {}
+            if parsed_proxy.username is not None:
+                creds = (
+                    f"{urllib.parse.unquote(parsed_proxy.username)}:"
+                    f"{urllib.parse.unquote(parsed_proxy.password or '')}"
+                )
+                b64 = base64.b64encode(creds.encode("utf-8")).decode("ascii")
+                proxy_headers["Proxy-Authorization"] = f"Basic {b64}"
+
+            if scheme == "https":
+                conn: http.client.HTTPConnection = http.client.HTTPSConnection(
+                    proxy_host,
+                    proxy_port,
+                    timeout=timeout,
+                    context=self._get_ssl_context(),
+                )
+                conn.set_tunnel(
+                    target_host,
+                    target_port,
+                    headers=proxy_headers or None,
+                )
+                extra_req_headers: dict[str, str] = {}
+                use_full_url = False
+            else:
+                conn = http.client.HTTPConnection(
+                    proxy_host,
+                    proxy_port,
+                    timeout=timeout,
+                )
+                extra_req_headers = proxy_headers
+                use_full_url = True
+        else:
+            if scheme == "https":
+                conn = http.client.HTTPSConnection(
+                    target_host,
+                    target_port,
+                    timeout=timeout,
+                    context=self._get_ssl_context(),
+                )
+            else:
+                conn = http.client.HTTPConnection(
+                    target_host,
+                    target_port,
+                    timeout=timeout,
+                )
+            extra_req_headers = {}
+            use_full_url = False
+
+        with self._lock:
+            self._all_conns.append(conn)
+        return conn, extra_req_headers, use_full_url
+
+    def _discard_tls_conn(self) -> None:
+        conn: http.client.HTTPConnection | None = getattr(self._tls, "conn", None)
+        self._tls.conn = None
+        self._tls.conn_key = None
+        self._tls.extra_headers = {}
+        self._tls.use_full_url = False
+        if conn is not None:
+            with self._lock:
+                try:
+                    self._all_conns.remove(conn)
+                except ValueError:
+                    pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def record_throttle_signal(
+        self,
+        wait_seconds: float,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        clamped = max(0.5, min(15.0, float(wait_seconds)))
+        target_ts = clock_fn() + clamped
+        with self._lock:
+            if target_ts > self._cooldown_until:
+                self._cooldown_until = target_ts
+
+    def wait_if_cooled_down(
+        self,
+        clock_fn: Callable[[], float] = time.monotonic,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> None:
+        while True:
+            with self._lock:
+                until = self._cooldown_until
+            remaining = until - clock_fn()
+            if remaining <= 0.0:
+                return
+            sleep_fn(remaining)
+
+    def fetch_bytes(
+        self,
+        url: str,
+        headers: dict[str, str],
+        timeout: float,
+        *,
+        clock_fn: Callable[[], float] = time.monotonic,
+        _redirects_left: int = 3,
+    ) -> bytes:
+        if urllib.request.urlopen is not _ORIGINAL_URLOPEN:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+
+        parsed = urllib.parse.urlsplit(url)
+        scheme = (parsed.scheme or "https").lower()
+        target_host = parsed.hostname or "geoportal.minetur.gob.es"
+        target_port = parsed.port or (443 if scheme == "https" else 80)
+        path_and_query = parsed.path or "/"
+        if parsed.query:
+            path_and_query = f"{path_and_query}?{parsed.query}"
+
+        proxy_raw = self._resolve_proxy(scheme, target_host)
+        conn_key = (scheme, target_host, target_port, proxy_raw, float(timeout))
+        host_header = (
+            target_host
+            if (scheme == "https" and target_port == 443)
+            or (scheme == "http" and target_port == 80)
+            else f"{target_host}:{target_port}"
+        )
+
+        for is_fresh_attempt in (False, True):
+            conn: http.client.HTTPConnection | None = getattr(self._tls, "conn", None)
+            reused = conn is not None and getattr(self._tls, "conn_key", None) == conn_key
+            if not reused:
+                if conn is not None:
+                    self._discard_tls_conn()
+                conn, extra_hdrs, use_full_url = self._create_connection(
+                    scheme, target_host, target_port, proxy_raw, timeout
+                )
+                self._tls.conn = conn
+                self._tls.conn_key = conn_key
+                self._tls.extra_headers = extra_hdrs
+                self._tls.use_full_url = use_full_url
+                reused = False
+            else:
+                extra_hdrs = getattr(self._tls, "extra_headers", {})
+                use_full_url = bool(getattr(self._tls, "use_full_url", False))
+
+            req_target = url if use_full_url else path_and_query
+            req_headers = {
+                "Host": host_header,
+                "Connection": "keep-alive",
+                "Accept-Encoding": "gzip",
+                **extra_hdrs,
+                **headers,
+            }
+
+            try:
+                assert conn is not None
+                conn.request("GET", req_target, headers=req_headers)
+                resp = conn.getresponse()
+                raw_bytes = resp.read()
+                conn_hdr = (resp.getheader("Connection") or "").lower()
+                if resp.will_close or "close" in conn_hdr:
+                    self._discard_tls_conn()
+            except (
+                http.client.HTTPException,
+                BrokenPipeError,
+                ConnectionResetError,
+                ssl.SSLError,
+                TimeoutError,
+                OSError,
+            ):
+                self._discard_tls_conn()
+                if reused and not is_fresh_attempt:
+                    # Socket Keep-Alive cerrado en servidor tras inactividad -> reabrir de inmediato
+                    continue
+                raise
+
+            if resp.status in (301, 302, 303, 307, 308) and _redirects_left > 0:
+                loc = resp.getheader("Location")
+                if loc:
+                    return self.fetch_bytes(
+                        urllib.parse.urljoin(url, loc),
+                        headers,
+                        timeout,
+                        clock_fn=clock_fn,
+                        _redirects_left=_redirects_left - 1,
+                    )
+
+            if resp.status >= 400:
+                if resp.status in (429, 503):
+                    retry_after_hdr = (resp.getheader("Retry-After") or "").strip()
+                    wait_s = 2.0
+                    if retry_after_hdr:
+                        try:
+                            wait_s = float(retry_after_hdr)
+                        except ValueError:
+                            wait_s = 2.0
+                    self.record_throttle_signal(wait_s, clock_fn=clock_fn)
+                raise urllib.error.HTTPError(
+                    url,
+                    resp.status,
+                    resp.reason,
+                    resp.headers,
+                    io.BytesIO(raw_bytes),
+                )
+
+            return raw_bytes
+
+        raise RuntimeError(f"No fue posible establecer conexión HTTP hacia {url}")
+
+    def close_all(self) -> None:
+        with self._lock:
+            conns = list(self._all_conns)
+            self._all_conns.clear()
+        self._tls.__dict__.clear()
+        for c in conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+def _build_vodafone_spatial_grid(
+    records: list[dict[str, Any]],
+    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
+) -> tuple[dict[tuple[int, int], list[tuple[float, float]]], float]:
+    cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)
+    grid: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    for rec in records:
+        if rec.get("op") != "vodafone":
+            continue
+        try:
+            lat = float(rec["lat"])
+            lon = float(rec["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        cx = math.floor(lat / cell_deg)
+        cy = math.floor(lon / cell_deg)
+        grid.setdefault((cx, cy), []).append((lat, lon))
+    return grid, cell_deg
+
+
+def _is_near_vodafone_grid(
+    lat: float,
+    lon: float,
+    grid: dict[tuple[int, int], list[tuple[float, float]]],
+    cell_deg: float,
+    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
+) -> bool:
+    cx = math.floor(lat / cell_deg)
+    cy = math.floor(lon / cell_deg)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            bucket = grid.get((cx + dx, cy + dy))
+            if not bucket:
+                continue
+            for olat, olon in bucket:
+                if haversine_m(lat, lon, olat, olon) < max_distance_m:
+                    return True
+    return False
+
+
 class InfoantenasCrawler:
-    """Motor de recolección iterativa y subdivisión adaptativa con soporte de checkpoint."""
+    """Motor de recolección iterativa y subdivisión adaptativa con soporte Keep-Alive paralelo."""
 
     def __init__(
         self,
@@ -621,10 +969,15 @@ class InfoantenasCrawler:
         checkpoint_path: Path | None = None,
         checkpoint_every: int = 20,
         timeout_seconds: float = 30.0,
+        workers: int = 1,
+        prior_index: dict[str, Any] | None = None,
+        record_novedades: bool = False,
+        live_stream: LiveDeltaStreamWriter | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fetch_fn: Callable[[BBox, int], list[dict[str, Any]]] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.monotonic,
+        now_utc_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self.delay_seconds = max(0.0, float(delay_seconds))
         self.zoom = int(zoom)
@@ -632,10 +985,19 @@ class InfoantenasCrawler:
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = max(1, int(checkpoint_every))
         self.timeout_seconds = float(timeout_seconds)
+        self.workers = max(1, int(workers))
+        self._prior_index = prior_index
+        self._record_novedades = bool(record_novedades)
+        self._live_stream = live_stream
         self._progress_callback = progress_callback
         self._custom_fetch_fn = fetch_fn
         self._sleep = sleep_fn
         self._clock = clock_fn
+        self._now_utc = now_utc_fn
+
+        self._http_client = _ThreadLocalKeepAliveClient()
+        self._stats_lock = threading.Lock()
+        self._worker_tls = threading.local()
 
         self.records_by_id: dict[str, dict[str, Any]] = {}
         self.completed_leaf_boxes: set[str] = set()
@@ -646,6 +1008,15 @@ class InfoantenasCrawler:
         self.prior_elapsed_seconds: float = 0.0
         self._last_request_ts: float | None = None
         self._unsaved_requests: int = 0
+
+        prior_voda_records = (
+            list((prior_index.get("by_id") or {}).values())
+            if isinstance(prior_index, dict)
+            else []
+        )
+        self._provisional_voda_grid, self._provisional_voda_cell_deg = (
+            _build_vodafone_spatial_grid(prior_voda_records)
+        )
 
     def load_checkpoint(self) -> bool:
         if not self.checkpoint_path or not self.checkpoint_path.exists():
@@ -706,49 +1077,82 @@ class InfoantenasCrawler:
             if remaining > 0:
                 self._sleep(remaining)
 
-    def _http_fetch_bbox(self, bbox: BBox) -> list[dict[str, Any]]:
+    def _wait_worker_rate_limit(self) -> None:
+        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
+        last_ts: float | None = getattr(self._worker_tls, "last_req_ts", None)
+        if last_ts is not None and self.delay_seconds > 0:
+            elapsed = self._clock() - last_ts
+            remaining = self.delay_seconds - elapsed
+            if remaining > 0:
+                self._sleep(remaining)
+
+    def _http_fetch_bbox(self, bbox: BBox, *, parallel_mode: bool = False) -> list[dict[str, Any]]:
         url = build_bbox_url(bbox, zoom=self.zoom)
         backoffs = (2.0, 4.0, 8.0)
         last_err: Exception | None = None
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
+            ),
+            "Accept": "application/json, text/plain, */*",
+        }
 
         for attempt in range(len(backoffs)):
-            self._wait_rate_limit()
-            self.requests_count += 1
-            self._unsaved_requests += 1
+            if parallel_mode:
+                self._wait_worker_rate_limit()
+                with self._stats_lock:
+                    self.requests_count += 1
+                    self._unsaved_requests += 1
+            else:
+                self._wait_rate_limit()
+                self.requests_count += 1
+                self._unsaved_requests += 1
 
             if self._custom_fetch_fn is not None:
                 try:
                     features = self._custom_fetch_fn(bbox, self.zoom)
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     return features
                 except Exception as exc:
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     last_err = exc
             else:
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
-                        ),
-                        "Accept": "application/json, text/plain, */*",
-                    },
-                )
                 try:
-                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                        raw_bytes = resp.read()
-                    self._last_request_ts = self._clock()
+                    raw_bytes = self._http_client.fetch_bytes(
+                        url,
+                        headers=headers,
+                        timeout=self.timeout_seconds,
+                        clock_fn=self._clock,
+                    )
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     return decode_infoantenas_payload(raw_bytes)
                 except (
                     urllib.error.HTTPError,
                     urllib.error.URLError,
                     TimeoutError,
                     http.client.HTTPException,
+                    ssl.SSLError,
                     OSError,
                     UnicodeDecodeError,
                     json.JSONDecodeError,
                 ) as exc:
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     last_err = exc
 
             if attempt < len(backoffs) - 1:
@@ -766,17 +1170,79 @@ class InfoantenasCrawler:
             f"Fallo tras 3 intentos al consultar bbox={format_bbox_key(bbox)}: {last_err}"
         ) from last_err
 
-    def _ingest_features(self, features: list[dict[str, Any]]) -> int:
+    def _ingest_features(self, features: list[dict[str, Any]]) -> tuple[int, bool]:
         added = 0
+        provisional_antennas: list[dict[str, Any]] = []
+        provisional_novedades: list[dict[str, Any]] = []
+
         for feat in features:
             rec = parse_feature(feat)
             if rec is None:
                 continue
             rec_id = rec["id"]
-            if rec_id not in self.records_by_id:
+            is_first_seen = rec_id not in self.records_by_id
+            if is_first_seen:
                 added += 1
             self.records_by_id[rec_id] = rec
-        return added
+
+            if (
+                is_first_seen
+                and self._live_stream is not None
+                and self._prior_index is not None
+                and match_prior_antenna(rec, self._prior_index) is None
+            ):
+                if rec["op"] == "vodafone":
+                    lat_f = float(rec["lat"])
+                    lon_f = float(rec["lon"])
+                    if _is_near_vodafone_grid(
+                        lat_f,
+                        lon_f,
+                        self._provisional_voda_grid,
+                        self._provisional_voda_cell_deg,
+                    ):
+                        continue
+                    cx = math.floor(lat_f / self._provisional_voda_cell_deg)
+                    cy = math.floor(lon_f / self._provisional_voda_cell_deg)
+                    self._provisional_voda_grid.setdefault((cx, cy), []).append(
+                        (lat_f, lon_f)
+                    )
+
+                provisional_antennas.append(dict(rec))
+                if self._record_novedades:
+                    scan_iso = _utc_now_iso(self._now_utc)
+                    mun = str(rec.get("mun") or "").strip()
+                    prov = str(rec.get("prov") or "").strip()
+                    provisional_novedades.append(
+                        {
+                            "id": f"ant:{rec_id}",
+                            "tipo": "antena",
+                            "op": rec["op"],
+                            "opRaw": rec["opRaw"],
+                            "codigo": rec["gid"],
+                            "antennaId": rec_id,
+                            "codigoBanda": "",
+                            "frecuencia": "",
+                            "ubicacion": mun or prov,
+                            "prov": prov,
+                            "scannedAt": scan_iso,
+                            "fecha": format_spain_datetime(scan_iso),
+                        }
+                    )
+
+        flushed_live = False
+        if provisional_antennas and self._live_stream is not None:
+            flushed_live = self._live_stream.record_provisional_new_antennas(
+                provisional_antennas,
+                provisional_novedades,
+            )
+        return added, flushed_live
+
+    def _can_subdivide_bbox(self, bbox: BBox, depth: int) -> bool:
+        lon_span = bbox[2] - bbox[0]
+        lat_span = bbox[3] - bbox[1]
+        return (
+            lon_span > self.min_span_deg or lat_span > self.min_span_deg
+        ) and depth < MAX_SUBDIVISION_DEPTH
 
     def _crawl_bbox_recursive(self, bbox: BBox, depth: int, run_start_ts: float) -> None:
         if is_outside_spain_conservative(bbox):
@@ -790,9 +1256,9 @@ class InfoantenasCrawler:
             count = self.cached_box_counts[key]
         else:
             self.grid_boxes_visited += 1
-            features = self._http_fetch_bbox(bbox)
+            features = self._http_fetch_bbox(bbox, parallel_mode=False)
             count = len(features)
-            added = self._ingest_features(features)
+            added, flushed_live = self._ingest_features(features)
             self.cached_box_counts[key] = count
 
             if self.requests_count % 10 == 0 or count >= SERVER_FEATURE_CAP:
@@ -807,25 +1273,24 @@ class InfoantenasCrawler:
                 )
 
             if self._progress_callback is not None and (
-                self.requests_count == 1 or self.requests_count % 3 == 0
+                flushed_live
+                or self.requests_count == 1
+                or self.requests_count % 3 == 0
             ):
+                elapsed_s = max(0.001, self._clock() - run_start_ts)
                 self._progress_callback(
                     {
                         "phase": "censo",
                         "censusBoxesVisited": self.grid_boxes_visited,
                         "discoveredAntennas": len(self.records_by_id),
+                        "requestsPerSecond": round(self.requests_count / elapsed_s, 2),
                     }
                 )
 
             if self._unsaved_requests >= self.checkpoint_every:
                 self.save_checkpoint(self._clock() - run_start_ts)
 
-        lon_span = bbox[2] - bbox[0]
-        lat_span = bbox[3] - bbox[1]
-        can_subdivide = (
-            (lon_span > self.min_span_deg or lat_span > self.min_span_deg)
-            and depth < MAX_SUBDIVISION_DEPTH
-        )
+        can_subdivide = self._can_subdivide_bbox(bbox, depth)
 
         if count >= SERVER_FEATURE_CAP and can_subdivide:
             if depth == 0 or key not in self.completed_leaf_boxes:
@@ -835,29 +1300,156 @@ class InfoantenasCrawler:
 
         self.completed_leaf_boxes.add(key)
 
+    def _crawl_parallel(self, initial_boxes: list[BBox], run_start_ts: float) -> None:
+        pending_queue: deque[tuple[BBox, int, str]] = deque()
+        enqueued_keys: set[str] = set()
+        subdivided_parent_keys: list[str] = []
+
+        def _enqueue_or_expand(bbox: BBox, depth: int) -> None:
+            if is_outside_spain_conservative(bbox):
+                return
+            key = format_bbox_key(bbox)
+            if key in self.completed_leaf_boxes or key in enqueued_keys:
+                return
+            if key in self.cached_box_counts:
+                count = self.cached_box_counts[key]
+                if count >= SERVER_FEATURE_CAP and self._can_subdivide_bbox(bbox, depth):
+                    self.subdivided_boxes += 1
+                    subdivided_parent_keys.append(key)
+                    for child_bbox in subdivide_bbox(bbox):
+                        _enqueue_or_expand(child_bbox, depth + 1)
+                else:
+                    self.completed_leaf_boxes.add(key)
+                return
+            enqueued_keys.add(key)
+            pending_queue.append((bbox, depth, key))
+
+        for root_bbox in initial_boxes:
+            _enqueue_or_expand(root_bbox, 0)
+
+        if not pending_queue:
+            self.completed_leaf_boxes.update(subdivided_parent_keys)
+            return
+
+        max_in_flight = max(self.workers, self.workers * 2)
+        last_progress_ts = run_start_ts
+        last_ckpt_ts = run_start_ts
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.workers,
+            thread_name_prefix="minetur-census",
+        ) as executor:
+            in_flight: dict[concurrent.futures.Future[list[dict[str, Any]]], tuple[BBox, int, str]] = {}
+
+            while pending_queue and len(in_flight) < max_in_flight:
+                item = pending_queue.popleft()
+                fut = executor.submit(self._http_fetch_bbox, item[0], parallel_mode=True)
+                in_flight[fut] = item
+
+            while in_flight:
+                done, _ = concurrent.futures.wait(
+                    in_flight.keys(),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                any_flushed_live = False
+                for fut in done:
+                    bbox, depth, key = in_flight.pop(fut)
+                    try:
+                        features = fut.result()
+                    except Exception:
+                        for other_fut in in_flight:
+                            other_fut.cancel()
+                        raise
+
+                    self.grid_boxes_visited += 1
+                    count = len(features)
+                    added, flushed_live = self._ingest_features(features)
+                    if flushed_live:
+                        any_flushed_live = True
+                    self.cached_box_counts[key] = count
+
+                    if self.grid_boxes_visited % 20 == 0 or count >= SERVER_FEATURE_CAP:
+                        logging.info(
+                            "[censo #%d | depth=%d] bbox=%s -> %d recibidas (+%d nuevas, total=%d)",
+                            self.grid_boxes_visited,
+                            depth,
+                            key,
+                            count,
+                            added,
+                            len(self.records_by_id),
+                        )
+
+                    if count >= SERVER_FEATURE_CAP and self._can_subdivide_bbox(bbox, depth):
+                        self.subdivided_boxes += 1
+                        subdivided_parent_keys.append(key)
+                        for child_bbox in subdivide_bbox(bbox):
+                            _enqueue_or_expand(child_bbox, depth + 1)
+                    else:
+                        self.completed_leaf_boxes.add(key)
+
+                while pending_queue and len(in_flight) < max_in_flight:
+                    item = pending_queue.popleft()
+                    fut = executor.submit(self._http_fetch_bbox, item[0], parallel_mode=True)
+                    in_flight[fut] = item
+
+                now = self._clock()
+                elapsed_s = max(0.001, now - run_start_ts)
+                rps = round(self.requests_count / elapsed_s, 2)
+                if self._progress_callback is not None and (
+                    any_flushed_live
+                    or not in_flight
+                    or (now - last_progress_ts) >= 0.8
+                ):
+                    self._progress_callback(
+                        {
+                            "phase": "censo",
+                            "censusBoxesVisited": self.grid_boxes_visited,
+                            "discoveredAntennas": len(self.records_by_id),
+                            "requestsPerSecond": rps,
+                        }
+                    )
+                    last_progress_ts = now
+
+                if (
+                    self.checkpoint_path is not None
+                    and self._unsaved_requests >= self.checkpoint_every
+                    and (now - last_ckpt_ts) >= 15.0
+                ):
+                    self.save_checkpoint(now - run_start_ts)
+                    last_ckpt_ts = self._clock()
+
+        self.completed_leaf_boxes.update(subdivided_parent_keys)
+
     def crawl(self, region: str = "all") -> dict[str, Any]:
         if self.checkpoint_path:
             self.load_checkpoint()
 
         initial_boxes = build_initial_grid(region=region)
         logging.info(
-            "Iniciando crawl región=%r con %d celdas raíz (zoom=%d, delay=%.2fs)...",
+            "Iniciando crawl región=%r con %d celdas raíz (zoom=%d, workers=%d, delay=%.3fs)...",
             region,
             len(initial_boxes),
             self.zoom,
+            self.workers,
             self.delay_seconds,
         )
 
         run_start_ts = self._clock()
-        for idx, root_bbox in enumerate(initial_boxes, start=1):
-            logging.info(
-                "Celda raíz %d/%d: %s (acumulado=%d antenas)",
-                idx,
-                len(initial_boxes),
-                format_bbox_key(root_bbox),
-                len(self.records_by_id),
-            )
-            self._crawl_bbox_recursive(root_bbox, depth=0, run_start_ts=run_start_ts)
+        try:
+            if self.workers <= 1:
+                for idx, root_bbox in enumerate(initial_boxes, start=1):
+                    logging.info(
+                        "Celda raíz %d/%d: %s (acumulado=%d antenas)",
+                        idx,
+                        len(initial_boxes),
+                        format_bbox_key(root_bbox),
+                        len(self.records_by_id),
+                    )
+                    self._crawl_bbox_recursive(root_bbox, depth=0, run_start_ts=run_start_ts)
+            else:
+                self._crawl_parallel(initial_boxes, run_start_ts=run_start_ts)
+        finally:
+            self._http_client.close_all()
 
         total_duration = round(self.prior_elapsed_seconds + (self._clock() - run_start_ts), 2)
         if self.checkpoint_path:
@@ -873,24 +1465,6 @@ class InfoantenasCrawler:
             "isPartialSeed": region != "all",
         }
         return build_dataset(self.records_by_id, crawl_stats=crawl_stats)
-
-
-EARTH_RADIUS_M = 6_371_008.8
-DEFAULT_VODAFONE_FUSION_M = 35.0
-VODAFONE_DEDUP_DISTANCE_M = DEFAULT_VODAFONE_FUSION_M
-
-
-def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Distancia geodésica Haversine en metros entre dos coordenadas WGS84."""
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (
-        math.sin(dphi / 2.0) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlon / 2.0) ** 2
-    )
-    return 2.0 * EARTH_RADIUS_M * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
 def _redundant_leading_zeros(gid: str) -> int:
@@ -1997,10 +2571,411 @@ def write_novedades_dataset(
     return len(encoded)
 
 
+_LIVE_CHUNK_RE = re.compile(r"^live-chunk-(\d+)\.json$")
+
+
+class LiveDeltaStreamWriter:
+    """
+    Emisor atómico en tiempo real de lotes incrementales (`live-chunk-{k}.json` + `live-tail.json`)
+    para sincronización instantánea con el mapa interactivo y la pestaña Novedades.
+    """
+
+    def __init__(
+        self,
+        live_dir: Path | str,
+        *,
+        scan_id: str,
+        mode: str = "reset",
+        record_novedades: bool = True,
+        previous_scan_at: str | None = None,
+        chunk_capacity: int = LIVE_DELTA_CHUNK_CAPACITY,
+        flush_interval_seconds: float = 1.0,
+        clock_fn: Callable[[], float] = time.monotonic,
+        now_utc_fn: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.live_dir = Path(live_dir)
+        self.live_dir.mkdir(parents=True, exist_ok=True)
+        self.scan_id = str(scan_id or "").strip()
+        self.mode = mode if mode in ("reset", "append") else "reset"
+        self.record_novedades = bool(record_novedades)
+        self.previous_scan_at = previous_scan_at
+        self.chunk_capacity = max(1, int(chunk_capacity))
+        self.flush_interval_seconds = max(0.0, float(flush_interval_seconds))
+        self._clock = clock_fn
+        self._now_utc = now_utc_fn
+
+        self.chunk_count: int = 0
+        self.delta_seq: int = 0
+        self._seen_new_antenna_ids: set[str] = set()
+        self._seen_updated_antenna_ids: set[str] = set()
+        self._seen_novedad_ids: set[str] = set()
+
+        self._tail_new_antennas: dict[str, dict[str, Any]] = {}
+        self._tail_band_patches: dict[str, dict[str, Any]] = {}
+        self._tail_novedades: dict[str, dict[str, Any]] = {}
+        self._tail_replaces_new_antennas: bool = False
+        self._had_provisional_items: bool = False
+        self._chunk_just_sealed: bool = False
+        self._dirty: bool = False
+        self._last_flush_ts: float | None = None
+
+        if self.mode == "reset":
+            self._clean_existing_files()
+        else:
+            self._load_existing_append_state()
+
+    @property
+    def total_new_antennas(self) -> int:
+        return len(self._seen_new_antenna_ids)
+
+    @property
+    def total_updated_antennas(self) -> int:
+        return len(self._seen_updated_antenna_ids)
+
+    @property
+    def total_novedades(self) -> int:
+        return len(self._seen_novedad_ids)
+
+    @property
+    def seen_new_antenna_ids(self) -> set[str]:
+        return set(self._seen_new_antenna_ids)
+
+    def _clean_existing_files(self) -> None:
+        for entry in self.live_dir.iterdir():
+            if not entry.is_file():
+                continue
+            name = entry.name
+            if (
+                name == "live-tail.json"
+                or _LIVE_CHUNK_RE.match(name)
+                or (name.startswith("live-") and name.endswith(".tmp"))
+            ):
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+
+    def _ingest_saved_doc_stats(self, doc: dict[str, Any]) -> None:
+        if doc.get("replacesNewAntennas"):
+            self._seen_new_antenna_ids.clear()
+            self._seen_novedad_ids = {
+                nid for nid in self._seen_novedad_ids if not nid.startswith("ant:")
+            }
+        for ant in doc.get("newAntennas") or ():
+            if isinstance(ant, dict) and ant.get("id"):
+                self._seen_new_antenna_ids.add(str(ant["id"]))
+        for patch in doc.get("bandPatches") or ():
+            if isinstance(patch, dict) and patch.get("id"):
+                self._seen_updated_antenna_ids.add(str(patch["id"]))
+        if self.record_novedades:
+            for nov in doc.get("novedades") or ():
+                if isinstance(nov, dict) and nov.get("id"):
+                    self._seen_novedad_ids.add(str(nov["id"]))
+
+    def _load_existing_append_state(self) -> None:
+        chunk_files: list[tuple[int, Path]] = []
+        for entry in self.live_dir.iterdir():
+            if not entry.is_file():
+                continue
+            m = _LIVE_CHUNK_RE.match(entry.name)
+            if m:
+                chunk_files.append((int(m.group(1)), entry))
+        chunk_files.sort(key=lambda item: item[0])
+
+        for idx, cpath in chunk_files:
+            try:
+                doc = json.loads(cpath.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(doc, dict):
+                continue
+            if self.scan_id and str(doc.get("scanId") or "") != self.scan_id:
+                self._clean_existing_files()
+                return
+            self.chunk_count = max(self.chunk_count, idx + 1)
+            self.delta_seq = max(self.delta_seq, int(doc.get("seq") or 0))
+            if self.previous_scan_at is None and isinstance(doc.get("previousScanAt"), str):
+                self.previous_scan_at = doc["previousScanAt"]
+            self._ingest_saved_doc_stats(doc)
+
+        tail_path = self.live_dir / "live-tail.json"
+        if tail_path.exists():
+            try:
+                tdoc = json.loads(tail_path.read_text(encoding="utf-8"))
+            except Exception:
+                tdoc = None
+            if isinstance(tdoc, dict):
+                if self.scan_id and str(tdoc.get("scanId") or "") != self.scan_id:
+                    self._clean_existing_files()
+                    return
+                self.delta_seq = max(self.delta_seq, int(tdoc.get("seq") or 0))
+                if self.previous_scan_at is None and isinstance(
+                    tdoc.get("previousScanAt"), str
+                ):
+                    self.previous_scan_at = tdoc["previousScanAt"]
+                self._ingest_saved_doc_stats(tdoc)
+                self._tail_replaces_new_antennas = bool(tdoc.get("replacesNewAntennas"))
+                for ant in tdoc.get("newAntennas") or ():
+                    if isinstance(ant, dict) and ant.get("id"):
+                        self._tail_new_antennas[str(ant["id"])] = dict(ant)
+                for patch in tdoc.get("bandPatches") or ():
+                    if isinstance(patch, dict) and patch.get("id"):
+                        self._tail_band_patches[str(patch["id"])] = dict(patch)
+                if self.record_novedades:
+                    for nov in tdoc.get("novedades") or ():
+                        if isinstance(nov, dict) and nov.get("id"):
+                            self._tail_novedades[str(nov["id"])] = dict(nov)
+
+        status_path = self.live_dir / "scan-status.json"
+        if status_path.exists():
+            try:
+                sdoc = json.loads(status_path.read_text(encoding="utf-8"))
+                if isinstance(sdoc, dict) and (
+                    not self.scan_id or str(sdoc.get("scanId") or "") == self.scan_id
+                ):
+                    self.delta_seq = max(self.delta_seq, int(sdoc.get("deltaSeq") or 0))
+                    self.chunk_count = max(
+                        self.chunk_count, int(sdoc.get("chunkCount") or 0)
+                    )
+            except Exception:
+                pass
+
+    def _tail_item_count(self) -> int:
+        return (
+            len(self._tail_new_antennas)
+            + len(self._tail_band_patches)
+            + len(self._tail_novedades)
+        )
+
+    def _build_chunk_payload(self, *, chunk_index: int, is_tail: bool) -> dict[str, Any]:
+        return {
+            "schemaVersion": 1,
+            "scanId": self.scan_id,
+            "seq": self.delta_seq,
+            "chunkIndex": chunk_index,
+            "isTail": is_tail,
+            "updatedAt": _utc_now_iso(self._now_utc),
+            "recordNovedades": self.record_novedades,
+            "previousScanAt": self.previous_scan_at,
+            "replacesNewAntennas": self._tail_replaces_new_antennas,
+            "newAntennas": list(self._tail_new_antennas.values()),
+            "bandPatches": list(self._tail_band_patches.values()),
+            "novedades": (
+                list(self._tail_novedades.values()) if self.record_novedades else []
+            ),
+        }
+
+    @staticmethod
+    def _write_atomic(payload: dict[str, Any], target_path: Path) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = target_path.with_name(target_path.name + ".tmp")
+        encoded = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        tmp_path.write_bytes(encoded)
+        os.replace(tmp_path, target_path)
+
+    def _seal_current_tail_as_chunk(self) -> None:
+        self.delta_seq += 1
+        chunk_idx = self.chunk_count
+        payload = self._build_chunk_payload(chunk_index=chunk_idx, is_tail=False)
+        self._write_atomic(payload, self.live_dir / f"live-chunk-{chunk_idx}.json")
+        self.chunk_count += 1
+        self._tail_new_antennas.clear()
+        self._tail_band_patches.clear()
+        self._tail_novedades.clear()
+        self._tail_replaces_new_antennas = False
+        self._chunk_just_sealed = True
+        self._dirty = False
+
+    def _write_tail_file(self, *, bump_seq: bool) -> None:
+        if bump_seq:
+            self.delta_seq += 1
+        payload = self._build_chunk_payload(
+            chunk_index=self.chunk_count,
+            is_tail=True,
+        )
+        self._write_atomic(payload, self.live_dir / "live-tail.json")
+        self._dirty = False
+        self._chunk_just_sealed = False
+        self._last_flush_ts = self._clock()
+
+    def _insert_new_antenna(self, ant: dict[str, Any]) -> None:
+        ant_id = str(ant.get("id") or "").strip()
+        if not ant_id:
+            return
+        self._seen_new_antenna_ids.add(ant_id)
+        self._tail_new_antennas[ant_id] = dict(ant)
+        self._dirty = True
+        if self._tail_item_count() >= self.chunk_capacity:
+            self._seal_current_tail_as_chunk()
+
+    def _insert_band_patch(self, patch: dict[str, Any]) -> None:
+        ant_id = str(patch.get("id") or "").strip()
+        if not ant_id:
+            return
+        self._seen_updated_antenna_ids.add(ant_id)
+        self._tail_band_patches[ant_id] = dict(patch)
+        self._dirty = True
+        if self._tail_item_count() >= self.chunk_capacity:
+            self._seal_current_tail_as_chunk()
+
+    def _insert_novedad(self, nov: dict[str, Any]) -> None:
+        if not self.record_novedades:
+            return
+        nov_id = str(nov.get("id") or "").strip()
+        if not nov_id:
+            return
+        self._seen_novedad_ids.add(nov_id)
+        self._tail_novedades[nov_id] = dict(nov)
+        self._dirty = True
+        if self._tail_item_count() >= self.chunk_capacity:
+            self._seal_current_tail_as_chunk()
+
+    def _maybe_flush_after_insert(
+        self,
+        *,
+        force_flush: bool,
+        urgent: bool,
+    ) -> bool:
+        if self._chunk_just_sealed:
+            self._write_tail_file(bump_seq=self._dirty)
+            return True
+        if not self._dirty:
+            return False
+        now = self._clock()
+        if (
+            force_flush
+            or urgent
+            or self._last_flush_ts is None
+            or (now - self._last_flush_ts) >= self.flush_interval_seconds
+        ):
+            self._write_tail_file(bump_seq=True)
+            return True
+        return False
+
+    def record_provisional_new_antennas(
+        self,
+        antennas: list[dict[str, Any]],
+        novedades: list[dict[str, Any]],
+    ) -> bool:
+        if not antennas and (not novedades or not self.record_novedades):
+            return False
+        self._had_provisional_items = True
+        nov_by_ant_id: dict[str, dict[str, Any]] = {}
+        if self.record_novedades:
+            for nov in novedades:
+                if isinstance(nov, dict) and nov.get("antennaId"):
+                    nov_by_ant_id[str(nov["antennaId"])] = nov
+
+        emitted_nov_ids: set[str] = set()
+        for ant in antennas:
+            if not isinstance(ant, dict):
+                continue
+            self._insert_new_antenna(ant)
+            aid = str(ant.get("id") or "")
+            if aid in nov_by_ant_id:
+                nov_item = nov_by_ant_id[aid]
+                emitted_nov_ids.add(str(nov_item.get("id") or ""))
+                self._insert_novedad(nov_item)
+
+        if self.record_novedades:
+            for nov in novedades:
+                if isinstance(nov, dict) and str(nov.get("id") or "") not in emitted_nov_ids:
+                    self._insert_novedad(nov)
+
+        return self._maybe_flush_after_insert(force_flush=False, urgent=True)
+
+    def reconcile_post_census_new_antennas(
+        self,
+        canonical_new_antennas: list[dict[str, Any]],
+        canonical_ant_novedades: list[dict[str, Any]],
+    ) -> bool:
+        eff_novs = canonical_ant_novedades if self.record_novedades else []
+        if (
+            not self._had_provisional_items
+            and not canonical_new_antennas
+            and not eff_novs
+        ):
+            return False
+
+        # Reconciliar contadores acumulados tras la fusión espacial de Vodafone (< 35 m)
+        self._seen_new_antenna_ids.clear()
+        self._seen_novedad_ids = {
+            nid for nid in self._seen_novedad_ids if not nid.startswith("ant:")
+        }
+        self._tail_new_antennas.clear()
+        self._tail_novedades = {
+            nid: nov
+            for nid, nov in self._tail_novedades.items()
+            if not nid.startswith("ant:")
+        }
+        self._tail_replaces_new_antennas = True
+        self._dirty = True
+
+        nov_by_ant_id: dict[str, dict[str, Any]] = {}
+        for nov in eff_novs:
+            if isinstance(nov, dict) and nov.get("antennaId"):
+                nov_by_ant_id[str(nov["antennaId"])] = nov
+
+        emitted_nov_ids: set[str] = set()
+        for ant in canonical_new_antennas:
+            if not isinstance(ant, dict):
+                continue
+            self._insert_new_antenna(ant)
+            aid = str(ant.get("id") or "")
+            if aid in nov_by_ant_id:
+                nov_item = nov_by_ant_id[aid]
+                emitted_nov_ids.add(str(nov_item.get("id") or ""))
+                self._insert_novedad(nov_item)
+
+        for nov in eff_novs:
+            if isinstance(nov, dict) and str(nov.get("id") or "") not in emitted_nov_ids:
+                self._insert_novedad(nov)
+
+        return self._maybe_flush_after_insert(force_flush=True, urgent=True)
+
+    def record_band_updates(
+        self,
+        patches: list[dict[str, Any]],
+        freq_novedades: list[dict[str, Any]],
+        *,
+        force_flush: bool = False,
+    ) -> bool:
+        eff_novs = freq_novedades if self.record_novedades else []
+        if not patches and not eff_novs:
+            if force_flush and self._dirty:
+                self._write_tail_file(bump_seq=True)
+                return True
+            return False
+
+        for patch in patches:
+            if isinstance(patch, dict):
+                self._insert_band_patch(patch)
+        for nov in eff_novs:
+            if isinstance(nov, dict):
+                self._insert_novedad(nov)
+
+        return self._maybe_flush_after_insert(
+            force_flush=force_flush,
+            urgent=bool(eff_novs),
+        )
+
+    def flush_final(self) -> bool:
+        tail_path = self.live_dir / "live-tail.json"
+        if self._chunk_just_sealed or self._dirty:
+            self._write_tail_file(bump_seq=self._dirty)
+            return True
+        if not tail_path.exists():
+            self._write_tail_file(bump_seq=False)
+            return True
+        return False
+
+
 class BandEnricher:
     """
     Motor incremental y de re-escaneo diario de bandas y concesiones desde `detalleEstacion.do`
-    respetando estrictamente `>= 1.0 s` entre peticiones HTTP consecutivas.
+    con soporte Keep-Alive paralelo de alto rendimiento y emisión en tiempo real de deltas RF.
     """
 
     def __init__(
@@ -2011,19 +2986,21 @@ class BandEnricher:
         checkpoint_path: Path | None = None,
         checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
         timeout_seconds: float = 30.0,
+        workers: int = 1,
         fail_fast: bool = False,
         rescan_since: str | None = None,
         new_antenna_ids: set[str] | None = None,
         prior_index: dict[str, Any] | None = None,
         record_novedades: bool = True,
         novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+        live_stream: LiveDeltaStreamWriter | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fetch_fn: Callable[[str], str | bytes] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock_fn: Callable[[], float] = time.monotonic,
         now_utc_fn: Callable[[], datetime] | None = None,
     ) -> None:
-        self.delay_seconds = max(1.0, float(delay_seconds))
+        self.delay_seconds = max(0.0, float(delay_seconds))
         self.max_band_seconds = (
             float(max_band_seconds) if max_band_seconds is not None else None
         )
@@ -2033,6 +3010,7 @@ class BandEnricher:
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = max(1, int(checkpoint_every))
         self.timeout_seconds = float(timeout_seconds)
+        self.workers = max(1, int(workers))
         self.fail_fast = bool(fail_fast)
         self.rescan_since = (
             _normalize_iso_utc(rescan_since) if rescan_since else None
@@ -2041,14 +3019,22 @@ class BandEnricher:
         self.prior_index = prior_index
         self.record_novedades = bool(record_novedades)
         self._novedades_checkpoint_fn = novedades_checkpoint_fn
+        self._live_stream = live_stream
         self._progress_callback = progress_callback
         self._custom_fetch_fn = fetch_fn
         self._sleep = sleep_fn
         self._clock = clock_fn
         self._now_utc = now_utc_fn
 
+        self._http_client = _ThreadLocalKeepAliveClient()
+        self._stats_lock = threading.Lock()
+        self._worker_tls = threading.local()
+
         self.requests_count: int = 0
         self.failed_gids_count: int = 0
+        self.last_requests_per_second: float = 0.0
+        self.last_scanned_antennas: int = 0
+        self.last_total_antennas: int = 0
         self.discovered_novedades: list[dict[str, Any]] = []
         self._seen_novedad_ids: set[str] = set()
         self._last_request_ts: float | None = None
@@ -2091,29 +3077,64 @@ class BandEnricher:
             if remaining > 0:
                 self._sleep(remaining)
 
-    def _would_exceed_time_budget(self, run_start_ts: float) -> bool:
+    def _wait_worker_rate_limit(self) -> None:
+        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
+        last_ts: float | None = getattr(self._worker_tls, "last_req_ts", None)
+        if last_ts is not None and self.delay_seconds > 0:
+            elapsed = self._clock() - last_ts
+            remaining = self.delay_seconds - elapsed
+            if remaining > 0:
+                self._sleep(remaining)
+
+    def _would_exceed_time_budget(
+        self,
+        run_start_ts: float,
+        *,
+        parallel_mode: bool = False,
+    ) -> bool:
         if self.max_band_seconds is None:
             return False
         now = self._clock()
         wait_needed = 0.0
-        if self._last_request_ts is not None and self.delay_seconds > 0:
+        if not parallel_mode and self._last_request_ts is not None and self.delay_seconds > 0:
             wait_needed = max(0.0, self.delay_seconds - (now - self._last_request_ts))
         return (now + wait_needed - run_start_ts) >= self.max_band_seconds
 
-    def _http_fetch_detalle(self, gid: str) -> list[dict[str, Any]]:
+    def _http_fetch_detalle(
+        self,
+        gid: str,
+        *,
+        parallel_mode: bool = False,
+    ) -> list[dict[str, Any]]:
         url = build_detalle_estacion_url(gid)
         backoffs = (2.0, 4.0, 8.0)
         last_err: Exception | None = None
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*",
+        }
 
         for attempt in range(len(backoffs)):
-            self._wait_rate_limit()
-            self.requests_count += 1
-            self._unsaved_requests += 1
+            if parallel_mode:
+                self._wait_worker_rate_limit()
+                with self._stats_lock:
+                    self.requests_count += 1
+                    self._unsaved_requests += 1
+            else:
+                self._wait_rate_limit()
+                self.requests_count += 1
+                self._unsaved_requests += 1
 
             if self._custom_fetch_fn is not None:
                 try:
                     payload = self._custom_fetch_fn(gid)
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     html = (
                         decode_detalle_estacion_payload(payload)
                         if isinstance(payload, (bytes, bytearray))
@@ -2121,22 +3142,25 @@ class BandEnricher:
                     )
                     return parse_detalle_estacion_html(html)
                 except Exception as exc:
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     last_err = exc
             else:
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
-                        ),
-                        "Accept": "text/html,application/xhtml+xml,*/*",
-                    },
-                )
                 try:
-                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                        raw_bytes = resp.read()
-                    self._last_request_ts = self._clock()
+                    raw_bytes = self._http_client.fetch_bytes(
+                        url,
+                        headers=headers,
+                        timeout=self.timeout_seconds,
+                        clock_fn=self._clock,
+                    )
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     html = decode_detalle_estacion_payload(raw_bytes)
                     if not html.strip():
                         raise ValueError("Respuesta HTML vacía desde detalleEstacion.do")
@@ -2146,11 +3170,16 @@ class BandEnricher:
                     urllib.error.URLError,
                     TimeoutError,
                     http.client.HTTPException,
+                    ssl.SSLError,
                     OSError,
                     UnicodeDecodeError,
                     ValueError,
                 ) as exc:
-                    self._last_request_ts = self._clock()
+                    now_ts = self._clock()
+                    if parallel_mode:
+                        self._worker_tls.last_req_ts = now_ts
+                    else:
+                        self._last_request_ts = now_ts
                     last_err = exc
 
             if attempt < len(backoffs) - 1:
@@ -2168,10 +3197,19 @@ class BandEnricher:
             f"Fallo tras 3 intentos al consultar detalleEstacion emplazamiento={gid!r}: {last_err}"
         ) from last_err
 
-    def _save_dataset_checkpoint(self, dataset: dict[str, Any]) -> None:
+    def _save_dataset_checkpoint(
+        self,
+        dataset: dict[str, Any],
+        *,
+        populated_count: int | None = None,
+    ) -> None:
         antenas = dataset.get("antenas") or []
         crawl_stats = dataset.setdefault("crawlStats", {})
-        crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+        crawl_stats["bandsPopulatedCount"] = (
+            int(populated_count)
+            if populated_count is not None
+            else count_bands_populated(antenas)
+        )
         crawl_stats["bandRequestsCount"] = self.requests_count
         dataset["updatedAt"] = _utc_now_iso(self._now_utc)
         if self.checkpoint_path is not None:
@@ -2294,6 +3332,132 @@ class BandEnricher:
         final_keyed.sort(key=lambda item: item[:8])
         return [item[8] for item in final_keyed]
 
+    def _apply_completed_gid(
+        self,
+        gid: str,
+        fetched_iso: str,
+        *,
+        antenas: list[dict[str, Any]],
+        pending_by_gid: dict[str, list[int]],
+        completed_pending_indices: set[int],
+        gid_entries_cache: dict[str, list[dict[str, Any]]],
+        all_records_per_gid: dict[str, list[dict[str, Any]]],
+        batch_patches: list[dict[str, Any]],
+        batch_freq_novs: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        """
+        Actualiza todas las antenas pendientes de `gid` cuyos GIDs asociados ya están en caché.
+        Devuelve `(newly_populated_delta, populated_count_delta)` en O(1).
+        """
+        newly_delta = 0
+        populated_delta = 0
+
+        for rec_idx in pending_by_gid.get(gid, ()):
+            if rec_idx in completed_pending_indices:
+                continue
+            rec = antenas[rec_idx]
+            rec_gids = get_record_gids(rec)
+            if not all(g in gid_entries_cache for g in rec_gids):
+                continue
+
+            completed_pending_indices.add(rec_idx)
+            matched_entries: list[dict[str, Any]] = []
+            for rg in rec_gids:
+                matched_entries.extend(
+                    _extract_record_concessions_for_gid(
+                        rec,
+                        gid_entries_cache[rg],
+                        all_records_per_gid.get(rg, [rec]),
+                    )
+                )
+
+            was_bandas_list = isinstance(rec.get("bandas"), list)
+            had_prior_bands = was_bandas_list
+            old_bandas = rec.get("bandas") if was_bandas_list else None
+            old_freqs = (
+                rec.get("frecuencias")
+                if isinstance(rec.get("frecuencias"), list)
+                else None
+            )
+            old_concs = (
+                rec.get("concesiones")
+                if isinstance(rec.get("concesiones"), list)
+                else None
+            )
+
+            if not had_prior_bands and self.prior_index is not None:
+                prior_rec = match_prior_antenna(rec, self.prior_index)
+                if prior_rec is not None and isinstance(prior_rec.get("bandas"), list):
+                    had_prior_bands = True
+                    old_bandas = prior_rec.get("bandas")
+                    old_freqs = (
+                        prior_rec.get("frecuencias")
+                        if isinstance(prior_rec.get("frecuencias"), list)
+                        else []
+                    )
+                    old_concs = (
+                        prior_rec.get("concesiones")
+                        if isinstance(prior_rec.get("concesiones"), list)
+                        else None
+                    )
+
+            new_freq_novs: list[dict[str, Any]] = []
+            if self.record_novedades:
+                new_freq_novs = _diff_record_new_frequencies(
+                    rec,
+                    matched_entries,
+                    fetched_iso=fetched_iso,
+                    new_antenna_ids=self.new_antenna_ids,
+                    prior_index=self.prior_index,
+                )
+                for nov in new_freq_novs:
+                    nov_id = nov["id"]
+                    if nov_id not in self._seen_novedad_ids:
+                        self._seen_novedad_ids.add(nov_id)
+                        self.discovered_novedades.append(nov)
+
+            combined_ranges = [
+                (float(e["minMhz"]), float(e["maxMhz"]))
+                for e in matched_entries
+            ]
+            bandas_sorted, freqs_sorted = summarize_frequency_ranges(combined_ranges)
+            concs_sorted = summarize_concessions(matched_entries)
+
+            if not was_bandas_list:
+                populated_delta += 1
+            rec["bandas"] = bandas_sorted
+            rec["frecuencias"] = freqs_sorted
+            rec["concesiones"] = concs_sorted
+            rec["bandsScannedAt"] = fetched_iso
+            newly_delta += 1
+
+            if self._live_stream is not None:
+                rf_changed = (
+                    (not had_prior_bands)
+                    or (old_bandas != bandas_sorted)
+                    or (old_freqs != freqs_sorted)
+                    or (old_concs != concs_sorted)
+                    or (rec["id"] in self.new_antenna_ids)
+                    or bool(new_freq_novs)
+                )
+                if rf_changed:
+                    patch: dict[str, Any] = {
+                        "id": rec["id"],
+                        "gid": rec["gid"],
+                        "bandas": bandas_sorted,
+                        "frecuencias": freqs_sorted,
+                        "concesiones": concs_sorted,
+                        "bandsScannedAt": fetched_iso,
+                    }
+                    merged_gids = rec.get("mergedGids")
+                    if isinstance(merged_gids, list) and merged_gids:
+                        patch["mergedGids"] = list(merged_gids)
+                    batch_patches.append(patch)
+                if new_freq_novs:
+                    batch_freq_novs.extend(new_freq_novs)
+
+        return newly_delta, populated_delta
+
     def enrich_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
         antenas: list[dict[str, Any]] = dataset.get("antenas") or []
         crawl_stats = dataset.setdefault("crawlStats", {})
@@ -2303,6 +3467,7 @@ class BandEnricher:
             for g in get_record_gids(rec):
                 all_records_per_gid.setdefault(g, []).append(rec)
 
+        populated_count = count_bands_populated(antenas)
         zero_gid_populated = 0
         pending_indices: list[int] = []
         pending_by_gid: dict[str, list[int]] = {}
@@ -2311,6 +3476,8 @@ class BandEnricher:
                 continue
             gids = get_record_gids(rec)
             if not gids:
+                if not isinstance(rec.get("bandas"), list):
+                    populated_count += 1
                 rec["bandas"] = []
                 rec["frecuencias"] = []
                 rec["concesiones"] = []
@@ -2323,18 +3490,22 @@ class BandEnricher:
 
         total_antenas = len(antenas)
         already_scanned_in_cycle = total_antenas - len(pending_indices) - zero_gid_populated
+        self.last_total_antennas = total_antenas
+        self.last_scanned_antennas = already_scanned_in_cycle + zero_gid_populated
 
         if not pending_indices:
-            crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+            self.last_scanned_antennas = total_antenas
+            crawl_stats["bandsPopulatedCount"] = populated_count
             crawl_stats["bandRequestsCount"] = 0
             if zero_gid_populated > 0:
-                self._save_dataset_checkpoint(dataset)
+                self._save_dataset_checkpoint(dataset, populated_count=populated_count)
             if self._progress_callback is not None:
                 self._progress_callback(
                     {
                         "phase": "frecuencias",
                         "scannedAntennas": total_antenas,
                         "totalAntennas": total_antenas,
+                        "requestsPerSecond": 0.0,
                     }
                 )
             return dataset
@@ -2353,160 +3524,331 @@ class BandEnricher:
                     "phase": "frecuencias",
                     "scannedAntennas": already_scanned_in_cycle + newly_populated,
                     "totalAntennas": total_antenas,
+                    "requestsPerSecond": 0.0,
                 }
             )
 
         logging.info(
-            "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, delay=%.2fs)...",
+            "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, workers=%d, delay=%.3fs)...",
             len(pending_indices),
             len(units),
+            self.workers,
             self.delay_seconds,
         )
 
-        unit_cursor = 0
-        total_units = len(units)
-        stop_loop = False
+        try:
+            if self.workers <= 1:
+                unit_cursor = 0
+                total_units = len(units)
+                stop_loop = False
 
-        while unit_cursor < total_units and not stop_loop:
-            if (
-                self.max_band_requests is not None
-                and self.requests_count >= self.max_band_requests
-            ):
-                break
-            if self._would_exceed_time_budget(run_start_ts):
-                break
-
-            unit_gids = units[unit_cursor]
-            unit_cursor += 1
-            needed_gids = [
-                g
-                for g in unit_gids
-                if g not in gid_entries_cache and g not in failed_gids
-            ]
-            if not needed_gids:
-                continue
-
-            if self.max_band_requests is not None:
-                remaining_reqs = self.max_band_requests - self.requests_count
-                if len(needed_gids) > remaining_reqs and any(
-                    0
-                    < sum(
-                        1
-                        for g in later
-                        if g not in gid_entries_cache and g not in failed_gids
-                    )
-                    <= remaining_reqs
-                    for later in units[unit_cursor:]
-                ):
-                    continue
-
-            for gid in needed_gids:
-                if (
-                    self.max_band_requests is not None
-                    and self.requests_count >= self.max_band_requests
-                ):
-                    stop_loop = True
-                    break
-                if self._would_exceed_time_budget(run_start_ts):
-                    stop_loop = True
-                    break
-
-                try:
-                    entries = self._http_fetch_detalle(gid)
-                    fetched_iso = _utc_now_iso(self._now_utc)
-                    gid_entries_cache[gid] = entries
-                    consecutive_failures = 0
-                except RuntimeError as exc:
-                    self.failed_gids_count += 1
-                    failed_gids.add(gid)
-                    consecutive_failures += 1
-                    logging.error("%s", exc)
-                    if self.fail_fast:
-                        raise
-                    if consecutive_failures >= 5:
-                        logging.error(
-                            "Se alcanzaron %d fallos consecutivos en detalleEstacion.do; deteniendo lote de forma segura.",
-                            consecutive_failures,
-                        )
-                        stop_loop = True
+                while unit_cursor < total_units and not stop_loop:
+                    if (
+                        self.max_band_requests is not None
+                        and self.requests_count >= self.max_band_requests
+                    ):
                         break
-                    continue
+                    if self._would_exceed_time_budget(run_start_ts):
+                        break
 
-                for rec_idx in pending_by_gid.get(gid, ()):
-                    if rec_idx in completed_pending_indices:
-                        continue
-                    rec = antenas[rec_idx]
-                    rec_gids = get_record_gids(rec)
-                    if not all(g in gid_entries_cache for g in rec_gids):
-                        continue
-
-                    completed_pending_indices.add(rec_idx)
-                    matched_entries: list[dict[str, Any]] = []
-                    for rg in rec_gids:
-                        matched_entries.extend(
-                            _extract_record_concessions_for_gid(
-                                rec,
-                                gid_entries_cache[rg],
-                                all_records_per_gid.get(rg, [rec]),
-                            )
-                        )
-
-                    if self.record_novedades:
-                        new_freq_novs = _diff_record_new_frequencies(
-                            rec,
-                            matched_entries,
-                            fetched_iso=fetched_iso,
-                            new_antenna_ids=self.new_antenna_ids,
-                            prior_index=self.prior_index,
-                        )
-                        for nov in new_freq_novs:
-                            nov_id = nov["id"]
-                            if nov_id not in self._seen_novedad_ids:
-                                self._seen_novedad_ids.add(nov_id)
-                                self.discovered_novedades.append(nov)
-
-                    combined_ranges = [
-                        (float(e["minMhz"]), float(e["maxMhz"]))
-                        for e in matched_entries
+                    unit_gids = units[unit_cursor]
+                    unit_cursor += 1
+                    needed_gids = [
+                        g
+                        for g in unit_gids
+                        if g not in gid_entries_cache and g not in failed_gids
                     ]
-                    bandas_sorted, freqs_sorted = summarize_frequency_ranges(
-                        combined_ranges
-                    )
-                    concs_sorted = summarize_concessions(matched_entries)
-                    rec["bandas"] = bandas_sorted
-                    rec["frecuencias"] = freqs_sorted
-                    rec["concesiones"] = concs_sorted
-                    rec["bandsScannedAt"] = fetched_iso
-                    newly_populated += 1
+                    if not needed_gids:
+                        continue
 
-                if self._progress_callback is not None and (
-                    self.requests_count == 1 or self.requests_count % 5 == 0
-                ):
-                    self._progress_callback(
-                        {
-                            "phase": "frecuencias",
-                            "scannedAntennas": already_scanned_in_cycle + newly_populated,
-                            "totalAntennas": total_antenas,
-                        }
-                    )
+                    if self.max_band_requests is not None:
+                        remaining_reqs = self.max_band_requests - self.requests_count
+                        if len(needed_gids) > remaining_reqs and any(
+                            0
+                            < sum(
+                                1
+                                for g in later
+                                if g not in gid_entries_cache and g not in failed_gids
+                            )
+                            <= remaining_reqs
+                            for later in units[unit_cursor:]
+                        ):
+                            continue
 
-                if self.requests_count % 25 == 0:
-                    logging.info(
-                        "[bandas req #%d] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
-                        self.requests_count,
-                        gid,
-                        newly_populated,
-                        count_bands_populated(antenas),
-                        len(antenas),
-                    )
+                    for gid in needed_gids:
+                        if (
+                            self.max_band_requests is not None
+                            and self.requests_count >= self.max_band_requests
+                        ):
+                            stop_loop = True
+                            break
+                        if self._would_exceed_time_budget(run_start_ts):
+                            stop_loop = True
+                            break
 
-                if self._unsaved_requests >= self.checkpoint_every:
-                    self._save_dataset_checkpoint(dataset)
+                        try:
+                            entries = self._http_fetch_detalle(gid, parallel_mode=False)
+                            fetched_iso = _utc_now_iso(self._now_utc)
+                            gid_entries_cache[gid] = entries
+                            consecutive_failures = 0
+                        except RuntimeError as exc:
+                            self.failed_gids_count += 1
+                            failed_gids.add(gid)
+                            consecutive_failures += 1
+                            logging.error("%s", exc)
+                            if self.fail_fast:
+                                raise
+                            if consecutive_failures >= 5:
+                                logging.error(
+                                    "Se alcanzaron %d fallos consecutivos en detalleEstacion.do; deteniendo lote de forma segura.",
+                                    consecutive_failures,
+                                )
+                                stop_loop = True
+                                break
+                            continue
 
-        crawl_stats["bandsPopulatedCount"] = count_bands_populated(antenas)
+                        batch_patches: list[dict[str, Any]] = []
+                        batch_freq_novs: list[dict[str, Any]] = []
+                        n_delta, p_delta = self._apply_completed_gid(
+                            gid,
+                            fetched_iso,
+                            antenas=antenas,
+                            pending_by_gid=pending_by_gid,
+                            completed_pending_indices=completed_pending_indices,
+                            gid_entries_cache=gid_entries_cache,
+                            all_records_per_gid=all_records_per_gid,
+                            batch_patches=batch_patches,
+                            batch_freq_novs=batch_freq_novs,
+                        )
+                        newly_populated += n_delta
+                        populated_count += p_delta
+
+                        now = self._clock()
+                        self.last_requests_per_second = round(
+                            self.requests_count / max(0.001, now - run_start_ts), 2
+                        )
+
+                        flushed_live = False
+                        if self._live_stream is not None and (
+                            batch_patches or batch_freq_novs
+                        ):
+                            flushed_live = self._live_stream.record_band_updates(
+                                batch_patches, batch_freq_novs
+                            )
+
+                        if self._progress_callback is not None and (
+                            flushed_live
+                            or self.requests_count == 1
+                            or self.requests_count % 5 == 0
+                        ):
+                            self._progress_callback(
+                                {
+                                    "phase": "frecuencias",
+                                    "scannedAntennas": already_scanned_in_cycle
+                                    + newly_populated,
+                                    "totalAntennas": total_antenas,
+                                    "requestsPerSecond": self.last_requests_per_second,
+                                }
+                            )
+
+                        if self.requests_count % 25 == 0:
+                            logging.info(
+                                "[bandas req #%d] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
+                                self.requests_count,
+                                gid,
+                                newly_populated,
+                                populated_count,
+                                total_antenas,
+                            )
+
+                        if self._unsaved_requests >= self.checkpoint_every:
+                            self._save_dataset_checkpoint(
+                                dataset, populated_count=populated_count
+                            )
+            else:
+                seen_ordered_gids: set[str] = set()
+                ordered_gids: list[str] = []
+                for unit_gids in units:
+                    if self.max_band_requests is not None:
+                        needed = [g for g in unit_gids if g not in seen_ordered_gids]
+                        remaining_slots = self.max_band_requests - len(ordered_gids)
+                        if remaining_slots <= 0:
+                            break
+                        if len(needed) > remaining_slots:
+                            continue
+                        for g in needed:
+                            seen_ordered_gids.add(g)
+                            ordered_gids.append(g)
+                    else:
+                        for g in unit_gids:
+                            if g not in seen_ordered_gids:
+                                seen_ordered_gids.add(g)
+                                ordered_gids.append(g)
+
+                max_in_flight = max(1, self.workers * 2)
+                max_consecutive_failures = max(15, self.workers * 2)
+                gid_cursor = 0
+                total_gids = len(ordered_gids)
+                stop_submitting = False
+                last_progress_ts = run_start_ts
+                last_ckpt_ts = run_start_ts
+                last_log_req = 0
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.workers,
+                    thread_name_prefix="minetur-bands",
+                ) as executor:
+                    in_flight: dict[
+                        concurrent.futures.Future[list[dict[str, Any]]], str
+                    ] = {}
+
+                    def _can_submit_next() -> bool:
+                        if stop_submitting or gid_cursor >= total_gids:
+                            return False
+                        if len(in_flight) >= max_in_flight:
+                            return False
+                        if (
+                            self.max_band_requests is not None
+                            and (self.requests_count + len(in_flight))
+                            >= self.max_band_requests
+                        ):
+                            return False
+                        if self._would_exceed_time_budget(
+                            run_start_ts, parallel_mode=True
+                        ):
+                            return False
+                        return True
+
+                    while _can_submit_next():
+                        next_gid = ordered_gids[gid_cursor]
+                        gid_cursor += 1
+                        fut = executor.submit(
+                            self._http_fetch_detalle, next_gid, parallel_mode=True
+                        )
+                        in_flight[fut] = next_gid
+
+                    while in_flight:
+                        done, _ = concurrent.futures.wait(
+                            in_flight.keys(),
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        batch_patches = []
+                        batch_freq_novs = []
+                        last_done_gid = ""
+
+                        for fut in done:
+                            gid = in_flight.pop(fut)
+                            last_done_gid = gid
+                            try:
+                                entries = fut.result()
+                                fetched_iso = _utc_now_iso(self._now_utc)
+                                gid_entries_cache[gid] = entries
+                                consecutive_failures = 0
+                            except RuntimeError as exc:
+                                self.failed_gids_count += 1
+                                failed_gids.add(gid)
+                                consecutive_failures += 1
+                                logging.error("%s", exc)
+                                if self.fail_fast:
+                                    for other_fut in in_flight:
+                                        other_fut.cancel()
+                                    raise
+                                if consecutive_failures >= max_consecutive_failures:
+                                    logging.error(
+                                        "Se alcanzaron %d fallos consecutivos en detalleEstacion.do; deteniendo lote de forma segura.",
+                                        consecutive_failures,
+                                    )
+                                    stop_submitting = True
+                                    for other_fut in list(in_flight):
+                                        if other_fut.cancel():
+                                            in_flight.pop(other_fut, None)
+                                    break
+                                continue
+
+                            n_delta, p_delta = self._apply_completed_gid(
+                                gid,
+                                fetched_iso,
+                                antenas=antenas,
+                                pending_by_gid=pending_by_gid,
+                                completed_pending_indices=completed_pending_indices,
+                                gid_entries_cache=gid_entries_cache,
+                                all_records_per_gid=all_records_per_gid,
+                                batch_patches=batch_patches,
+                                batch_freq_novs=batch_freq_novs,
+                            )
+                            newly_populated += n_delta
+                            populated_count += p_delta
+
+                        while _can_submit_next():
+                            next_gid = ordered_gids[gid_cursor]
+                            gid_cursor += 1
+                            fut = executor.submit(
+                                self._http_fetch_detalle, next_gid, parallel_mode=True
+                            )
+                            in_flight[fut] = next_gid
+
+                        now = self._clock()
+                        self.last_requests_per_second = round(
+                            self.requests_count / max(0.001, now - run_start_ts), 2
+                        )
+
+                        flushed_live = False
+                        if self._live_stream is not None and (
+                            batch_patches or batch_freq_novs
+                        ):
+                            flushed_live = self._live_stream.record_band_updates(
+                                batch_patches, batch_freq_novs
+                            )
+
+                        if self._progress_callback is not None and (
+                            flushed_live
+                            or not in_flight
+                            or (now - last_progress_ts) >= 1.0
+                        ):
+                            self._progress_callback(
+                                {
+                                    "phase": "frecuencias",
+                                    "scannedAntennas": already_scanned_in_cycle
+                                    + newly_populated,
+                                    "totalAntennas": total_antenas,
+                                    "requestsPerSecond": self.last_requests_per_second,
+                                }
+                            )
+                            last_progress_ts = now
+
+                        if self.requests_count - last_log_req >= 500:
+                            last_log_req = self.requests_count
+                            logging.info(
+                                "[bandas req #%d | %.1f req/s] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
+                                self.requests_count,
+                                self.last_requests_per_second,
+                                last_done_gid,
+                                newly_populated,
+                                populated_count,
+                                total_antenas,
+                            )
+
+                        if (
+                            self._unsaved_requests >= self.checkpoint_every
+                            and (now - last_ckpt_ts)
+                            >= MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S
+                        ):
+                            self._save_dataset_checkpoint(
+                                dataset, populated_count=populated_count
+                            )
+                            last_ckpt_ts = self._clock()
+        finally:
+            self._http_client.close_all()
+
+        if self._live_stream is not None:
+            self._live_stream.record_band_updates([], [], force_flush=True)
+
+        self.last_total_antennas = total_antenas
+        self.last_scanned_antennas = already_scanned_in_cycle + newly_populated
+        crawl_stats["bandsPopulatedCount"] = populated_count
         crawl_stats["bandRequestsCount"] = self.requests_count
         if self.requests_count > 0 or zero_gid_populated > 0:
-            self._save_dataset_checkpoint(dataset)
+            self._save_dataset_checkpoint(dataset, populated_count=populated_count)
 
         if self._progress_callback is not None:
             self._progress_callback(
@@ -2514,15 +3856,17 @@ class BandEnricher:
                     "phase": "frecuencias",
                     "scannedAntennas": already_scanned_in_cycle + newly_populated,
                     "totalAntennas": total_antenas,
+                    "requestsPerSecond": self.last_requests_per_second,
                 }
             )
 
         logging.info(
-            "Enriquecimiento finalizado: %d peticiones HTTP, +%d antenas enriquecidas (%d/%d totales con bandas).",
+            "Enriquecimiento finalizado: %d peticiones HTTP (%.1f req/s), +%d antenas enriquecidas (%d/%d totales con bandas).",
             self.requests_count,
+            self.last_requests_per_second,
             newly_populated,
             crawl_stats["bandsPopulatedCount"],
-            len(antenas),
+            total_antenas,
         )
         return dataset
 
@@ -2534,12 +3878,14 @@ def enrich_dataset_bands(
     max_band_requests: int | None = None,
     checkpoint_path: Path | None = None,
     checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
+    workers: int = 1,
     fail_fast: bool = False,
     rescan_since: str | None = None,
     new_antenna_ids: set[str] | None = None,
     prior_index: dict[str, Any] | None = None,
     record_novedades: bool = True,
     novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+    live_stream: LiveDeltaStreamWriter | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     fetch_fn: Callable[[str], str | bytes] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -2553,12 +3899,14 @@ def enrich_dataset_bands(
         max_band_requests=max_band_requests,
         checkpoint_path=checkpoint_path,
         checkpoint_every=checkpoint_every,
+        workers=workers,
         fail_fast=fail_fast,
         rescan_since=rescan_since,
         new_antenna_ids=new_antenna_ids,
         prior_index=prior_index,
         record_novedades=record_novedades,
         novedades_checkpoint_fn=novedades_checkpoint_fn,
+        live_stream=live_stream,
         progress_callback=progress_callback,
         fetch_fn=fetch_fn,
         sleep_fn=sleep_fn,
@@ -2700,7 +4048,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--delay",
         type=float,
         default=DEFAULT_DELAY_SECONDS,
-        help="Segundos mínimos de espera entre peticiones HTTP consecutivas (mínimo 1.0s en bandas).",
+        help="Segundos mínimos de espera por hilo entre peticiones HTTP consecutivas (por defecto 0.02s).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_BAND_WORKERS,
+        help="Hilos concurrentes Keep-Alive para detalleEstacion.do (por defecto 16).",
+    )
+    parser.add_argument(
+        "--census-workers",
+        type=int,
+        default=DEFAULT_CENSUS_WORKERS,
+        help="Hilos concurrentes Keep-Alive para el barrido GeoJSON de censo (por defecto 8).",
     )
     parser.add_argument(
         "--zoom",
@@ -2721,7 +4081,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--fetch-bands",
         action="store_true",
-        help="Tras recolectar el censo, consulta detalleEstacion.do (a >= 1.0s/req) para antenas pendientes o a re-escanear.",
+        help="Tras recolectar el censo, consulta detalleEstacion.do en paralelo Keep-Alive para antenas pendientes o a re-escanear.",
     )
     parser.add_argument(
         "--enrich-bands-only",
@@ -2732,7 +4092,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-band-seconds",
         type=float,
         default=None,
-        help="Tiempo máximo en segundos dedicado a consultar detalleEstacion.do (ej. 17400 o 18600).",
+        help="Tiempo máximo en segundos dedicado a consultar detalleEstacion.do (ej. 18000).",
     )
     parser.add_argument(
         "--max-band-requests",
@@ -2778,6 +4138,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Ruta opcional donde escribir en tiempo real el JSON de estado del escaneo (scan-status.json).",
     )
     parser.add_argument(
+        "--live-dir",
+        default=None,
+        help="Directorio donde emitir en tiempo real live-chunk-*.json y live-tail.json para sincronización instantánea con el mapa y novedades.",
+    )
+    parser.add_argument(
+        "--live-mode",
+        choices=("reset", "append"),
+        default="reset",
+        help="Modo del flujo en vivo: 'reset' limpia chunks previos; 'append' continúa numeración existente.",
+    )
+    parser.add_argument(
         "--scan-trigger",
         default="",
         help="Origen del escaneo ('schedule' para diario 18:00 o 'workflow_dispatch' para forzado).",
@@ -2785,7 +4156,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--scan-part",
         default="",
-        help="Etiqueta opcional del tramo en ejecución (ej. '1/4', '2/4', '3/4', '4/4').",
+        help="Etiqueta opcional del tramo en ejecución (ej. '1/2', '2/2').",
     )
     return parser.parse_args(argv)
 
@@ -2803,11 +4174,18 @@ def build_scan_status_payload(
     scanned_antennas: int = 0,
     census_boxes_visited: int = 0,
     discovered_antennas: int = 0,
+    delta_seq: int = 0,
+    chunk_count: int = 0,
+    live_new_antennas_count: int = 0,
+    live_updated_antennas_count: int = 0,
+    live_novedades_count: int = 0,
+    requests_per_second: float = 0.0,
+    completed_dataset_updated_at: str = "",
     updated_at: str | None = None,
 ) -> dict[str, Any]:
     """
     Construye el documento JSON compacto `scan-status.json` consumido en tiempo real
-    por el monitor de progreso de la sección `Novedades`.
+    por el monitor de progreso y sincronizador de deltas en vivo.
     """
     eff_total = max(0, int(total_antennas))
     eff_scanned = max(0, min(int(scanned_antennas), eff_total)) if eff_total > 0 else max(0, int(scanned_antennas))
@@ -2830,13 +4208,13 @@ def build_scan_status_payload(
             pct = 100.0
         else:
             raw_pct = (eff_scanned / float(eff_total)) * 100.0
-            if part in ("", "1/4") and raw_pct < 0.40:
+            if (not part or part.startswith("1/")) and raw_pct < 0.40:
                 pct = 0.40
             else:
                 pct = round(min(99.99, raw_pct), 2)
 
-    return {
-        "schemaVersion": 1,
+    payload: dict[str, Any] = {
+        "schemaVersion": 2,
         "state": state,
         "scanId": str(scan_id or ""),
         "trigger": str(trigger or "workflow_dispatch"),
@@ -2851,7 +4229,16 @@ def build_scan_status_payload(
         "scannedAntennas": eff_scanned,
         "totalAntennas": eff_total,
         "percent": pct,
+        "deltaSeq": max(0, int(delta_seq)),
+        "chunkCount": max(0, int(chunk_count)),
+        "liveNewAntennasCount": max(0, int(live_new_antennas_count)),
+        "liveUpdatedAntennasCount": max(0, int(live_updated_antennas_count)),
+        "liveNovedadesCount": max(0, int(live_novedades_count)),
+        "requestsPerSecond": round(max(0.0, float(requests_per_second)), 2),
     }
+    if completed_dataset_updated_at:
+        payload["completedDatasetUpdatedAt"] = _normalize_iso_utc(completed_dataset_updated_at)
+    return payload
 
 
 def write_scan_status_file(payload: dict[str, Any], status_path: Path) -> None:
@@ -2951,8 +4338,14 @@ def main(argv: list[str] | None = None) -> int:
     output_path = Path(args.output)
     status_path = Path(args.status_output) if args.status_output else None
     scan_started_iso = args.rescan_since or _utc_now_iso()
+    delay = max(0.0, float(args.delay))
+    band_workers = max(1, int(args.workers))
+    census_workers = max(1, int(args.census_workers))
 
-    def _make_progress_emitter(fallback_total: int) -> Callable[[dict[str, Any]], None] | None:
+    def _make_progress_emitter(
+        fallback_total: int,
+        live_stream_ref: LiveDeltaStreamWriter | None = None,
+    ) -> Callable[[dict[str, Any]], None] | None:
         if status_path is None:
             return None
 
@@ -2960,7 +4353,11 @@ def main(argv: list[str] | None = None) -> int:
             total_ant = int(info.get("totalAntennas") or fallback_total or 0)
             scanned_ant = int(info.get("scannedAntennas") or 0)
             phase_name = str(info.get("phase") or "frecuencias")
-            is_done = phase_name == "frecuencias" and total_ant > 0 and scanned_ant >= total_ant
+            is_done = (
+                phase_name == "frecuencias"
+                and total_ant > 0
+                and scanned_ant >= total_ant
+            )
             payload = build_scan_status_payload(
                 state="completed" if is_done else "running",
                 scan_id=args.scan_id,
@@ -2973,6 +4370,21 @@ def main(argv: list[str] | None = None) -> int:
                 scanned_antennas=scanned_ant,
                 census_boxes_visited=int(info.get("censusBoxesVisited") or 0),
                 discovered_antennas=int(info.get("discoveredAntennas") or 0),
+                delta_seq=live_stream_ref.delta_seq if live_stream_ref is not None else 0,
+                chunk_count=live_stream_ref.chunk_count if live_stream_ref is not None else 0,
+                live_new_antennas_count=(
+                    live_stream_ref.total_new_antennas if live_stream_ref is not None else 0
+                ),
+                live_updated_antennas_count=(
+                    live_stream_ref.total_updated_antennas if live_stream_ref is not None else 0
+                ),
+                live_novedades_count=(
+                    live_stream_ref.total_novedades if live_stream_ref is not None else 0
+                ),
+                requests_per_second=float(info.get("requestsPerSecond") or 0.0),
+                completed_dataset_updated_at=str(
+                    info.get("completedDatasetUpdatedAt") or ""
+                ),
             )
             write_scan_status_file(payload, status_path)
 
@@ -2996,33 +4408,85 @@ def main(argv: list[str] | None = None) -> int:
             scan_id=args.scan_id,
             previous_scan_at=prev_updated_at,
         )
-        progress_cb = _make_progress_emitter(int(dataset.get("total") or len(dataset.get("antenas") or [])))
-        band_delay = max(1.0, float(args.delay))
+        live_stream: LiveDeltaStreamWriter | None = None
+        if args.live_dir:
+            live_stream = LiveDeltaStreamWriter(
+                args.live_dir,
+                scan_id=args.scan_id,
+                mode=args.live_mode,
+                record_novedades=not args.skip_novedades,
+                previous_scan_at=prev_updated_at,
+            )
+            live_stream.flush_final()
+            seeded_new_ant_ids = seeded_new_ant_ids | live_stream.seen_new_antenna_ids
+
+        total_ds_antenas = int(
+            dataset.get("total") or len(dataset.get("antenas") or [])
+        )
+        progress_cb = _make_progress_emitter(total_ds_antenas, live_stream)
         enricher = BandEnricher(
-            delay_seconds=band_delay,
+            delay_seconds=delay,
             max_band_seconds=args.max_band_seconds,
             max_band_requests=args.max_band_requests,
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
+            workers=band_workers,
             rescan_since=args.rescan_since,
             new_antenna_ids=seeded_new_ant_ids,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            live_stream=live_stream,
             progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
-        if output_path.resolve() != input_path.resolve() and enricher.requests_count == 0:
+        if enricher.requests_count > 0 or output_path.resolve() != input_path.resolve():
             write_compact_dataset(dataset, output_path)
         if nov_writer is not None:
             nov_writer(enricher.discovered_novedades)
+        if live_stream is not None:
+            live_stream.flush_final()
+        if status_path is not None:
+            eff_total = enricher.last_total_antennas
+            eff_scanned = enricher.last_scanned_antennas
+            is_all_done = eff_total == 0 or eff_scanned >= eff_total
+            write_scan_status_file(
+                build_scan_status_payload(
+                    state="completed" if is_all_done else "running",
+                    scan_id=args.scan_id,
+                    trigger=args.scan_trigger or "workflow_dispatch",
+                    record_novedades=not args.skip_novedades,
+                    part=args.scan_part,
+                    phase="frecuencias",
+                    started_at=scan_started_iso,
+                    total_antennas=eff_total,
+                    scanned_antennas=eff_scanned,
+                    delta_seq=live_stream.delta_seq if live_stream is not None else 0,
+                    chunk_count=live_stream.chunk_count if live_stream is not None else 0,
+                    live_new_antennas_count=(
+                        live_stream.total_new_antennas if live_stream is not None else 0
+                    ),
+                    live_updated_antennas_count=(
+                        live_stream.total_updated_antennas if live_stream is not None else 0
+                    ),
+                    live_novedades_count=(
+                        live_stream.total_novedades if live_stream is not None else 0
+                    ),
+                    requests_per_second=enricher.last_requests_per_second,
+                    completed_dataset_updated_at=(
+                        str(dataset.get("updatedAt") or "") if is_all_done else ""
+                    ),
+                ),
+                status_path,
+            )
         size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0.0
         logging.info(
-            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP, +%d novedades de frecuencia).",
+            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP a %.1f req/s, +%d novedades de frecuencia).",
             dataset["crawlStats"].get("bandsPopulatedCount", 0),
             dataset["total"],
             output_path,
             size_mb,
             enricher.requests_count,
+            enricher.last_requests_per_second,
             len(enricher.discovered_novedades),
         )
         return 0
@@ -3061,23 +4525,37 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(prior_dataset, dict)
         else 62230
     )
-    progress_cb = _make_progress_emitter(prior_total_antennas)
+    prior_index = (
+        build_prior_antenna_index(prior_dataset) if prior_dataset is not None else None
+    )
+
+    live_stream = None
+    if args.live_dir:
+        live_stream = LiveDeltaStreamWriter(
+            args.live_dir,
+            scan_id=args.scan_id,
+            mode=args.live_mode,
+            record_novedades=not args.skip_novedades,
+            previous_scan_at=previous_scan_at,
+        )
+        live_stream.flush_final()
+
+    progress_cb = _make_progress_emitter(prior_total_antennas, live_stream)
     if progress_cb is not None:
         progress_cb({"phase": "censo", "censusBoxesVisited": 0, "discoveredAntennas": 0})
-
-    delay = max(1.0, args.delay) if args.delay >= 1.0 else max(0.0, args.delay)
 
     crawler = InfoantenasCrawler(
         delay_seconds=delay,
         zoom=args.zoom,
         checkpoint_path=checkpoint_path,
+        workers=census_workers,
+        prior_index=prior_index,
+        record_novedades=not args.skip_novedades,
+        live_stream=live_stream,
         progress_callback=progress_cb,
     )
     dataset = crawler.crawl(region=args.region)
 
-    prior_index = (
-        build_prior_antenna_index(prior_dataset) if prior_dataset is not None else None
-    )
     detected_ant_novedades, new_antenna_ids = (
         diff_new_antennas(
             dataset["antenas"],
@@ -3103,6 +4581,29 @@ def main(argv: list[str] | None = None) -> int:
             len(new_antenna_ids),
         )
 
+    if live_stream is not None and prior_index is not None:
+        canonical_new_antennas = [
+            rec for rec in dataset["antenas"] if rec["id"] in new_antenna_ids
+        ]
+        reconciled = live_stream.reconcile_post_census_new_antennas(
+            canonical_new_antennas,
+            [] if args.skip_novedades else detected_ant_novedades,
+        )
+        if reconciled and progress_cb is not None:
+            census_dur = max(0.001, float(dataset["crawlStats"].get("durationSeconds") or 1.0))
+            census_rps = round(
+                int(dataset["crawlStats"].get("requestsCount") or 0) / census_dur, 2
+            )
+            progress_cb(
+                {
+                    "phase": "censo",
+                    "censusBoxesVisited": dataset["crawlStats"]["gridBoxesVisited"],
+                    "discoveredAntennas": dataset["total"],
+                    "totalAntennas": dataset["total"],
+                    "requestsPerSecond": census_rps,
+                }
+            )
+
     size_bytes = write_compact_dataset(dataset, output_path)
 
     nov_writer, seeded_new_ant_ids = _prepare_novedades_writer(
@@ -3116,41 +4617,101 @@ def main(argv: list[str] | None = None) -> int:
     all_new_ant_ids = new_antenna_ids | seeded_new_ant_ids
 
     if args.fetch_bands:
-        band_delay = max(1.0, float(args.delay))
         enricher = BandEnricher(
-            delay_seconds=band_delay,
+            delay_seconds=delay,
             max_band_seconds=args.max_band_seconds,
             max_band_requests=args.max_band_requests,
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
+            workers=band_workers,
             rescan_since=args.rescan_since,
             new_antenna_ids=all_new_ant_ids,
             prior_index=prior_index,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            live_stream=live_stream,
             progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
         size_bytes = write_compact_dataset(dataset, output_path)
         if nov_writer is not None:
             nov_writer(enricher.discovered_novedades)
-    elif status_path is not None:
-        write_scan_status_file(
-            build_scan_status_payload(
-                state="completed",
-                scan_id=args.scan_id,
-                trigger=args.scan_trigger or "workflow_dispatch",
-                record_novedades=not args.skip_novedades,
-                part=args.scan_part,
-                phase="censo",
-                started_at=scan_started_iso,
-                total_antennas=dataset["total"],
-                scanned_antennas=dataset["total"],
-                census_boxes_visited=dataset["crawlStats"]["gridBoxesVisited"],
-                discovered_antennas=dataset["total"],
-            ),
-            status_path,
-        )
+        if live_stream is not None:
+            live_stream.flush_final()
+        if status_path is not None:
+            eff_total = enricher.last_total_antennas
+            eff_scanned = enricher.last_scanned_antennas
+            is_all_done = eff_total == 0 or eff_scanned >= eff_total
+            write_scan_status_file(
+                build_scan_status_payload(
+                    state="completed" if is_all_done else "running",
+                    scan_id=args.scan_id,
+                    trigger=args.scan_trigger or "workflow_dispatch",
+                    record_novedades=not args.skip_novedades,
+                    part=args.scan_part,
+                    phase="frecuencias",
+                    started_at=scan_started_iso,
+                    total_antennas=eff_total,
+                    scanned_antennas=eff_scanned,
+                    census_boxes_visited=dataset["crawlStats"]["gridBoxesVisited"],
+                    discovered_antennas=dataset["total"],
+                    delta_seq=live_stream.delta_seq if live_stream is not None else 0,
+                    chunk_count=live_stream.chunk_count if live_stream is not None else 0,
+                    live_new_antennas_count=(
+                        live_stream.total_new_antennas if live_stream is not None else 0
+                    ),
+                    live_updated_antennas_count=(
+                        live_stream.total_updated_antennas if live_stream is not None else 0
+                    ),
+                    live_novedades_count=(
+                        live_stream.total_novedades if live_stream is not None else 0
+                    ),
+                    requests_per_second=enricher.last_requests_per_second,
+                    completed_dataset_updated_at=(
+                        str(dataset.get("updatedAt") or "") if is_all_done else ""
+                    ),
+                ),
+                status_path,
+            )
+    else:
+        if live_stream is not None:
+            live_stream.flush_final()
+        if status_path is not None:
+            census_dur = max(
+                0.001, float(dataset["crawlStats"].get("durationSeconds") or 1.0)
+            )
+            census_rps = round(
+                int(dataset["crawlStats"].get("requestsCount") or 0) / census_dur, 2
+            )
+            write_scan_status_file(
+                build_scan_status_payload(
+                    state="completed",
+                    scan_id=args.scan_id,
+                    trigger=args.scan_trigger or "workflow_dispatch",
+                    record_novedades=not args.skip_novedades,
+                    part=args.scan_part,
+                    phase="censo",
+                    started_at=scan_started_iso,
+                    total_antennas=dataset["total"],
+                    scanned_antennas=dataset["total"],
+                    census_boxes_visited=dataset["crawlStats"]["gridBoxesVisited"],
+                    discovered_antennas=dataset["total"],
+                    delta_seq=live_stream.delta_seq if live_stream is not None else 0,
+                    chunk_count=live_stream.chunk_count if live_stream is not None else 0,
+                    live_new_antennas_count=(
+                        live_stream.total_new_antennas if live_stream is not None else 0
+                    ),
+                    live_updated_antennas_count=(
+                        live_stream.total_updated_antennas if live_stream is not None else 0
+                    ),
+                    live_novedades_count=(
+                        live_stream.total_novedades if live_stream is not None else 0
+                    ),
+                    requests_per_second=census_rps,
+                    completed_dataset_updated_at=str(dataset.get("updatedAt") or ""),
+                ),
+                status_path,
+            )
 
     if auto_checkpoint and checkpoint_path and checkpoint_path.exists():
         try:

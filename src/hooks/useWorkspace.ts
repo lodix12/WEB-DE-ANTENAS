@@ -17,12 +17,15 @@ export interface WorkspaceContextValue {
   /* Filtros compartidos */
   searchQuery: string;
   setSearchQuery: (q: string) => void;
+  selectedComunidad: string;
+  setSelectedComunidad: (ccaa: string) => void;
   selectedProvince: string;
   setSelectedProvince: (prov: string) => void;
-  selectedMunicipality: string;
-  setSelectedMunicipality: (mun: string) => void;
-  selectedBand: string;
-  setSelectedBand: (band: string) => void;
+  selectedBands: string[];
+  toggleBand: (band: string) => void;
+  clearBands: () => void;
+  exclusiveBands: boolean;
+  setExclusiveBands: (exclusive: boolean) => void;
   activeOperators: OperatorKey[];
   toggleOperator: (op: OperatorKey) => void;
   selectAllOperators: () => void;

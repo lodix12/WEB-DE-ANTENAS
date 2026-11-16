@@ -5,10 +5,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import gzip
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 import urllib.error
@@ -18,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import fetch_antenas as fa  # noqa: E402
+import publish_scan_status as pss  # noqa: E402
 
 
 class FakeClock:
@@ -821,7 +826,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_path = Path(tmpdir) / "antenas.json"
-            # Incluso si se pasa delay_seconds < 1.0, BandEnricher fuerza estrictamente >= 1.0 s
+            # BandEnricher respeta delay_seconds sub-segundo (ej. 0.2s) sin suelo forzado de 1.0s
             enricher = fa.BandEnricher(
                 delay_seconds=0.2,
                 checkpoint_path=out_path,
@@ -831,7 +836,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 sleep_fn=clock.sleep,
                 clock_fn=clock.time,
             )
-            self.assertGreaterEqual(enricher.delay_seconds, 1.0)
+            self.assertAlmostEqual(enricher.delay_seconds, 0.2)
             enricher.enrich_dataset(dataset)
 
             # 2800006 consultado 1 sola vez (el primero por ser compartido en MADRID)
@@ -839,7 +844,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(fetched_gids.count("2800006"), 1)
             # 5 GIDs únicos + 1 reintento transitorio en 0144693 = 6 peticiones
             self.assertEqual(enricher.requests_count, 6)
-            self.assertTrue(all(s >= 1.0 for s in clock.sleeps))
+            self.assertTrue(all(s >= 0.2 for s in clock.sleeps))
             self.assertIn(2.0, clock.sleeps)
 
             by_id = {a["id"]: a for a in dataset["antenas"]}
@@ -975,6 +980,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
             # Lote 1 limitado por max_band_requests=2
             fa.enrich_dataset_bands(
                 dataset,
+                delay_seconds=1.0,
                 max_band_requests=2,
                 checkpoint_path=ckpt,
                 fetch_fn=fake_html,
@@ -987,6 +993,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
             # Lote 2 limitado por max_band_seconds=1.5 (permite 2 peticiones con 1.0s entre ellas y para antes de la 3ª)
             fa.enrich_dataset_bands(
                 dataset,
+                delay_seconds=1.0,
                 max_band_seconds=1.5,
                 checkpoint_path=ckpt,
                 fetch_fn=fake_html,
@@ -999,6 +1006,7 @@ class FetchAntenasUnitTests(unittest.TestCase):
             # Lote 3 completa la última pendiente
             fa.enrich_dataset_bands(
                 dataset,
+                delay_seconds=1.0,
                 checkpoint_path=ckpt,
                 fetch_fn=fake_html,
                 sleep_fn=clock.sleep,
@@ -2124,6 +2132,906 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(status_doc["scannedAntennas"], 1)
             self.assertEqual(status_doc["totalAntennas"], 1)
             self.assertEqual(status_doc["percent"], 100.0)
+            self.assertEqual(status_doc["schemaVersion"], 2)
+            self.assertIn("completedDatasetUpdatedAt", status_doc)
+
+    def test_keepalive_http_client_socket_reuse_gzip_reconnect_and_429_cooldown(self) -> None:
+        seen_client_ports: list[int] = []
+        drop_state = {"dropped_once": False}
+        lock = threading.Lock()
+
+        html_sample = """
+            <h2>CARACTERISTICAS TÉCNICAS</h2>
+            <table>
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+            </table>
+        """.encode("iso-8859-1")
+        gz_html = gzip.compress(html_sample)
+
+        class _KeepAliveHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return None
+
+            def do_GET(self) -> None:  # noqa: N802
+                with lock:
+                    seen_client_ports.append(int(self.client_address[1]))
+
+                if self.path == "/ok-gzip":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=ISO-8859-1")
+                    self.send_header("Content-Encoding", "gzip")
+                    self.send_header("Content-Length", str(len(gz_html)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(gz_html)
+                    return
+
+                if self.path == "/ok-plain":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=ISO-8859-1")
+                    self.send_header("Content-Length", str(len(html_sample)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(html_sample)
+                    return
+
+                if self.path == "/drop-once":
+                    with lock:
+                        should_drop = not drop_state["dropped_once"]
+                        drop_state["dropped_once"] = True
+                    if should_drop:
+                        # Simula cierre abrupto de socket Keep-Alive reutilizado en el servidor
+                        self.close_connection = True
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=ISO-8859-1")
+                    self.send_header("Content-Length", str(len(html_sample)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(html_sample)
+                    return
+
+                if self.path == "/rate-limit":
+                    body = b"Too Many Requests"
+                    self.send_response(429)
+                    self.send_header("Retry-After", "1.5")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _KeepAliveHandler)
+        port = server.server_address[1]
+        srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        srv_thread.start()
+        client = fa._ThreadLocalKeepAliveClient()
+
+        try:
+            b1 = client.fetch_bytes(
+                f"http://127.0.0.1:{port}/ok-gzip",
+                headers={"User-Agent": "TestKeepAlive/1.0"},
+                timeout=5.0,
+            )
+            parsed1 = fa.parse_detalle_estacion_html(fa.decode_detalle_estacion_payload(b1))
+            self.assertEqual(len(parsed1), 1)
+            self.assertEqual(parsed1[0]["referencia"], "M M -2200490")
+
+            b2 = client.fetch_bytes(
+                f"http://127.0.0.1:{port}/ok-plain",
+                headers={"User-Agent": "TestKeepAlive/1.0"},
+                timeout=5.0,
+            )
+            self.assertIn("CARACTERISTICAS TÉCNICAS", fa.decode_detalle_estacion_payload(b2))
+            # Ambas peticiones reutilizan exactamente el mismo socket TCP efímero
+            self.assertEqual(seen_client_ports[0], seen_client_ports[1])
+
+            # Si el servidor corta el socket Keep-Alive reutilizado, se reconecta de forma transparente
+            b3 = client.fetch_bytes(
+                f"http://127.0.0.1:{port}/drop-once",
+                headers={"User-Agent": "TestKeepAlive/1.0"},
+                timeout=5.0,
+            )
+            self.assertIn("935.10 - 949.90", fa.decode_detalle_estacion_payload(b3))
+            self.assertEqual(len(seen_client_ports), 4)
+            self.assertEqual(seen_client_ports[2], seen_client_ports[0])
+            self.assertNotEqual(seen_client_ports[3], seen_client_ports[0])
+
+            # HTTP 429 registra enfriamiento adaptativo compartido y propaga HTTPError
+            fake_clock = FakeClock()
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                client.fetch_bytes(
+                    f"http://127.0.0.1:{port}/rate-limit",
+                    headers={"User-Agent": "TestKeepAlive/1.0"},
+                    timeout=5.0,
+                    clock_fn=fake_clock.time,
+                )
+            ctx.exception.close()
+            self.assertEqual(ctx.exception.code, 429)
+            client.wait_if_cooled_down(clock_fn=fake_clock.time, sleep_fn=fake_clock.sleep)
+            self.assertEqual(fake_clock.sleeps, [1.5])
+        finally:
+            client.close_all()
+            server.shutdown()
+            server.server_close()
+            srv_thread.join(timeout=3.0)
+
+    def test_parallel_multi_worker_census_and_band_enrichment_speedup_and_fusion_invariants(self) -> None:
+        # 1) Censo paralelo (workers=8) con subdivisión quadtree (>= 450) + invariantes de fusión:
+        #    - 2 declaraciones Vodafone a ~14 m se fusionan en 1 antena con mergedGids
+        #    - 2 declaraciones Telefónica a ~10 m NUNCA se fusionan
+        def _feat(gid: str, op_label: str, lat: float, lon: float, mun: str = "MADRID") -> dict[str, object]:
+            return {
+                "type": "Feature",
+                "id": f"{op_label} - {gid}",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "Gis_ID": gid,
+                    "Gis_Codigo": f"{op_label} - {gid}",
+                    "Dirección": f"CL PRUEBA, 1. {mun}, MADRID",
+                },
+            }
+
+        capped_parent_features = [
+            _feat(f"287{i:04d}", "ORANGE ESPAGNE, S.A.U.", 40.40 + (i % 20) * 0.002, -3.70 + (i // 20) * 0.002)
+            for i in range(fa.SERVER_FEATURE_CAP)
+        ]
+
+        def parallel_bbox_fetch(bbox: fa.BBox, _zoom: int) -> list[dict[str, object]]:
+            min_lon, min_lat, max_lon, max_lat = bbox
+            span_lon = max_lon - min_lon
+            # Solo la celda raíz (span_lon ~1.39°) que contiene Madrid centro (-3.70, 40.42) dispara subdivisión
+            if min_lon <= -3.70 < max_lon and min_lat <= 40.42 < max_lat:
+                if span_lon > 1.0:
+                    return capped_parent_features
+                # Hijos subdivididos devuelven los registros finales incluyendo Vodafone <35m y Telefónica <35m
+                return [
+                    _feat("144693", "VODAFONE ESPAÑA, S.A.U.", 40.420000, -3.700000),
+                    _feat("0144693", "VODAFONE ESPAÑA, S.A.U.", 40.420100, -3.700000),  # ~11.1 m (< 35m -> fusiona)
+                    _feat("2890001", "TELEFONICA MOVILES ESPAÑA, S.A.U.", 40.421000, -3.700000),
+                    _feat("2890002", "TELEFONICA MOVILES ESPAÑA, S.A.U.", 40.421080, -3.700000),  # ~8.9 m (Telefónica -> NO fusiona)
+                ]
+            return []
+
+        crawler = fa.InfoantenasCrawler(
+            delay_seconds=0.0,
+            workers=8,
+            fetch_fn=parallel_bbox_fetch,
+        )
+        census_ds = crawler.crawl(region="all")
+        self.assertGreaterEqual(census_ds["crawlStats"]["subdividedBoxes"], 1)
+        self.assertEqual(census_ds["crawlStats"]["vodafoneFusedDuplicates"], 1)
+        census_by_id = {a["id"]: a for a in census_ds["antenas"]}
+        self.assertIn("VODAFONE ESPAÑA, S.A.U. - 144693", census_by_id)
+        self.assertNotIn("VODAFONE ESPAÑA, S.A.U. - 0144693", census_by_id)
+        self.assertEqual(
+            census_by_id["VODAFONE ESPAÑA, S.A.U. - 144693"]["mergedGids"],
+            ["144693", "0144693"],
+        )
+        # Telefónica a < 35 m se conserva íntegra como 2 antenas independientes
+        self.assertIn("TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890001", census_by_id)
+        self.assertIn("TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890002", census_by_id)
+
+        # 2) Aceleración real > 5x en enriquecimiento paralelo de bandas (workers=16 sobre 32 GIDs con latencia 0.04s)
+        #    Tiempo secuencial equivalente = 32 * 0.04s = 1.28s; en paralelo con 16 hilos debe tardar < 0.25s (> 5.1x más rápido).
+        bench_records: list[dict[str, object]] = [
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                "gid": "144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 40.420000,
+                "lon": -3.700000,
+                "dir": "CL ALCALA, 1",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 0144693",
+                "gid": "0144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 40.420100,
+                "lon": -3.700000,
+                "dir": "CL ALCALA, 1",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "gid": "2800006",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.430000,
+                "lon": -3.650000,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            {
+                "id": "DS MOBILE NETWORKS, S.L. - 2800006",
+                "gid": "2800006",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "lat": 40.430000,
+                "lon": -3.650000,
+                "dir": "CL EMILIO FERRARI, 11",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+        ]
+        for idx in range(29):
+            gid = f"285{idx:04d}"
+            bench_records.append(
+                {
+                    "id": f"TELEFONICA MOVILES ESPAÑA, S.A.U. - {gid}",
+                    "gid": gid,
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 40.30 + idx * 0.005,
+                    "lon": -3.70,
+                    "dir": f"AV PARALELA, {idx}",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                }
+            )
+
+        bench_ds = fa.build_dataset(
+            bench_records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 0.1,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 0.0,
+            },
+        )
+        # 1 fusionada Vodafone + 2 en 2800006 + 29 individuales = 32 antenas y 32 GIDs únicos (144693, 0144693, 2800006 + 29)
+        self.assertEqual(bench_ds["total"], 32)
+
+        def simulated_network_detalle(gid: str) -> str:
+            time.sleep(0.04)
+            if gid == "144693":
+                return """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V1</td><td>842.00 - 852.00</td></tr>
+                    </table>
+                """
+            if gid == "0144693":
+                return """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V2</td><td>3600.00 - 3690.00</td></tr>
+                    </table>
+                """
+            if gid == "2800006":
+                return """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M1</td><td>935.10 - 949.90</td></tr>
+                        <tr><td>DS MOBILE NETWORKS, S.L.</td><td>D1</td><td>2110.00 - 2120.00</td></tr>
+                    </table>
+                """
+            return f"""
+                <h2>CARACTERISTICAS TÉCNICAS</h2>
+                <table>
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>REF-{gid}</td><td>1805.10 - 1825.10</td></tr>
+                </table>
+            """
+
+        sequential_equivalent_s = 32 * 0.04  # 1.28s
+        t0 = time.monotonic()
+        enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=16,
+            fetch_fn=simulated_network_detalle,
+        )
+        enricher.enrich_dataset(bench_ds)
+        elapsed_s = time.monotonic() - t0
+
+        self.assertEqual(enricher.requests_count, 32)
+        self.assertEqual(bench_ds["crawlStats"]["bandsPopulatedCount"], 32)
+        speedup = sequential_equivalent_s / max(0.001, elapsed_s)
+        self.assertGreater(
+            speedup,
+            5.0,
+            f"Se esperaba aceleración paralela > 5x, obtenida {speedup:.2f}x (elapsed={elapsed_s:.3f}s)",
+        )
+
+        by_id = {a["id"]: a for a in bench_ds["antenas"]}
+        self.assertEqual(
+            by_id["VODAFONE ESPAÑA, S.A.U. - 144693"]["bandas"],
+            ["800 MHz", "3500 MHz"],
+        )
+        self.assertEqual(
+            by_id["TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006"]["bandas"],
+            ["900 MHz"],
+        )
+        self.assertEqual(
+            by_id["DS MOBILE NETWORKS, S.L. - 2800006"]["bandas"],
+            ["2100 MHz"],
+        )
+
+    def test_live_delta_stream_writer_chunking_reconciliation_skip_novedades_and_append(self) -> None:
+        # 1) Prueba unitaria directa de LiveDeltaStreamWriter con chunk_capacity=2 y reconciliación post-censo
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_dir = Path(tmpdir) / "live-unit"
+            writer = fa.LiveDeltaStreamWriter(
+                live_dir,
+                scan_id="scan-live-1",
+                mode="reset",
+                record_novedades=True,
+                previous_scan_at="2026-11-15T18:00:00Z",
+                chunk_capacity=2,
+                flush_interval_seconds=0.0,
+            )
+            # Emisión provisional durante el censo (sin mergedGids aún)
+            prov_ant = {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                "gid": "144693",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 40.42,
+                "lon": -3.70,
+                "dir": "CL ALCALA, 1",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            }
+            writer.record_provisional_new_antennas(
+                [prov_ant],
+                [
+                    {
+                        "id": "ant:VODAFONE ESPAÑA, S.A.U. - 144693",
+                        "tipo": "antena",
+                        "op": "vodafone",
+                        "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                        "codigo": "144693",
+                        "antennaId": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                        "codigoBanda": "",
+                        "frecuencia": "",
+                        "ubicacion": "MADRID",
+                        "prov": "MADRID",
+                        "scannedAt": "2026-11-16T18:00:01Z",
+                        "fecha": "16/11/2026 19:00:01",
+                    }
+                ],
+            )
+            # Con chunk_capacity=2 (1 antena + 1 novedad = 2 ítems), se sella live-chunk-0.json
+            self.assertEqual(writer.chunk_count, 1)
+            self.assertTrue((live_dir / "live-chunk-0.json").exists())
+
+            # Reconciliación post-fusión Vodafone (< 35m) emite replacesNewAntennas=True con mergedGids
+            canon_ant = {**prov_ant, "mergedGids": ["144693", "0144693"]}
+            writer.reconcile_post_census_new_antennas(
+                [canon_ant],
+                [
+                    {
+                        "id": "ant:VODAFONE ESPAÑA, S.A.U. - 144693",
+                        "tipo": "antena",
+                        "op": "vodafone",
+                        "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                        "codigo": "144693",
+                        "antennaId": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                        "codigoBanda": "",
+                        "frecuencia": "",
+                        "ubicacion": "MADRID",
+                        "prov": "MADRID",
+                        "scannedAt": "2026-11-16T18:00:02Z",
+                        "fecha": "16/11/2026 19:00:02",
+                    }
+                ],
+            )
+            self.assertEqual(writer.chunk_count, 2)
+            chunk1 = json.loads((live_dir / "live-chunk-1.json").read_text(encoding="utf-8"))
+            self.assertTrue(chunk1["replacesNewAntennas"])
+            self.assertEqual(chunk1["newAntennas"][0]["mergedGids"], ["144693", "0144693"])
+            self.assertEqual(writer.total_new_antennas, 1)
+
+            # Parche RF posterior va a live-tail.json sin perder los chunks previos
+            writer.record_band_updates(
+                [
+                    {
+                        "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                        "gid": "144693",
+                        "mergedGids": ["144693", "0144693"],
+                        "bandas": ["800 MHz", "3500 MHz"],
+                        "frecuencias": ["842.00 - 852.00", "3600.00 - 3690.00"],
+                        "concesiones": [{"ref": "V1", "range": "842.00 - 852.00", "banda": "800 MHz"}],
+                        "bandsScannedAt": "2026-11-16T18:00:05Z",
+                    }
+                ],
+                [],
+                force_flush=True,
+            )
+            tail_doc = json.loads((live_dir / "live-tail.json").read_text(encoding="utf-8"))
+            self.assertTrue(tail_doc["isTail"])
+            self.assertEqual(tail_doc["chunkIndex"], 2)
+            self.assertEqual(len(tail_doc["bandPatches"]), 1)
+            self.assertEqual(writer.total_updated_antennas, 1)
+
+        # 2) Prueba CLI end-to-end: --skip-novedades vs normal + continuación --live-mode append
+        class _FakeResp:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self) -> "_FakeResp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        def make_cli_urlopen(*, add_new_voda_pair: bool, upgrade_mov_3500: bool):
+            def _urlopen(req: object, timeout: float = 30.0) -> _FakeResp:
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if "infoantenasGeoJSON" in url:
+                    feats = [
+                        {
+                            "type": "Feature",
+                            "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                            "geometry": {"type": "Point", "coordinates": [-3.642914, 40.434322]},
+                            "properties": {
+                                "Gis_ID": "2800006",
+                                "Gis_Codigo": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                                "Dirección": "CL EMILIO FERRARI, 11. MADRID, MADRID",
+                            },
+                        }
+                    ]
+                    if add_new_voda_pair and "-3.7" in url:
+                        feats.extend(
+                            [
+                                {
+                                    "type": "Feature",
+                                    "id": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                                    "geometry": {"type": "Point", "coordinates": [-3.700000, 40.420000]},
+                                    "properties": {
+                                        "Gis_ID": "144693",
+                                        "Gis_Codigo": "VODAFONE ESPAÑA, S.A.U. - 144693",
+                                        "Dirección": "CL ALCALA, 1. MADRID, MADRID",
+                                    },
+                                },
+                                {
+                                    "type": "Feature",
+                                    "id": "VODAFONE ESPAÑA, S.A.U. - 0144693",
+                                    "geometry": {"type": "Point", "coordinates": [-3.700000, 40.420090]},
+                                    "properties": {
+                                        "Gis_ID": "0144693",
+                                        "Gis_Codigo": "VODAFONE ESPAÑA, S.A.U. - 0144693",
+                                        "Dirección": "CL ALCALA, 1. MADRID, MADRID",
+                                    },
+                                },
+                            ]
+                        )
+                    return _FakeResp(json.dumps({"type": "FeatureCollection", "features": feats}).encode("utf-8"))
+
+                if "emplazamiento=2800006" in url:
+                    extra = (
+                        "<tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>"
+                        if upgrade_mov_3500
+                        else ""
+                    )
+                    html = f"""
+                        <h2>CARACTERISTICAS TÉCNICAS</h2>
+                        <table>
+                            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                            <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+                            {extra}
+                        </table>
+                    """
+                    return _FakeResp(html.encode("iso-8859-1"))
+
+                html_voda = """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-700</td><td>768.00 - 778.00</td></tr>
+                    </table>
+                """
+                return _FakeResp(html_voda.encode("iso-8859-1"))
+
+            return _urlopen
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+            live_dir = tmp / "scan-live"
+            status_path = live_dir / "scan-status.json"
+
+            # Paso A: Línea base inicial con --skip-novedades
+            with mock.patch(
+                "urllib.request.urlopen",
+                side_effect=make_cli_urlopen(add_new_voda_pair=False, upgrade_mov_3500=False),
+            ):
+                rc0 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "4",
+                        "--census-workers",
+                        "2",
+                        "--fetch-bands",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "base-0",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--live-dir",
+                        str(live_dir),
+                        "--status-output",
+                        str(status_path),
+                    ]
+                )
+            self.assertEqual(rc0, 0)
+            st0 = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(st0["liveNovedadesCount"], 0)
+            self.assertGreaterEqual(st0["liveUpdatedAntennasCount"], 1)
+            tail0 = json.loads((live_dir / "live-tail.json").read_text(encoding="utf-8"))
+            self.assertEqual(tail0["novedades"], [])
+            self.assertEqual(len(tail0["bandPatches"]), 1)
+
+            # Paso B: Escaneo forzado CON --skip-novedades cuando entra una antena nueva + banda nueva:
+            # el mapa recibe newAntennas y bandPatches en vivo, pero novedades permanece vacío ([]).
+            ant_skip_copy = tmp / "antenas_skip.json"
+            ant_skip_copy.write_bytes(ant_path.read_bytes())
+            live_skip_dir = tmp / "scan-live-skip"
+            status_skip_path = live_skip_dir / "scan-status.json"
+            with mock.patch(
+                "urllib.request.urlopen",
+                side_effect=make_cli_urlopen(add_new_voda_pair=True, upgrade_mov_3500=True),
+            ):
+                rc_skip = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_skip_copy),
+                        "--preserve-from",
+                        str(ant_skip_copy),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "4",
+                        "--census-workers",
+                        "2",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2099-01-01T00:00:00Z",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "forced-skip-1",
+                        "--live-dir",
+                        str(live_skip_dir),
+                        "--status-output",
+                        str(status_skip_path),
+                    ]
+                )
+            self.assertEqual(rc_skip, 0)
+            st_skip = json.loads(status_skip_path.read_text(encoding="utf-8"))
+            self.assertFalse(st_skip["recordNovedades"])
+            self.assertEqual(st_skip["liveNewAntennasCount"], 1)
+            self.assertEqual(st_skip["liveUpdatedAntennasCount"], 2)
+            self.assertEqual(st_skip["liveNovedadesCount"], 0)
+            tail_skip = json.loads((live_skip_dir / "live-tail.json").read_text(encoding="utf-8"))
+            self.assertEqual(tail_skip["novedades"], [])
+            self.assertEqual(len(tail_skip["newAntennas"]), 1)
+            self.assertEqual(tail_skip["newAntennas"][0]["mergedGids"], ["144693", "0144693"])
+            self.assertEqual(len(tail_skip["bandPatches"]), 2)
+
+            # Paso C: Escaneo diario (Parte 1/2 limitada a --max-band-requests 2 para Vodafone fusionada,
+            # seguida de Parte 2/2 con --enrich-bands-only y --live-mode append para Movistar 2800006)
+            base_ds = json.loads(ant_path.read_text(encoding="utf-8"))
+            for a_rec in base_ds["antenas"]:
+                a_rec["bandsScannedAt"] = "2000-01-01T00:00:00Z"
+            ant_path.write_text(json.dumps(base_ds), encoding="utf-8")
+
+            with mock.patch(
+                "urllib.request.urlopen",
+                side_effect=make_cli_urlopen(add_new_voda_pair=True, upgrade_mov_3500=True),
+            ):
+                rc_p1 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "2",
+                        "--census-workers",
+                        "2",
+                        "--fetch-bands",
+                        "--max-band-requests",
+                        "2",
+                        "--rescan-since",
+                        "2020-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "reset",
+                        "--scan-id",
+                        "daily-2part",
+                        "--scan-part",
+                        "1/2",
+                        "--live-dir",
+                        str(live_dir),
+                        "--live-mode",
+                        "reset",
+                        "--status-output",
+                        str(status_path),
+                    ]
+                )
+            self.assertEqual(rc_p1, 0)
+            st_p1 = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(st_p1["state"], "running")
+            self.assertEqual(st_p1["scannedAntennas"], 1)
+            self.assertEqual(st_p1["totalAntennas"], 2)
+            seq_after_p1 = st_p1["deltaSeq"]
+            self.assertGreater(seq_after_p1, 0)
+
+            with mock.patch(
+                "urllib.request.urlopen",
+                side_effect=make_cli_urlopen(add_new_voda_pair=True, upgrade_mov_3500=True),
+            ):
+                rc_p2 = fa.main(
+                    [
+                        "--enrich-bands-only",
+                        "--input",
+                        str(ant_path),
+                        "--output",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "2",
+                        "--rescan-since",
+                        "2020-01-01T00:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "append",
+                        "--scan-id",
+                        "daily-2part",
+                        "--scan-part",
+                        "2/2",
+                        "--live-dir",
+                        str(live_dir),
+                        "--live-mode",
+                        "append",
+                        "--status-output",
+                        str(status_path),
+                    ]
+                )
+            self.assertEqual(rc_p2, 0)
+            st_p2 = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(st_p2["state"], "completed")
+            self.assertGreater(st_p2["deltaSeq"], seq_after_p1)
+            self.assertEqual(st_p2["liveNewAntennasCount"], 1)
+            self.assertEqual(st_p2["liveUpdatedAntennasCount"], 2)
+            self.assertEqual(st_p2["liveNovedadesCount"], 2)
+            final_ds = json.loads(ant_path.read_text(encoding="utf-8"))
+            self.assertEqual(st_p2["completedDatasetUpdatedAt"], final_ds["updatedAt"])
+
+    def test_publish_scan_status_git_tree_push_blob_cache_finalize_and_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bare_origin = tmp / "origin.git"
+            work_repo = tmp / "work"
+            work_repo.mkdir(parents=True)
+
+            subprocess.run(
+                ["git", "init", "--bare", str(bare_origin)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "init", str(work_repo)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "remote", "add", "origin", str(bare_origin)],
+                cwd=work_repo,
+                check=True,
+                capture_output=True,
+            )
+
+            live_dir = tmp / "live-out"
+            live_dir.mkdir(parents=True)
+            status_path = live_dir / "scan-status.json"
+            chunk0_path = live_dir / "live-chunk-0.json"
+            tail_path = live_dir / "live-tail.json"
+            ant_path = tmp / "antenas.json"
+
+            ant_path.write_text(
+                json.dumps(
+                    {
+                        "updatedAt": "2026-11-16T18:12:34Z",
+                        "total": 62240,
+                        "antenas": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            chunk0_doc = {
+                "schemaVersion": 1,
+                "scanId": "scan-git-1",
+                "seq": 1,
+                "chunkIndex": 0,
+                "isTail": False,
+                "updatedAt": "2026-11-16T18:01:00Z",
+                "recordNovedades": True,
+                "previousScanAt": "2026-11-15T18:00:00Z",
+                "replacesNewAntennas": True,
+                "newAntennas": [{"id": "MOV-1", "gid": "2800001"}],
+                "bandPatches": [],
+                "novedades": [],
+            }
+            tail_doc = {
+                "schemaVersion": 1,
+                "scanId": "scan-git-1",
+                "seq": 2,
+                "chunkIndex": 1,
+                "isTail": True,
+                "updatedAt": "2026-11-16T18:02:00Z",
+                "recordNovedades": True,
+                "previousScanAt": "2026-11-15T18:00:00Z",
+                "replacesNewAntennas": False,
+                "newAntennas": [],
+                "bandPatches": [{"id": "MOV-1", "gid": "2800001", "bandas": ["3500 MHz"]}],
+                "novedades": [],
+            }
+            status_doc = fa.build_scan_status_payload(
+                state="running",
+                scan_id="scan-git-1",
+                trigger="schedule",
+                record_novedades=True,
+                part="1/2",
+                phase="frecuencias",
+                started_at="2026-11-16T18:00:00Z",
+                total_antennas=62240,
+                scanned_antennas=31120,
+                delta_seq=2,
+                chunk_count=1,
+                live_new_antennas_count=1,
+                live_updated_antennas_count=1,
+                live_novedades_count=0,
+                requests_per_second=48.5,
+            )
+
+            chunk0_path.write_text(json.dumps(chunk0_doc), encoding="utf-8")
+            tail_path.write_text(json.dumps(tail_doc), encoding="utf-8")
+            status_path.write_text(json.dumps(status_doc), encoding="utf-8")
+
+            blob_cache: dict[str, str] = {}
+            ok1 = pss.push_status_to_branch(
+                status_path,
+                live_dir=live_dir,
+                branch="scan-status",
+                blob_sha_cache=blob_cache,
+                cwd=work_repo,
+            )
+            self.assertTrue(ok1)
+            self.assertIn("live-chunk-0.json", blob_cache)
+            cached_sha = blob_cache["live-chunk-0.json"]
+
+            # Segunda publicación reutiliza el SHA en caché de live-chunk-0.json
+            tail_doc["seq"] = 3
+            tail_path.write_text(json.dumps(tail_doc), encoding="utf-8")
+            ok2 = pss.push_status_to_branch(
+                status_path,
+                live_dir=live_dir,
+                branch="scan-status",
+                blob_sha_cache=blob_cache,
+                cwd=work_repo,
+            )
+            self.assertTrue(ok2)
+            self.assertEqual(blob_cache["live-chunk-0.json"], cached_sha)
+
+            ls_tree = subprocess.run(
+                ["git", "ls-tree", "--name-only", "refs/heads/scan-status"],
+                cwd=bare_origin,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                sorted(ls_tree.stdout.strip().splitlines()),
+                ["live-chunk-0.json", "live-tail.json", "scan-status.json"],
+            )
+
+            # Finalize marca completed y sella completedDatasetUpdatedAt desde antenas.json
+            rc_fin = pss.main(
+                [
+                    "--status-file",
+                    str(status_path),
+                    "--live-dir",
+                    str(live_dir),
+                    "--mode",
+                    "finalize",
+                    "--scan-id",
+                    "scan-git-1",
+                    "--part",
+                    "1/2",
+                    "--antenas-file",
+                    str(ant_path),
+                    "--job-status",
+                    "success",
+                    "--has-more",
+                    "false",
+                    "--cwd",
+                    str(work_repo),
+                ]
+            )
+            self.assertEqual(rc_fin, 0)
+
+            # Restore con scanId distinto no sobrescribe; con el scanId correcto restaura los 3 archivos
+            restore_dir = tmp / "restored-live"
+            restored_status = restore_dir / "scan-status.json"
+            pss.main(
+                [
+                    "--status-file",
+                    str(restored_status),
+                    "--live-dir",
+                    str(restore_dir),
+                    "--mode",
+                    "restore",
+                    "--scan-id",
+                    "other-scan-id",
+                    "--cwd",
+                    str(work_repo),
+                ]
+            )
+            self.assertFalse(restored_status.exists())
+
+            rc_res = pss.main(
+                [
+                    "--status-file",
+                    str(restored_status),
+                    "--live-dir",
+                    str(restore_dir),
+                    "--mode",
+                    "restore",
+                    "--scan-id",
+                    "scan-git-1",
+                    "--cwd",
+                    str(work_repo),
+                ]
+            )
+            self.assertEqual(rc_res, 0)
+            self.assertTrue(restored_status.exists())
+            self.assertTrue((restore_dir / "live-chunk-0.json").exists())
+            self.assertTrue((restore_dir / "live-tail.json").exists())
+            res_status_doc = json.loads(restored_status.read_text(encoding="utf-8"))
+            self.assertEqual(res_status_doc["state"], "completed")
+            self.assertEqual(
+                res_status_doc["completedDatasetUpdatedAt"],
+                "2026-11-16T18:12:34Z",
+            )
+            self.assertEqual(res_status_doc["deltaSeq"], 3)
 
 
 if __name__ == "__main__":

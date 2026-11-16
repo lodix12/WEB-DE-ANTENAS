@@ -14,6 +14,10 @@ import {
 } from '../types/antena';
 import type { FlyToTarget, MeasurePoint, RadarPoint } from '../types/map';
 import {
+  getComunidadAutonomaByProvince,
+  matchesAntennaBandsFilter,
+} from './useAntenasData';
+import {
   WorkspaceContext,
   type ThemeMode,
   type WorkspaceContextValue,
@@ -53,9 +57,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedComunidad, setSelectedComunidadState] = useState('');
   const [selectedProvince, setSelectedProvinceState] = useState('');
-  const [selectedMunicipality, setSelectedMunicipality] = useState('');
-  const [selectedBand, setSelectedBand] = useState('');
+  const [selectedBands, setSelectedBands] = useState<string[]>([]);
+  const [exclusiveBands, setExclusiveBands] = useState<boolean>(false);
   const [activeOperators, setActiveOperators] = useState<OperatorKey[]>(() => [
     ...OPERATOR_ORDER,
   ]);
@@ -108,9 +113,41 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     window.localStorage.setItem(MAP_STYLE_STORAGE_KEY, id);
   }, []);
 
+  const setSelectedComunidad = useCallback((ccaa: string) => {
+    setSelectedComunidadState(ccaa);
+    if (!ccaa) {
+      setSelectedProvinceState('');
+      return;
+    }
+    setSelectedProvinceState((prevProv) =>
+      prevProv && getComunidadAutonomaByProvince(prevProv) !== ccaa
+        ? ''
+        : prevProv,
+    );
+  }, []);
+
   const setSelectedProvince = useCallback((prov: string) => {
     setSelectedProvinceState(prov);
-    setSelectedMunicipality('');
+    if (prov) {
+      const provCcaa = getComunidadAutonomaByProvince(prov);
+      setSelectedComunidadState((prevCcaa) =>
+        prevCcaa && prevCcaa !== provCcaa ? provCcaa : prevCcaa,
+      );
+    }
+  }, []);
+
+  const toggleBand = useCallback((band: string) => {
+    const trimmed = band.trim();
+    if (!trimmed) return;
+    setSelectedBands((prev) =>
+      prev.includes(trimmed)
+        ? prev.filter((b) => b !== trimmed)
+        : [...prev, trimmed],
+    );
+  }, []);
+
+  const clearBands = useCallback(() => {
+    setSelectedBands([]);
   }, []);
 
   const toggleOperator = useCallback((op: OperatorKey) => {
@@ -129,17 +166,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const resetAllFilters = useCallback(() => {
     setSearchQuery('');
+    setSelectedComunidadState('');
     setSelectedProvinceState('');
-    setSelectedMunicipality('');
-    setSelectedBand('');
+    setSelectedBands([]);
+    setExclusiveBands(false);
     setActiveOperators([...OPERATOR_ORDER]);
   }, []);
 
   const hasActiveFilters =
     searchQuery.trim().length > 0 ||
+    selectedComunidad !== '' ||
     selectedProvince !== '' ||
-    selectedMunicipality !== '' ||
-    selectedBand !== '' ||
+    selectedBands.length > 0 ||
+    exclusiveBands ||
     activeOperators.length !== OPERATOR_ORDER.length;
 
   const triggerFlyTo = useCallback((lat: number, lon: number, zoom = 14) => {
@@ -253,13 +292,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setActiveOperators((prev) =>
         prev.includes(ant.op) ? prev : [...prev, ant.op],
       );
-      setSelectedBand((prev) =>
-        prev && !ant.bandas?.includes(prev) ? '' : prev,
+      setSelectedComunidadState((prev) =>
+        prev && getComunidadAutonomaByProvince(ant.prov) !== prev ? '' : prev,
       );
+      setSelectedProvinceState((prev) =>
+        prev && ant.prov !== prev ? '' : prev,
+      );
+      if (
+        selectedBands.length > 0 &&
+        !matchesAntennaBandsFilter(ant.bandas, selectedBands, exclusiveBands)
+      ) {
+        setSelectedBands([]);
+        setExclusiveBands(false);
+      }
       setSelectedAntenna(ant);
       triggerFlyTo(ant.lat, ant.lon, 16);
     },
-    [triggerFlyTo],
+    [exclusiveBands, selectedBands, triggerFlyTo],
   );
 
   const value = useMemo<WorkspaceContextValue>(
@@ -270,12 +319,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setStyleId,
       searchQuery,
       setSearchQuery,
+      selectedComunidad,
+      setSelectedComunidad,
       selectedProvince,
       setSelectedProvince,
-      selectedMunicipality,
-      setSelectedMunicipality,
-      selectedBand,
-      setSelectedBand,
+      selectedBands,
+      toggleBand,
+      clearBands,
+      exclusiveBands,
+      setExclusiveBands,
       activeOperators,
       toggleOperator,
       selectAllOperators,
@@ -311,10 +363,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       styleId,
       setStyleId,
       searchQuery,
+      selectedComunidad,
+      setSelectedComunidad,
       selectedProvince,
       setSelectedProvince,
-      selectedMunicipality,
-      selectedBand,
+      selectedBands,
+      toggleBand,
+      clearBands,
+      exclusiveBands,
       activeOperators,
       toggleOperator,
       selectAllOperators,

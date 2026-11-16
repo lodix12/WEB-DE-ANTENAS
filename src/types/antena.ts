@@ -178,6 +178,45 @@ export interface ScanStatusPayload {
   totalAntennas: number;
   /** Porcentaje global de avance (0.00 - 100.00) */
   percent: number;
+  /** Secuencia monotónica de publicación de deltas en vivo */
+  deltaSeq?: number;
+  /** Número de bloques inmutables sellados en scan-status (live-chunk-0..N-1.json) */
+  chunkCount?: number;
+  /** Total acumulado de antenas nuevas emitidas en el flujo en vivo */
+  liveNewAntennasCount?: number;
+  /** Total acumulado de estaciones enriquecidas con bandas en el flujo en vivo */
+  liveUpdatedAntennasCount?: number;
+  /** Total acumulado de filas de novedades emitidas en el flujo en vivo */
+  liveNovedadesCount?: number;
+  /** Cadencia real medida de peticiones HTTP por segundo en el escáner */
+  requestsPerSecond?: number;
+  /** Marca temporal ISO 8601 UTC del dataset estático generado al completar el escaneo */
+  completedDatasetUpdatedAt?: string;
+}
+
+export interface LiveBandPatch {
+  id: string;
+  gid: string;
+  mergedGids?: string[];
+  bandas: string[];
+  frecuencias: string[];
+  concesiones: ConcesionBanda[];
+  bandsScannedAt: string;
+}
+
+export interface LiveScanDeltaChunk {
+  schemaVersion: number;
+  scanId: string;
+  seq: number;
+  chunkIndex: number;
+  isTail: boolean;
+  updatedAt: string;
+  recordNovedades: boolean;
+  previousScanAt: string | null;
+  replacesNewAntennas?: boolean;
+  newAntennas: AntennaRecord[];
+  bandPatches: LiveBandPatch[];
+  novedades: NovedadRecord[];
 }
 
 export interface OperatorMeta {

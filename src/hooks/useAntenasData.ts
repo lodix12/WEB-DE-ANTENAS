@@ -15,6 +15,10 @@ import {
   parseCoordinateInput,
 } from '../utils/export';
 import { haversineDistanceKm } from '../utils/geo';
+import {
+  useLiveScanDelta,
+  type LiveScanMergedDelta,
+} from './useScanProgress';
 
 export interface MunicipalityOption {
   mun: string;
@@ -26,8 +30,20 @@ export interface BandOption {
   count: number;
 }
 
+export interface ComunidadSummary {
+  comunidad: string;
+  count: number;
+  provinces: ProvinceSummary[];
+}
+
 export interface DerivedAntenasStructures {
   dataset: AntenasDataset;
+  /** Comunidades autónomas ordenadas alfabéticamente con sus provincias y conteo */
+  comunidadesByAlpha: ComunidadSummary[];
+  /** Provincias ordenadas alfabéticamente agrupadas por comunidad autónoma */
+  provincesByComunidad: Map<string, ProvinceSummary[]>;
+  /** Centroide medio aproximado por comunidad autónoma para navegación rápida */
+  comunidadCentroids: Map<string, { lat: number; lon: number }>;
   /** Provincias ordenadas alfabéticamente para selectores */
   provincesByAlpha: ProvinceSummary[];
   /** Provincias ordenadas por volumen de estaciones para analítica */
@@ -52,6 +68,167 @@ export interface DerivedAntenasStructures {
 }
 
 const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
+
+const COMUNIDAD_PROVINCE_VARIANTS: ReadonlyArray<
+  readonly [comunidad: string, provinces: readonly string[]]
+> = [
+  [
+    'Andalucía',
+    [
+      'ALMERÍA',
+      'ALMERIA',
+      'CÁDIZ',
+      'CADIZ',
+      'CÓRDOBA',
+      'CORDOBA',
+      'GRANADA',
+      'HUELVA',
+      'JAÉN',
+      'JAEN',
+      'MÁLAGA',
+      'MALAGA',
+      'SEVILLA',
+    ],
+  ],
+  ['Aragón', ['HUESCA', 'TERUEL', 'ZARAGOZA']],
+  ['Principado de Asturias', ['ASTURIAS', 'PRINCIPADO DE ASTURIAS', 'OVIEDO']],
+  [
+    'Illes Balears',
+    ['ILLES BALEARS', 'ISLAS BALEARES', 'BALEARES', 'BALEARS'],
+  ],
+  ['Canarias', ['LAS PALMAS', 'SANTA CRUZ DE TENERIFE', 'TENERIFE']],
+  ['Cantabria', ['CANTABRIA', 'SANTANDER']],
+  [
+    'Castilla-La Mancha',
+    ['ALBACETE', 'CIUDAD REAL', 'CUENCA', 'GUADALAJARA', 'TOLEDO'],
+  ],
+  [
+    'Castilla y León',
+    [
+      'ÁVILA',
+      'AVILA',
+      'BURGOS',
+      'LEÓN',
+      'LEON',
+      'PALENCIA',
+      'SALAMANCA',
+      'SEGOVIA',
+      'SORIA',
+      'VALLADOLID',
+      'ZAMORA',
+    ],
+  ],
+  [
+    'Cataluña',
+    [
+      'BARCELONA',
+      'GIRONA',
+      'GERONA',
+      'LLEIDA',
+      'LÉRIDA',
+      'LERIDA',
+      'TARRAGONA',
+    ],
+  ],
+  [
+    'Comunidad Valenciana',
+    [
+      'ALICANTE',
+      'ALACANT',
+      'ALICANTE/ALACANT',
+      'ALACANT/ALICANTE',
+      'CASTELLÓN',
+      'CASTELLON',
+      'CASTELLÓ',
+      'CASTELLO',
+      'CASTELLÓN/CASTELLÓ',
+      'CASTELLÓ/CASTELLÓN',
+      'CASTELLÓN DE LA PLANA',
+      'CASTELLO DE LA PLANA',
+      'VALENCIA',
+      'VALÈNCIA',
+      'VALENCIA/VALÈNCIA',
+      'VALÈNCIA/VALENCIA',
+    ],
+  ],
+  ['Extremadura', ['BADAJOZ', 'CÁCERES', 'CACERES']],
+  [
+    'Galicia',
+    [
+      'A CORUÑA',
+      'A CORUNA',
+      'LA CORUÑA',
+      'LA CORUNA',
+      'CORUÑA',
+      'CORUNA',
+      'LUGO',
+      'OURENSE',
+      'ORENSE',
+      'PONTEVEDRA',
+    ],
+  ],
+  ['Comunidad de Madrid', ['MADRID', 'COMUNIDAD DE MADRID']],
+  ['Región de Murcia', ['MURCIA', 'REGIÓN DE MURCIA', 'REGION DE MURCIA']],
+  [
+    'Comunidad Foral de Navarra',
+    ['NAVARRA', 'NAFARROA', 'COMUNIDAD FORAL DE NAVARRA'],
+  ],
+  [
+    'País Vasco',
+    [
+      'ÁLAVA',
+      'ALAVA',
+      'ARABA',
+      'ARABA/ÁLAVA',
+      'ÁLAVA/ARABA',
+      'ARABA/ALAVA',
+      'ALAVA/ARABA',
+      'BIZKAIA',
+      'VIZCAYA',
+      'BIZKAIA/VIZCAYA',
+      'VIZCAYA/BIZKAIA',
+      'GIPUZKOA',
+      'GUIPÚZCOA',
+      'GUIPUZCOA',
+      'GIPUZKOA/GUIPÚZCOA',
+      'GUIPÚZCOA/GIPUZKOA',
+    ],
+  ],
+  ['La Rioja', ['LA RIOJA', 'RIOJA', 'LOGROÑO', 'LOGRONO']],
+  ['Ceuta', ['CEUTA', 'CIUDAD AUTÓNOMA DE CEUTA', 'CIUDAD AUTONOMA DE CEUTA']],
+  [
+    'Melilla',
+    ['MELILLA', 'CIUDAD AUTÓNOMA DE MELILLA', 'CIUDAD AUTONOMA DE MELILLA'],
+  ],
+];
+
+const PROVINCE_TO_COMUNIDAD_RAW = new Map<string, string>();
+const PROVINCE_TO_COMUNIDAD_NORM = new Map<string, string>();
+
+for (let i = 0; i < COMUNIDAD_PROVINCE_VARIANTS.length; i++) {
+  const [comunidad, variants] = COMUNIDAD_PROVINCE_VARIANTS[i];
+  for (let j = 0; j < variants.length; j++) {
+    const rawVariant = variants[j];
+    PROVINCE_TO_COMUNIDAD_RAW.set(rawVariant, comunidad);
+    const normalized = normalizeSearchText(rawVariant).trim();
+    if (normalized) {
+      PROVINCE_TO_COMUNIDAD_NORM.set(normalized, comunidad);
+    }
+  }
+}
+
+/**
+ * Resuelve de forma determinista el nombre oficial de la Comunidad o Ciudad Autónoma
+ * española a partir del nombre de provincia (con o sin tildes, mayúsculas o variantes cooficiales).
+ */
+export function getComunidadAutonomaByProvince(prov: string): string {
+  if (!prov) return '';
+  const direct = PROVINCE_TO_COMUNIDAD_RAW.get(prov);
+  if (direct !== undefined) return direct;
+  const key = normalizeSearchText(prov).trim();
+  if (!key) return '';
+  return PROVINCE_TO_COMUNIDAD_NORM.get(key) ?? '';
+}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -222,6 +399,7 @@ export async function importAntenasJsonDataset(): Promise<AntenasDataset> {
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const response = await fetch(`${normalizedBase}data/antenas.json`, {
     headers: { Accept: 'application/json' },
+    cache: 'no-cache',
   });
   if (!response.ok) {
     throw new Error(
@@ -756,6 +934,29 @@ export function buildDerivedAntenasStructures(
     a.provincia.localeCompare(b.provincia, 'es'),
   );
 
+  const provincesByComunidad = new Map<string, ProvinceSummary[]>();
+  for (let i = 0; i < provincesByAlpha.length; i++) {
+    const provSummary = provincesByAlpha[i];
+    const ccaa = getComunidadAutonomaByProvince(provSummary.provincia);
+    if (!ccaa) continue;
+    let group = provincesByComunidad.get(ccaa);
+    if (!group) {
+      group = [];
+      provincesByComunidad.set(ccaa, group);
+    }
+    group.push(provSummary);
+  }
+
+  const comunidadesByAlpha: ComunidadSummary[] = Array.from(
+    provincesByComunidad.entries(),
+  )
+    .map(([comunidad, provinces]) => ({
+      comunidad,
+      count: provinces.reduce((sum, p) => sum + p.count, 0),
+      provinces,
+    }))
+    .sort((a, b) => a.comunidad.localeCompare(b.comunidad, 'es'));
+
   const municipalitiesByProvince = new Map<string, MunicipalityOption[]>();
   for (const [prov, muns] of munMapByProv.entries()) {
     const sortedMuns: MunicipalityOption[] = Array.from(muns.entries())
@@ -765,9 +966,34 @@ export function buildDerivedAntenasStructures(
   }
 
   const provinceCentroids = new Map<string, { lat: number; lon: number }>();
+  const comunidadAccum = new Map<
+    string,
+    { sumLat: number; sumLon: number; count: number }
+  >();
   for (const [prov, acc] of provAccum.entries()) {
     if (acc.count > 0) {
       provinceCentroids.set(prov, {
+        lat: acc.sumLat / acc.count,
+        lon: acc.sumLon / acc.count,
+      });
+      const ccaa = getComunidadAutonomaByProvince(prov);
+      if (ccaa) {
+        let ccaaAcc = comunidadAccum.get(ccaa);
+        if (!ccaaAcc) {
+          ccaaAcc = { sumLat: 0, sumLon: 0, count: 0 };
+          comunidadAccum.set(ccaa, ccaaAcc);
+        }
+        ccaaAcc.sumLat += acc.sumLat;
+        ccaaAcc.sumLon += acc.sumLon;
+        ccaaAcc.count += acc.count;
+      }
+    }
+  }
+
+  const comunidadCentroids = new Map<string, { lat: number; lon: number }>();
+  for (const [ccaa, acc] of comunidadAccum.entries()) {
+    if (acc.count > 0) {
+      comunidadCentroids.set(ccaa, {
         lat: acc.sumLat / acc.count,
         lon: acc.sumLon / acc.count,
       });
@@ -783,6 +1009,9 @@ export function buildDerivedAntenasStructures(
 
   return {
     dataset,
+    comunidadesByAlpha,
+    provincesByComunidad,
+    comunidadCentroids,
     provincesByAlpha,
     provincesByCount,
     municipalitiesByProvince,
@@ -797,6 +1026,337 @@ export function buildDerivedAntenasStructures(
   };
 }
 
+function isPatchNewerOrEqual(
+  patchScannedAt: string | undefined,
+  existingScannedAt: string | undefined,
+): boolean {
+  if (!existingScannedAt || !patchScannedAt) {
+    return true;
+  }
+  const patchMs = Date.parse(patchScannedAt);
+  const existingMs = Date.parse(existingScannedAt);
+  if (Number.isFinite(patchMs) && Number.isFinite(existingMs)) {
+    return patchMs >= existingMs;
+  }
+  return patchScannedAt >= existingScannedAt;
+}
+
+function pickLatestDatasetIso(baseIso: string, deltaIso: string): string {
+  if (!deltaIso) return baseIso;
+  if (!baseIso) return deltaIso;
+  const baseMs = Date.parse(baseIso);
+  const deltaMs = Date.parse(deltaIso);
+  if (Number.isFinite(baseMs) && Number.isFinite(deltaMs)) {
+    return deltaMs >= baseMs ? deltaIso : baseIso;
+  }
+  return deltaIso >= baseIso ? deltaIso : baseIso;
+}
+
+function rebuildDatasetSummariesWithAntenas(
+  baseDataset: AntenasDataset,
+  antenas: AntennaRecord[],
+  updatedAt: string,
+): AntenasDataset {
+  const opCounts: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    masmovil: 0,
+    digi: 0,
+    otros: 0,
+  };
+  const opEntities: Record<OperatorKey, Set<string>> = {
+    movistar: new Set<string>(),
+    orange: new Set<string>(),
+    vodafone: new Set<string>(),
+    masmovil: new Set<string>(),
+    digi: new Set<string>(),
+    otros: new Set<string>(),
+  };
+  const provMap = new Map<
+    string,
+    { count: number; byOperator: Partial<Record<OperatorKey, number>> }
+  >();
+  let bandsPopulatedCount = 0;
+
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+    opCounts[ant.op] = (opCounts[ant.op] ?? 0) + 1;
+    if (ant.opRaw) {
+      opEntities[ant.op].add(ant.opRaw);
+    }
+    if (Array.isArray(ant.bandas)) {
+      bandsPopulatedCount += 1;
+    }
+    if (ant.prov) {
+      let provEntry = provMap.get(ant.prov);
+      if (!provEntry) {
+        provEntry = { count: 0, byOperator: {} };
+        provMap.set(ant.prov, provEntry);
+      }
+      provEntry.count += 1;
+      provEntry.byOperator[ant.op] = (provEntry.byOperator[ant.op] ?? 0) + 1;
+    }
+  }
+
+  const updatedOperators = {} as Record<OperatorKey, OperatorSummary>;
+  for (const opKey of OPERATOR_ORDER) {
+    const prev = baseDataset.operators?.[opKey];
+    const entities = Array.from(opEntities[opKey]).sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+    updatedOperators[opKey] = {
+      key: opKey,
+      name: prev?.name ?? OPERATOR_META[opKey].name,
+      count: opCounts[opKey],
+      legalEntities:
+        entities.length > 0
+          ? entities
+          : opCounts[opKey] > 0 && prev?.legalEntities
+            ? prev.legalEntities
+            : [],
+    };
+  }
+
+  const updatedProvinces: ProvinceSummary[] = Array.from(provMap.entries())
+    .map(([provincia, stats]) => {
+      const orderedByOp: Partial<Record<OperatorKey, number>> = {};
+      for (const opKey of OPERATOR_ORDER) {
+        const count = stats.byOperator[opKey] ?? 0;
+        if (count > 0) {
+          orderedByOp[opKey] = count;
+        }
+      }
+      return {
+        provincia,
+        count: stats.count,
+        byOperator: orderedByOp,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.provincia.localeCompare(b.provincia, 'es'),
+    );
+
+  return {
+    ...baseDataset,
+    updatedAt,
+    total: antenas.length,
+    crawlStats: {
+      ...baseDataset.crawlStats,
+      bandsPopulatedCount,
+    },
+    operators: updatedOperators,
+    provinces: updatedProvinces,
+    antenas,
+  };
+}
+
+/**
+ * Fusiona en tiempo real los deltas publicados durante un escaneo activo (`newAntennas` + `bandPatches`)
+ * sobre el censo base sin duplicar estaciones existentes y manteniendo intacta la separación de operadores.
+ */
+export function mergeLiveDeltaIntoAntenasDataset(
+  baseDataset: AntenasDataset,
+  delta: LiveScanMergedDelta | null | undefined,
+): AntenasDataset {
+  if (!delta) {
+    return baseDataset;
+  }
+
+  if (delta.completedDatasetUpdatedAt) {
+    const baseMs = Date.parse(baseDataset.updatedAt);
+    const doneMs = Date.parse(delta.completedDatasetUpdatedAt);
+    if (Number.isFinite(baseMs) && Number.isFinite(doneMs) && baseMs >= doneMs) {
+      return baseDataset;
+    }
+  }
+
+  if (
+    delta.newAntennas.length === 0 &&
+    delta.bandPatchesById.size === 0 &&
+    delta.bandPatchesByGid.size === 0
+  ) {
+    return baseDataset;
+  }
+
+  const baseAntenas = baseDataset.antenas;
+  const mergedAntenas: AntennaRecord[] = new Array(baseAntenas.length);
+  const existingIndexById = new Map<string, number>();
+  const existingIndexByOpGid = new Map<string, number>();
+  let anyChanged = false;
+
+  for (let i = 0; i < baseAntenas.length; i++) {
+    const ant = baseAntenas[i];
+    existingIndexById.set(ant.id, i);
+    if (ant.gid) {
+      existingIndexByOpGid.set(`${ant.op}::${ant.gid}`, i);
+    }
+    if (ant.mergedGids) {
+      for (let g = 0; g < ant.mergedGids.length; g++) {
+        const mgid = ant.mergedGids[g];
+        if (mgid) {
+          existingIndexByOpGid.set(`${ant.op}::${mgid}`, i);
+        }
+      }
+    }
+
+    let patch = delta.bandPatchesById.get(ant.id);
+    if (!patch && ant.op === 'vodafone' && ant.mergedGids) {
+      for (let g = 0; g < ant.mergedGids.length; g++) {
+        const candidatePatch = delta.bandPatchesByGid.get(ant.mergedGids[g]);
+        if (candidatePatch) {
+          patch = candidatePatch;
+          break;
+        }
+      }
+    }
+
+    if (patch && isPatchNewerOrEqual(patch.bandsScannedAt, ant.bandsScannedAt)) {
+      const nextMergedGids = patch.mergedGids ?? ant.mergedGids;
+      mergedAntenas[i] = {
+        ...ant,
+        ...(nextMergedGids !== undefined ? { mergedGids: nextMergedGids } : {}),
+        bandas: patch.bandas,
+        frecuencias: patch.frecuencias,
+        concesiones: patch.concesiones,
+        bandsScannedAt: patch.bandsScannedAt,
+      };
+      anyChanged = true;
+    } else {
+      mergedAntenas[i] = ant;
+    }
+  }
+
+  let addedCount = 0;
+  let addedVodafone = false;
+
+  for (let i = 0; i < delta.newAntennas.length; i++) {
+    const rawNew = delta.newAntennas[i];
+    const newPatch = delta.bandPatchesById.get(rawNew.id);
+    const nextNewMergedGids = newPatch?.mergedGids ?? rawNew.mergedGids;
+    const candidate: AntennaRecord =
+      newPatch &&
+      isPatchNewerOrEqual(newPatch.bandsScannedAt, rawNew.bandsScannedAt)
+        ? {
+            ...rawNew,
+            ...(nextNewMergedGids !== undefined
+              ? { mergedGids: nextNewMergedGids }
+              : {}),
+            bandas: newPatch.bandas,
+            frecuencias: newPatch.frecuencias,
+            concesiones: newPatch.concesiones,
+            bandsScannedAt: newPatch.bandsScannedAt,
+          }
+        : { ...rawNew };
+
+    let existingIdx = existingIndexById.get(candidate.id);
+    if (existingIdx === undefined && candidate.gid) {
+      existingIdx = existingIndexByOpGid.get(
+        `${candidate.op}::${candidate.gid}`,
+      );
+    }
+    if (existingIdx === undefined && candidate.mergedGids) {
+      for (let g = 0; g < candidate.mergedGids.length; g++) {
+        const mgid = candidate.mergedGids[g];
+        if (mgid) {
+          const foundIdx = existingIndexByOpGid.get(
+            `${candidate.op}::${mgid}`,
+          );
+          if (foundIdx !== undefined) {
+            existingIdx = foundIdx;
+            break;
+          }
+        }
+      }
+    }
+
+    if (existingIdx !== undefined) {
+      const current = mergedAntenas[existingIdx];
+      if (
+        candidate.bandas !== undefined &&
+        isPatchNewerOrEqual(candidate.bandsScannedAt, current.bandsScannedAt)
+      ) {
+        const mergedGids = candidate.mergedGids ?? current.mergedGids;
+        mergedAntenas[existingIdx] = {
+          ...current,
+          ...(mergedGids !== undefined ? { mergedGids } : {}),
+          bandas: candidate.bandas,
+          ...(candidate.frecuencias !== undefined
+            ? { frecuencias: candidate.frecuencias }
+            : {}),
+          ...(candidate.concesiones !== undefined
+            ? { concesiones: candidate.concesiones }
+            : {}),
+          ...(candidate.bandsScannedAt !== undefined
+            ? { bandsScannedAt: candidate.bandsScannedAt }
+            : {}),
+        };
+        anyChanged = true;
+      }
+      continue;
+    }
+
+    const insertedIdx = mergedAntenas.length;
+    mergedAntenas.push(candidate);
+    existingIndexById.set(candidate.id, insertedIdx);
+    if (candidate.gid) {
+      existingIndexByOpGid.set(
+        `${candidate.op}::${candidate.gid}`,
+        insertedIdx,
+      );
+    }
+    if (candidate.mergedGids) {
+      for (let g = 0; g < candidate.mergedGids.length; g++) {
+        const mgid = candidate.mergedGids[g];
+        if (mgid) {
+          existingIndexByOpGid.set(`${candidate.op}::${mgid}`, insertedIdx);
+        }
+      }
+    }
+    addedCount += 1;
+    if (candidate.op === 'vodafone') {
+      addedVodafone = true;
+    }
+    anyChanged = true;
+  }
+
+  if (!anyChanged) {
+    return baseDataset;
+  }
+
+  const nextUpdatedAt = pickLatestDatasetIso(
+    baseDataset.updatedAt,
+    delta.updatedAt,
+  );
+
+  if (addedCount === 0) {
+    let bandsPopulatedCount = 0;
+    for (let i = 0; i < mergedAntenas.length; i++) {
+      if (Array.isArray(mergedAntenas[i].bandas)) {
+        bandsPopulatedCount += 1;
+      }
+    }
+    return {
+      ...baseDataset,
+      updatedAt: nextUpdatedAt,
+      total: mergedAntenas.length,
+      crawlStats: {
+        ...baseDataset.crawlStats,
+        bandsPopulatedCount,
+      },
+      antenas: mergedAntenas,
+    };
+  }
+
+  const rebuilt = rebuildDatasetSummariesWithAntenas(
+    baseDataset,
+    mergedAntenas,
+    nextUpdatedAt,
+  );
+  return addedVodafone ? fuseVodafoneAntennasInDataset(rebuilt, 35) : rebuilt;
+}
+
 export function useAntenasData() {
   const query = useQuery({
     queryKey: ['antenas-dataset'],
@@ -806,24 +1366,108 @@ export function useAntenasData() {
     retry: 2,
   });
 
+  const liveDelta = useLiveScanDelta();
+
+  const mergedData = useMemo(
+    () =>
+      query.data
+        ? mergeLiveDeltaIntoAntenasDataset(query.data, liveDelta)
+        : undefined,
+    [query.data, liveDelta],
+  );
+
   const derived = useMemo(
-    () => (query.data ? buildDerivedAntenasStructures(query.data) : null),
-    [query.data],
+    () => (mergedData ? buildDerivedAntenasStructures(mergedData) : null),
+    [mergedData],
   );
 
   return {
     ...query,
+    data: mergedData,
     derived,
   };
+}
+
+function matchesNormalizedBandsSet(
+  antBands: readonly string[] | undefined,
+  selectedSet: ReadonlySet<string>,
+  exclusiveBands: boolean,
+): boolean {
+  if (selectedSet.size === 0) {
+    return true;
+  }
+  if (!antBands || antBands.length === 0) {
+    return false;
+  }
+  if (!exclusiveBands) {
+    for (let i = 0; i < antBands.length; i++) {
+      const b = antBands[i].trim();
+      if (b && selectedSet.has(b)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (antBands.length < selectedSet.size) {
+    return false;
+  }
+
+  if (selectedSet.size === 1) {
+    let matchedSingle = false;
+    for (let i = 0; i < antBands.length; i++) {
+      const b = antBands[i].trim();
+      if (!b) continue;
+      if (!selectedSet.has(b)) {
+        return false;
+      }
+      matchedSingle = true;
+    }
+    return matchedSingle;
+  }
+
+  const seen = new Set<string>();
+  for (let i = 0; i < antBands.length; i++) {
+    const b = antBands[i].trim();
+    if (!b) continue;
+    if (!selectedSet.has(b)) {
+      return false;
+    }
+    seen.add(b);
+  }
+  return seen.size === selectedSet.size;
+}
+
+/**
+ * Evalúa si las bandas de una antena cumplen el filtro multifrecuencia:
+ * - Modo por defecto (`exclusiveBands = false`): unión (OR), basta con tener al menos 1 de las bandas seleccionadas.
+ * - Modo `"Exclusivamente"` (`exclusiveBands = true`): coincidencia exacta de conjunto ("ni más ni menos").
+ */
+export function matchesAntennaBandsFilter(
+  antBands: readonly string[] | undefined,
+  selectedBands: readonly string[],
+  exclusiveBands: boolean,
+): boolean {
+  const selectedSet = new Set<string>();
+  for (let i = 0; i < selectedBands.length; i++) {
+    const trimmed = selectedBands[i].trim();
+    if (trimmed) {
+      selectedSet.add(trimmed);
+    }
+  }
+  return matchesNormalizedBandsSet(antBands, selectedSet, exclusiveBands);
 }
 
 export interface AntenasFilterInput {
   derived: DerivedAntenasStructures | null;
   searchQuery: string;
+  selectedComunidad?: string;
   selectedProvince: string;
-  selectedMunicipality: string;
+  selectedMunicipality?: string;
   activeOperators: OperatorKey[];
   selectedBand?: string;
+  selectedBands?: string[];
+  exclusiveBands?: boolean;
 }
 
 interface SearchMatcher {
@@ -852,10 +1496,13 @@ function buildSearchMatchers(normalizedQuery: string): SearchMatcher[] {
 export function filterAntenas({
   derived,
   searchQuery,
+  selectedComunidad = '',
   selectedProvince,
-  selectedMunicipality,
+  selectedMunicipality = '',
   activeOperators,
   selectedBand = '',
+  selectedBands,
+  exclusiveBands = false,
 }: AntenasFilterInput): AntennaRecord[] {
   if (!derived) return [];
   const { antenas } = derived.dataset;
@@ -865,7 +1512,21 @@ export function filterAntenas({
 
   const allOpsSelected = activeOperators.length === OPERATOR_ORDER.length;
   const opSet = allOpsSelected ? null : new Set<OperatorKey>(activeOperators);
-  const targetBand = selectedBand.trim();
+  const targetComunidad = selectedComunidad.trim();
+
+  const rawBands =
+    selectedBands !== undefined
+      ? selectedBands
+      : selectedBand && selectedBand.trim()
+        ? [selectedBand.trim()]
+        : [];
+  const selectedBandsSet = new Set<string>();
+  for (let i = 0; i < rawBands.length; i++) {
+    const trimmed = rawBands[i].trim();
+    if (trimmed) {
+      selectedBandsSet.add(trimmed);
+    }
+  }
 
   // Si el usuario escribe coordenadas válidas ("40.4168, -3.7038"), no filtramos el texto literal
   // para que pueda ver las antenas alrededor de ese punto en el mapa.
@@ -875,9 +1536,10 @@ export function filterAntenas({
 
   if (
     allOpsSelected &&
+    !targetComunidad &&
     !selectedProvince &&
     !selectedMunicipality &&
-    !targetBand &&
+    selectedBandsSet.size === 0 &&
     matchers.length === 0
   ) {
     return antenas;
@@ -888,8 +1550,19 @@ export function filterAntenas({
     const ant = antenas[i];
     if (opSet && !opSet.has(ant.op)) continue;
     if (selectedProvince && ant.prov !== selectedProvince) continue;
+    if (
+      targetComunidad &&
+      getComunidadAutonomaByProvince(ant.prov) !== targetComunidad
+    ) {
+      continue;
+    }
     if (selectedMunicipality && ant.mun !== selectedMunicipality) continue;
-    if (targetBand && !ant.bandas?.includes(targetBand)) continue;
+    if (
+      selectedBandsSet.size > 0 &&
+      !matchesNormalizedBandsSet(ant.bandas, selectedBandsSet, exclusiveBands)
+    ) {
+      continue;
+    }
 
     if (matchers.length > 0) {
       const hay = searchIndex[i];
@@ -920,28 +1593,37 @@ export function filterAntenas({
 export function useFilteredAntenas({
   derived,
   searchQuery,
+  selectedComunidad = '',
   selectedProvince,
-  selectedMunicipality,
+  selectedMunicipality = '',
   activeOperators,
   selectedBand = '',
+  selectedBands,
+  exclusiveBands = false,
 }: AntenasFilterInput): AntennaRecord[] {
   return useMemo(
     () =>
       filterAntenas({
         derived,
         searchQuery,
+        selectedComunidad,
         selectedProvince,
         selectedMunicipality,
         activeOperators,
         selectedBand,
+        selectedBands,
+        exclusiveBands,
       }),
     [
       derived,
       searchQuery,
+      selectedComunidad,
       selectedProvince,
       selectedMunicipality,
       activeOperators,
       selectedBand,
+      selectedBands,
+      exclusiveBands,
     ],
   );
 }

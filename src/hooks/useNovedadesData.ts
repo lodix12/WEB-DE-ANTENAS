@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   OPERATOR_META,
@@ -8,6 +9,10 @@ import {
   type OperatorKey,
 } from '../types/antena';
 import { normalizeSearchText } from '../utils/export';
+import {
+  useLiveScanDelta,
+  type LiveScanMergedDelta,
+} from './useScanProgress';
 
 const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
 const VALID_NOVEDAD_TIPOS = new Set<string>(['antena', 'frecuencia']);
@@ -181,6 +186,7 @@ export async function importNovedadesJsonDataset(): Promise<NovedadesDataset> {
   const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const response = await fetch(`${normalizedBase}data/novedades.json`, {
     headers: { Accept: 'application/json' },
+    cache: 'no-cache',
   });
   if (!response.ok) {
     throw new Error(
@@ -474,12 +480,132 @@ export function filterNovedades({
   return result;
 }
 
+function pickLatestNovedadesIso(baseIso: string, deltaIso: string): string {
+  if (!deltaIso) return baseIso;
+  if (!baseIso) return deltaIso;
+  const baseMs = Date.parse(baseIso);
+  const deltaMs = Date.parse(deltaIso);
+  if (Number.isFinite(baseMs) && Number.isFinite(deltaMs)) {
+    return deltaMs >= baseMs ? deltaIso : baseIso;
+  }
+  return deltaIso >= baseIso ? deltaIso : baseIso;
+}
+
+function deduplicateAndSortNovedades(
+  rows: readonly NovedadRecord[],
+): NovedadRecord[] {
+  const seenIds = new Set<string>();
+  const unique: NovedadRecord[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      unique.push(row);
+    }
+  }
+  unique.sort((a, b) => {
+    const msA = Date.parse(a.scannedAt);
+    const msB = Date.parse(b.scannedAt);
+    const safeA = Number.isFinite(msA) ? msA : 0;
+    const safeB = Number.isFinite(msB) ? msB : 0;
+    return safeB - safeA;
+  });
+  return unique;
+}
+
+/**
+ * Fusiona en tiempo real las novedades detectadas durante un escaneo activo (`recordNovedades === true`)
+ * sobre el dataset estático de `data/novedades.json`.
+ */
+export function mergeLiveDeltaIntoNovedadesDataset(
+  baseDataset: NovedadesDataset,
+  delta: LiveScanMergedDelta | null | undefined,
+): NovedadesDataset {
+  if (!delta || !delta.recordNovedades) {
+    return baseDataset;
+  }
+
+  if (delta.completedDatasetUpdatedAt) {
+    const baseMs = Date.parse(baseDataset.updatedAt);
+    const doneMs = Date.parse(delta.completedDatasetUpdatedAt);
+    if (Number.isFinite(baseMs) && Number.isFinite(doneMs) && baseMs >= doneMs) {
+      return baseDataset;
+    }
+  }
+
+  let mergedNovedades: NovedadRecord[];
+  let scanId: string;
+  let previousScanAt: string | null;
+  let updatedAt: string;
+
+  if (baseDataset.scanId !== delta.scanId) {
+    if (delta.deltaSeq <= 0) {
+      return baseDataset;
+    }
+    mergedNovedades = deduplicateAndSortNovedades(delta.novedades);
+    scanId = delta.scanId;
+    previousScanAt = delta.previousScanAt ?? (baseDataset.updatedAt || null);
+    updatedAt = delta.updatedAt || baseDataset.updatedAt;
+  } else {
+    if (delta.novedades.length === 0) {
+      return baseDataset;
+    }
+    mergedNovedades = deduplicateAndSortNovedades([
+      ...delta.novedades,
+      ...baseDataset.novedades,
+    ]);
+    scanId = baseDataset.scanId;
+    previousScanAt = baseDataset.previousScanAt;
+    updatedAt = pickLatestNovedadesIso(
+      baseDataset.updatedAt,
+      delta.updatedAt,
+    );
+  }
+
+  let antenasNuevas = 0;
+  let frecuenciasNuevas = 0;
+  for (let i = 0; i < mergedNovedades.length; i++) {
+    if (mergedNovedades[i].tipo === 'antena') {
+      antenasNuevas += 1;
+    } else {
+      frecuenciasNuevas += 1;
+    }
+  }
+
+  return {
+    ...baseDataset,
+    updatedAt,
+    scanId,
+    previousScanAt,
+    isBaselineScan: false,
+    total: mergedNovedades.length,
+    antenasNuevas,
+    frecuenciasNuevas,
+    novedades: mergedNovedades,
+  };
+}
+
 export function useNovedadesData() {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['novedades-dataset'],
     queryFn: importNovedadesJsonDataset,
     staleTime: Infinity,
     gcTime: Infinity,
     retry: 2,
   });
+
+  const liveDelta = useLiveScanDelta();
+
+  const mergedData = useMemo(
+    () =>
+      query.data
+        ? mergeLiveDeltaIntoNovedadesDataset(query.data, liveDelta)
+        : undefined,
+    [query.data, liveDelta],
+  );
+
+  return {
+    ...query,
+    data: mergedData,
+  };
 }
