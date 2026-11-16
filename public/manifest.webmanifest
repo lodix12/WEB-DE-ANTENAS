@@ -1,0 +1,93 @@
+{
+  "id": "./",
+  "name": "RadioMapa España · Antenas Móviles",
+  "short_name": "RadioMapa",
+  "description": "Mapa interactivo, bandas de frecuencia y censo oficial de antenas de redes móviles en España actualizado a diario.",
+  "lang": "es",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "categories": ["navigation", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "./icons/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/pwa-maskable-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icons/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Mapa Interactivo",
+      "short_name": "Mapa",
+      "description": "Explorar el mapa interactivo de antenas móviles en España",
+      "url": "./#/",
+      "icons": [
+        {
+          "src": "./icons/pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    },
+    {
+      "name": "Novedades",
+      "short_name": "Novedades",
+      "description": "Consultar altas, bajas y cambios recientes del censo diario",
+      "url": "./#/novedades",
+      "icons": [
+        {
+          "src": "./icons/pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    },
+    {
+      "name": "Datos y Estadísticas",
+      "short_name": "Estadísticas",
+      "description": "Ver estadísticas por operador, banda de frecuencia y provincia",
+      "url": "./#/estadisticas",
+      "icons": [
+        {
+          "src": "./icons/pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    }
+  ]
+}

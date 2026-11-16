@@ -1,16 +1,19 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation } from '@tanstack/react-router';
 import {
   BarChart3,
+  Download,
   LayoutGrid,
   Map as MapIcon,
   Moon,
+  Smartphone,
   Sparkles,
   Sun,
   X,
 } from 'lucide-react';
 import { useAntenasData } from '../../hooks/useAntenasData';
 import { useNovedadesData } from '../../hooks/useNovedadesData';
+import { usePwaInstall } from '../../hooks/usePwaInstall';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import {
   formatDateTimeEs,
@@ -26,9 +29,21 @@ export function AppHeader() {
     sectionsMenuOpen,
     setSectionsMenuOpen,
   } = useWorkspace();
+  const { isStandalone, canPromptInstall, installPlatform, promptInstall } =
+    usePwaInstall();
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
 
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isMapRoute = pathname === '/' || pathname === '';
+
+  const handleInstallClick = async () => {
+    const outcome = await promptInstall();
+    if (outcome === 'manual') {
+      setShowInstallHelp((prev) => !prev);
+    } else if (outcome === 'accepted') {
+      setShowInstallHelp(false);
+    }
+  };
 
   useEffect(() => {
     if (!sectionsMenuOpen) {
@@ -220,6 +235,53 @@ export function AppHeader() {
               </span>
             </button>
           </section>
+
+          {!isStandalone && (
+            <section className="panel-section">
+              <div className="field-label">
+                <span>Aplicación móvil</span>
+              </div>
+
+              <button
+                type="button"
+                id="pwa-install-btn"
+                className="sections-theme-toggle sections-pwa-install-btn"
+                aria-expanded={canPromptInstall ? undefined : showInstallHelp}
+                onClick={() => void handleInstallClick()}
+              >
+                <span className="sections-theme-left">
+                  <span className="sections-nav-icon" aria-hidden="true">
+                    {canPromptInstall ? (
+                      <Download size={17} />
+                    ) : (
+                      <Smartphone size={17} />
+                    )}
+                  </span>
+                  <span className="sections-nav-copy">
+                    <span className="sections-nav-title">
+                      Instalar aplicación
+                    </span>
+                    <span className="sections-nav-sub">
+                      {canPromptInstall
+                        ? 'Acceso directo en Android a pantalla completa'
+                        : 'Abrir como app sin barra de navegación'}
+                    </span>
+                  </span>
+                </span>
+                <span className="sections-pwa-pill" aria-hidden="true">
+                  App
+                </span>
+              </button>
+
+              {showInstallHelp && (
+                <p id="pwa-install-help" className="sections-pwa-help-note">
+                  {installPlatform === 'ios'
+                    ? 'En Safari pulsa el icono Compartir y selecciona «Añadir a pantalla de inicio» para abrir RadioMapa a pantalla completa sin barra de navegación.'
+                    : 'En Android (Chrome, Brave o Edge), toca el menú ⋮ del navegador y pulsa «Instalar aplicación» o «Añadir a pantalla de inicio» para instalarla sin barra de navegación.'}
+                </p>
+              )}
+            </section>
+          )}
 
           <section className="panel-section">
             <div className="field-label">
