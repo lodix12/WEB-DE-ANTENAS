@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as AntenasMapModule from '../components/map/AntenasMap';
 import antenasMapRawSource from '../components/map/AntenasMap.tsx?raw';
+import { MapOverlays } from '../components/map/MapOverlays';
 import { FilterPanel } from '../components/ui/FilterPanel';
 import {
   OPERATOR_META,
@@ -3159,5 +3160,242 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
     );
     expect(novHtml).toContain('2809955');
     expect(novHtml).toContain('15/11/2026 19:04:55');
+  });
+});
+
+describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B20, N28) y textos de MapOverlays', () => {
+  function createBandCodesDataset(): AntenasDataset {
+    const base = createSampleCustomDataset();
+    return {
+      ...base,
+      total: 8,
+      antenas: [
+        // 1. Solo TDD 2600 (B38: rangos dentro de [2570, 2620]) aunque bandas diga '2600 MHz' -> SOLO B38, NUNCA B7
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - MADR0038B',
+          gid: 'MADR0038B',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'GRAN VIA 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: [
+            '2575.00 - 2595.00',
+            '2595.00 - 2605.00',
+            '2605.00 - 2615.00',
+          ],
+        },
+        // 2. Solo FDD 2600 (B7: 2620-2640 y 2660-2680) -> SOLO B7, NUNCA B38
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - MADR0007B',
+          gid: 'MADR0007B',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42,
+          lon: -3.71,
+          dir: 'ALCALA 20',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: ['2620.00 - 2640.00', '2660.00 - 2680.00'],
+        },
+        // 3. Ambos TDD 2600 (2570-2620) + FDD 2600 (2640-2660) + 3500 (N78) -> B7 + B38 + N78
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MADR0738A',
+          gid: 'MADR0738A',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.43,
+          lon: -3.69,
+          dir: 'CASTELLANA 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz', '3500 MHz'],
+          frecuencias: [
+            '2570.00 - 2620.00',
+            '2640.00 - 2660.00',
+            '3460.00 - 3600.00',
+          ],
+        },
+        // 4. Fallback '2600 MHz' sin rangos 2490..2700 en frecuencias/concesiones -> B7
+        {
+          id: 'XFERA MOVILES, S.A.U. - MADR2600F',
+          gid: 'MADR2600F',
+          op: 'masmovil',
+          opRaw: 'XFERA MOVILES, S.A.U.',
+          lat: 40.44,
+          lon: -3.68,
+          dir: 'GOYA 12',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+        },
+        // 5. mmWave 26 GHz con bug GHz-como-MHz de MINETUR (26.50 - 27.30 y '26 MHz') + N78 -> N258 + N78
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MADR0258M',
+          gid: 'MADR0258M',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.45,
+          lon: -3.67,
+          dir: 'AZCA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 MHz', '3500 MHz'],
+          frecuencias: ['26.50 - 27.30', '3600.00 - 3700.00'],
+        },
+        // 6. mmWave 26 GHz en MHz reales (24000..29500 en concesiones) + 2100 (B1) + 1800 (B3)
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - BARC0258D',
+          gid: 'BARC0258D',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 41.3874,
+          lon: 2.1686,
+          dir: 'DIAGONAL 100',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['1800 MHz', '2100 MHz', '26 GHz'],
+          frecuencias: ['1825.00 - 1845.00', '2155.00 - 2170.00'],
+          concesiones: [{ ref: 'MM-26G-BCN', freq: '26500.00 - 27300.00' }],
+        },
+        // 7. Estación con GID trampa 'GALR0453B1' que SOLO emite 800 MHz (B20) y 900 MHz (G9) (NO tiene B1)
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - GALR0453B1',
+          gid: 'GALR0453B1',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 43.3623,
+          lon: -8.4115,
+          dir: 'MARINA 4',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+          bandas: ['800 MHz', '900 MHz'],
+          frecuencias: ['801.00 - 811.00', '935.10 - 949.90'],
+        },
+        // 8. Estación con GID trampa 'B10023' que SOLO emite 700 MHz (N28) (NO tiene B1)
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - B10023',
+          gid: 'B10023',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 37.3891,
+          lon: -5.9845,
+          dir: 'SIERPES 8',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['700 MHz'],
+          concesiones: [{ ref: 'OR-700-SVQ', freq: '758.00 - 768.00' }],
+        },
+      ],
+    };
+  }
+
+  it('separa estrictamente B38 (2570-2620 TDD) de B7 (resto 2490-2700 y fallback 2600 MHz) en el buscador', () => {
+    const derived = buildDerivedAntenasStructures(createBandCodesDataset());
+    const search = (q: string) =>
+      filterAntenas({
+        derived,
+        searchQuery: q,
+        selectedProvince: '',
+        selectedMunicipality: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid);
+
+    // B38 devuelve la estación solo-TDD y la mixta TDD+FDD, nunca las solo-FDD ni el fallback
+    expect(search('B38')).toEqual(['MADR0038B', 'MADR0738A']);
+    expect(search('b38')).toEqual(['MADR0038B', 'MADR0738A']);
+
+    // B7 devuelve la solo-FDD, la mixta TDD+FDD y el fallback '2600 MHz' sin rangos, NUNCA MADR0038B
+    expect(search('B7')).toEqual(['MADR0007B', 'MADR0738A', 'MADR2600F']);
+
+    // Consulta combinada B7 + B38 devuelve únicamente la estación que tiene ambos rangos
+    expect(search('B7 B38')).toEqual(['MADR0738A']);
+  });
+
+  it('indexa N258, N78, B1, B3, G9, B20 y N28 sin falsos positivos por subcadena en GIDs como GALR0453B1 o B10023', () => {
+    const derived = buildDerivedAntenasStructures(createBandCodesDataset());
+    const search = (q: string) =>
+      filterAntenas({
+        derived,
+        searchQuery: q,
+        selectedProvince: '',
+        selectedMunicipality: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid);
+
+    // N258 reconoce tanto el bug GHz-como-MHz (26.50 - 27.30 / 26 MHz) como 24000..29500 / 26 GHz
+    expect(search('N258')).toEqual(['MADR0258M', 'BARC0258D']);
+    expect(search('n258')).toEqual(['MADR0258M', 'BARC0258D']);
+
+    // N78 (3500 MHz / 3300..3900)
+    expect(search('N78')).toEqual(['MADR0738A', 'MADR0258M']);
+    expect(search('N78, N258')).toEqual(['MADR0258M']);
+
+    // B1 coincide SOLO con la estación 2100 MHz (BARC0258D), jamás por subcadena con GALR0453B1 ni B10023
+    expect(search('B1')).toEqual(['BARC0258D']);
+    expect(search('b1')).toEqual(['BARC0258D']);
+
+    // Pero buscar el GID completo o parcial sigue encontrando GALR0453B1 y B10023 con normalidad
+    expect(search('GALR0453B1')).toEqual(['GALR0453B1']);
+    expect(search('GALR0453')).toEqual(['GALR0453B1']);
+    expect(search('B10023')).toEqual(['B10023']);
+
+    // B3 coincide SOLO con 1800 MHz (BARC0258D), nunca con B38 (MADR0038B / MADR0738A)
+    expect(search('B3')).toEqual(['BARC0258D']);
+
+    // G9 (900 MHz), B20 (800 MHz) y N28 (700 MHz)
+    expect(search('G9')).toEqual(['GALR0453B1']);
+    expect(search('B20')).toEqual(['GALR0453B1']);
+    expect(search('N28')).toEqual(['B10023']);
+
+    // Conserva intactos availableBands (etiquetas comerciales MHz/GHz) y matchesAntennaBandsFilter
+    expect(derived.availableBands.map((b) => b.band)).toEqual([
+      '26 MHz',
+      '700 MHz',
+      '800 MHz',
+      '900 MHz',
+      '1800 MHz',
+      '2100 MHz',
+      '2600 MHz',
+      '3500 MHz',
+      '26 GHz',
+    ]);
+    expect(
+      matchesAntennaBandsFilter(['2600 MHz'], ['2600 MHz'], true),
+    ).toBe(true);
+  });
+
+  it('muestra en MapOverlays los títulos descriptivos de códigos de banda para #map-toggle-bands-btn', () => {
+    const inactiveHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'positron',
+        onStyleChange: () => {},
+        showBandsOnMap: false,
+        onToggleShowBandsOnMap: () => {},
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(inactiveHtml).toContain('id="map-toggle-bands-btn"');
+    expect(inactiveHtml).toContain('>Mostrar bandas<');
+    expect(inactiveHtml).toContain(
+      'title="Mostrar directamente los códigos de banda que emite cada antena sin hacer clic"',
+    );
+
+    const activeHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'positron',
+        onStyleChange: () => {},
+        showBandsOnMap: true,
+        onToggleShowBandsOnMap: () => {},
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(activeHtml).toContain(
+      'title="Ocultar las tarjetas de códigos de banda en el mapa"',
+    );
   });
 });

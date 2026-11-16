@@ -1,6 +1,25 @@
-import { compareBandLabels } from '../hooks/useAntenasData';
-import { OPERATOR_META, type OperatorKey } from '../types/antena';
+import {
+  OPERATOR_META,
+  type AntennaRecord,
+  type ConcesionBanda,
+  type OperatorKey,
+} from '../types/antena';
 import type { MapSiteEntry } from './geo';
+
+export type BandCode =
+  | 'N258'
+  | 'N78'
+  | 'B7'
+  | 'B38'
+  | 'B1'
+  | 'B3'
+  | 'G9'
+  | 'B20'
+  | 'N28';
+
+export type AntennaBandSource = Partial<
+  Pick<AntennaRecord, 'bandas' | 'frecuencias' | 'concesiones'>
+>;
 
 export interface BandCardRow {
   op: OperatorKey;
@@ -22,16 +41,163 @@ const SHADOW_PAD_TOP = 4;
 const SHADOW_PAD_BOTTOM = 10;
 const FALLBACK_CHAR_WIDTH = 12.2;
 
-const MMWAVE_26GHZ_MISBUCKET_RE = /^2[67]\s*mhz$/i;
+const DIRECT_BAND_CODE_RE = /^(N258|N78|B7|B38|B1|B3|G9|B20|N28)$/i;
+const FREQ_RANGE_RE =
+  /^\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*$/i;
+const SINGLE_FREQ_RE = /^\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*$/i;
+const GENERIC_2600_BUCKET_RE =
+  /^\s*(?:2600(?:\.0+)?(?:\s*mhz)?|2[.,]6(?:\d*)?\s*ghz)\s*$/i;
 const TRAILING_MHZ_RE = /\s*mhz$/i;
+
+const BAND_CODE_SORT_MHZ: Record<BandCode, number> = {
+  N258: 26000,
+  N78: 3500,
+  B7: 2650,
+  B38: 2595,
+  B1: 2100,
+  B3: 1800,
+  G9: 900,
+  B20: 800,
+  N28: 700,
+};
 
 const BAND_CARD_SPRITE_CACHE = new Map<string, ImageData>();
 
-function normalizeMmwaveBandLabel(trimmed: string): string {
-  if (MMWAVE_26GHZ_MISBUCKET_RE.test(trimmed)) {
-    return '26 GHz';
+interface ParsedFrequencySpan {
+  loMhz: number;
+  hiMhz: number;
+  isRange: boolean;
+}
+
+function parseNumericValue(raw: string): number {
+  return Number.parseFloat(raw.replace(',', '.'));
+}
+
+function parseFrequencySpanMhz(trimmed: string): ParsedFrequencySpan | null {
+  const rangeMatch = FREQ_RANGE_RE.exec(trimmed);
+  if (rangeMatch) {
+    const rawLo = parseNumericValue(rangeMatch[1]);
+    const unitLo = rangeMatch[2]?.toLowerCase();
+    const rawHi = parseNumericValue(rangeMatch[3]);
+    const unitHi = rangeMatch[4]?.toLowerCase();
+    if (!Number.isFinite(rawLo) || !Number.isFinite(rawHi)) {
+      return null;
+    }
+    const loIsGhz = unitLo === 'ghz' || (!unitLo && unitHi === 'ghz');
+    const hiIsGhz = unitHi === 'ghz' || (!unitHi && unitLo === 'ghz');
+    const loMhz = loIsGhz ? rawLo * 1000 : rawLo;
+    const hiMhz = hiIsGhz ? rawHi * 1000 : rawHi;
+    if (loMhz > hiMhz) {
+      return null;
+    }
+    return { loMhz, hiMhz, isRange: true };
   }
-  return trimmed;
+
+  const singleMatch = SINGLE_FREQ_RE.exec(trimmed);
+  if (singleMatch) {
+    const rawVal = parseNumericValue(singleMatch[1]);
+    const unit = singleMatch[2]?.toLowerCase();
+    if (!Number.isFinite(rawVal)) {
+      return null;
+    }
+    const mhz = unit === 'ghz' ? rawVal * 1000 : rawVal;
+    return { loMhz: mhz, hiMhz: mhz, isRange: false };
+  }
+
+  return null;
+}
+
+export function classifyFrequencyRangeToBandCode(raw: string): BandCode | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const directMatch = DIRECT_BAND_CODE_RE.exec(trimmed);
+  if (directMatch) {
+    return directMatch[1].toUpperCase() as BandCode;
+  }
+
+  const span = parseFrequencySpanMhz(trimmed);
+  if (!span) {
+    return null;
+  }
+
+  const { loMhz, hiMhz, isRange } = span;
+
+  // 26 GHz mmWave: MINETUR GHz-as-MHz bug (24..29.5) or true MHz (24000..29500)
+  if ((loMhz >= 24 && hiMhz <= 29.5) || (loMhz >= 24000 && hiMhz <= 29500)) {
+    return 'N258';
+  }
+
+  // 3500 MHz C-band (3300..3900 MHz)
+  if (loMhz >= 3300 && hiMhz <= 3900) {
+    return 'N78';
+  }
+
+  // 2600 MHz family (2490..2700 MHz): TDD B38 strictly within [2570, 2620] inclusive vs FDD B7
+  if (loMhz >= 2490 && hiMhz <= 2700) {
+    if (isRange && loMhz >= 2570 && hiMhz <= 2620) {
+      return 'B38';
+    }
+    return 'B7';
+  }
+
+  // 2100 MHz (1920..2170 MHz + nominal 2100 MHz)
+  if (loMhz >= 1900 && hiMhz <= 2170) {
+    return 'B1';
+  }
+
+  // 1800 MHz (1710..1880 MHz)
+  if (loMhz >= 1710 && hiMhz <= 1880) {
+    return 'B3';
+  }
+
+  // 900 MHz (880..960 MHz)
+  if (loMhz >= 880 && hiMhz <= 960) {
+    return 'G9';
+  }
+
+  // 800 MHz (791..862 MHz)
+  if (loMhz >= 791 && hiMhz <= 862) {
+    return 'B20';
+  }
+
+  // 700 MHz (703..788 MHz + nominal 700 MHz)
+  if (loMhz >= 698 && hiMhz <= 788) {
+    return 'N28';
+  }
+
+  return null;
+}
+
+function getBandTokenSortWeightMhz(token: string): number {
+  if (token in BAND_CODE_SORT_MHZ) {
+    return BAND_CODE_SORT_MHZ[token as BandCode];
+  }
+  const span = parseFrequencySpanMhz(token);
+  if (span) {
+    return (span.loMhz + span.hiMhz) / 2;
+  }
+  return Number.NEGATIVE_INFINITY;
+}
+
+function compareBandTokensDescending(a: string, b: string): number {
+  const weightA = getBandTokenSortWeightMhz(a);
+  const weightB = getBandTokenSortWeightMhz(b);
+  if (weightA !== weightB) {
+    return weightB - weightA;
+  }
+  return a.localeCompare(b);
+}
+
+function isAntennaBandSourceObject(
+  value: AntennaBandSource | readonly string[] | undefined | null,
+): value is AntennaBandSource {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isValidOperatorKey(value: string): value is OperatorKey {
@@ -81,12 +247,16 @@ function traceRoundedRectPath(
 }
 
 export function formatCompactBandToken(band: string): string {
+  if (typeof band !== 'string') {
+    return '';
+  }
   const trimmed = band.trim();
   if (!trimmed) {
     return '';
   }
-  if (MMWAVE_26GHZ_MISBUCKET_RE.test(trimmed)) {
-    return '26 GHz';
+  const code = classifyFrequencyRangeToBandCode(trimmed);
+  if (code) {
+    return code;
   }
   if (TRAILING_MHZ_RE.test(trimmed)) {
     return trimmed.replace(TRAILING_MHZ_RE, '').trim();
@@ -94,41 +264,96 @@ export function formatCompactBandToken(band: string): string {
   return trimmed;
 }
 
-export function formatAntennaBandsCompact(
+export function extractAntennaBandCodes(
+  antenna: AntennaBandSource | undefined | null,
+): string[];
+export function extractAntennaBandCodes(
   bandas: readonly string[] | undefined | null,
-): string {
-  if (!bandas || bandas.length === 0) {
-    return '';
+  frecuencias?: readonly string[] | undefined | null,
+  concesiones?: readonly Partial<ConcesionBanda>[] | undefined | null,
+): string[];
+export function extractAntennaBandCodes(
+  bandasOrAntenna: AntennaBandSource | readonly string[] | undefined | null,
+  frecuenciasArg?: readonly string[] | undefined | null,
+  concesionesArg?: readonly Partial<ConcesionBanda>[] | undefined | null,
+): string[] {
+  let bandas: readonly string[] | undefined | null;
+  let frecuencias: readonly string[] | undefined | null;
+  let concesiones: readonly Partial<ConcesionBanda>[] | undefined | null;
+
+  if (isAntennaBandSourceObject(bandasOrAntenna)) {
+    bandas = bandasOrAntenna.bandas;
+    frecuencias = bandasOrAntenna.frecuencias;
+    concesiones = bandasOrAntenna.concesiones;
+  } else {
+    bandas = bandasOrAntenna;
+    frecuencias = frecuenciasArg;
+    concesiones = concesionesArg;
   }
 
-  const uniqueNormalizedLabels = new Set<string>();
-  for (let i = 0; i < bandas.length; i++) {
-    const raw = bandas[i];
-    if (typeof raw !== 'string') continue;
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-    uniqueNormalizedLabels.add(normalizeMmwaveBandLabel(trimmed));
-  }
+  const tokens = new Set<string>();
+  let resolved2600FromFreqs = false;
 
-  if (uniqueNormalizedLabels.size === 0) {
-    return '';
-  }
-
-  const sortedLabels = Array.from(uniqueNormalizedLabels).sort(
-    compareBandLabels,
-  );
-
-  const uniqueTokens: string[] = [];
-  const seenTokens = new Set<string>();
-  for (let i = 0; i < sortedLabels.length; i++) {
-    const token = formatCompactBandToken(sortedLabels[i]);
-    if (token && !seenTokens.has(token)) {
-      seenTokens.add(token);
-      uniqueTokens.push(token);
+  if (frecuencias) {
+    for (let i = 0; i < frecuencias.length; i++) {
+      const rawFreq = frecuencias[i];
+      if (typeof rawFreq !== 'string') continue;
+      const code = classifyFrequencyRangeToBandCode(rawFreq);
+      if (code) {
+        tokens.add(code);
+        if (code === 'B7' || code === 'B38') {
+          resolved2600FromFreqs = true;
+        }
+      }
     }
   }
 
-  return uniqueTokens.join(' ');
+  if (concesiones) {
+    for (let i = 0; i < concesiones.length; i++) {
+      const rawFreq = concesiones[i]?.freq;
+      if (typeof rawFreq !== 'string') continue;
+      const code = classifyFrequencyRangeToBandCode(rawFreq);
+      if (code) {
+        tokens.add(code);
+        if (code === 'B7' || code === 'B38') {
+          resolved2600FromFreqs = true;
+        }
+      }
+    }
+  }
+
+  if (bandas) {
+    for (let i = 0; i < bandas.length; i++) {
+      const rawBand = bandas[i];
+      if (typeof rawBand !== 'string') continue;
+      const trimmed = rawBand.trim();
+      if (!trimmed) continue;
+
+      if (resolved2600FromFreqs && GENERIC_2600_BUCKET_RE.test(trimmed)) {
+        continue;
+      }
+
+      const token = formatCompactBandToken(trimmed);
+      if (token) {
+        tokens.add(token);
+      }
+    }
+  }
+
+  if (tokens.size === 0) {
+    return [];
+  }
+
+  return Array.from(tokens).sort(compareBandTokensDescending);
+}
+
+export function formatAntennaBandsCompact(
+  bandas: readonly string[] | undefined | null,
+  frecuencias?: readonly string[] | undefined | null,
+  concesiones?: readonly Partial<ConcesionBanda>[] | undefined | null,
+): string {
+  const codes = extractAntennaBandCodes(bandas, frecuencias, concesiones);
+  return codes.join(' ');
 }
 
 export function buildSiteBandCardRows(
@@ -138,7 +363,11 @@ export function buildSiteBandCardRows(
   const members = site.members;
   for (let i = 0; i < members.length; i++) {
     const member = members[i];
-    const text = formatAntennaBandsCompact(member.bandas);
+    const text = formatAntennaBandsCompact(
+      member.bandas,
+      member.frecuencias,
+      member.concesiones,
+    );
     if (!text) {
       continue;
     }

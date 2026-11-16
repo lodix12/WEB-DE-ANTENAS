@@ -200,8 +200,8 @@ export function MapOverlays({
               aria-pressed={showBandsOnMap}
               title={
                 showBandsOnMap
-                  ? 'Ocultar las etiquetas de bandas de frecuencia en el mapa'
-                  : 'Mostrar directamente las bandas de frecuencia que emite cada antena sin hacer clic'
+                  ? 'Ocultar las tarjetas de códigos de banda en el mapa'
+                  : 'Mostrar directamente los códigos de banda que emite cada antena sin hacer clic'
               }
             >
               <Radio size={15} aria-hidden="true" />
@@ -301,7 +301,7 @@ export function MapOverlays({
                           Mostrar bandas en antenas
                         </span>
                         <span className="map-style-option-desc">
-                          Ver frecuencias emitidas sin hacer clic
+                          Ver códigos de banda sin hacer clic
                         </span>
                       </span>
                       <span

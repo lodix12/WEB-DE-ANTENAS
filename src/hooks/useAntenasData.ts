@@ -814,6 +814,199 @@ export function fuseVodafoneAntennasInDataset(
   };
 }
 
+const BIT_N258 = 1 << 0;
+const BIT_N78 = 1 << 1;
+const BIT_B7 = 1 << 2;
+const BIT_B38 = 1 << 3;
+const BIT_B1 = 1 << 4;
+const BIT_B3 = 1 << 5;
+const BIT_G9 = 1 << 6;
+const BIT_B20 = 1 << 7;
+const BIT_N28 = 1 << 8;
+const BIT_SAW_2600_RANGE = 1 << 9;
+
+const BAND_CODE_ENTRIES: ReadonlyArray<readonly [bit: number, code: string]> = [
+  [BIT_N258, 'n258'],
+  [BIT_N78, 'n78'],
+  [BIT_B7, 'b7'],
+  [BIT_B38, 'b38'],
+  [BIT_B1, 'b1'],
+  [BIT_B3, 'b3'],
+  [BIT_G9, 'g9'],
+  [BIT_B20, 'b20'],
+  [BIT_N28, 'n28'],
+];
+
+const BAND_MASK_TEXT_CACHE = new Array<string | undefined>(512);
+BAND_MASK_TEXT_CACHE[0] = '';
+
+const FREQ_NUM_TOKEN_RE = /\d+(?:[.,]\d+)?/g;
+const GHZ_UNIT_RE = /ghz/i;
+const DIRECT_BAND_CODE_BITS: Readonly<Record<string, number>> = {
+  n258: BIT_N258,
+  n78: BIT_N78,
+  b7: BIT_B7,
+  b38: BIT_B38,
+  b1: BIT_B1,
+  b3: BIT_B3,
+  g9: BIT_G9,
+  b20: BIT_B20,
+  n28: BIT_N28,
+};
+
+function parseDecimalToken(token: string): number {
+  return token.includes(',') ? Number(token.replace(',', '.')) : Number(token);
+}
+
+function classifyFrequencyRangeBits(raw: string): number {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0;
+  const directBit = DIRECT_BAND_CODE_BITS[trimmed.toLowerCase()];
+  if (directBit !== undefined) {
+    return directBit;
+  }
+
+  FREQ_NUM_TOKEN_RE.lastIndex = 0;
+  const m1 = FREQ_NUM_TOKEN_RE.exec(trimmed);
+  if (!m1) return 0;
+  const m2 = FREQ_NUM_TOKEN_RE.exec(trimmed);
+  const a = parseDecimalToken(m1[0]);
+  const b = m2 ? parseDecimalToken(m2[0]) : a;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+
+  let lo = a <= b ? a : b;
+  let hi = a <= b ? b : a;
+  if (GHZ_UNIT_RE.test(trimmed) && hi < 1000) {
+    lo *= 1000;
+    hi *= 1000;
+  }
+
+  if ((lo >= 24 && hi <= 29.5) || (lo >= 24000 && hi <= 29500)) {
+    return BIT_N258;
+  }
+  if (lo >= 3300 && hi <= 3900) {
+    return BIT_N78;
+  }
+  if (lo >= 2490 && hi <= 2700) {
+    if (m2 !== null && lo >= 2570 && hi <= 2620) {
+      return BIT_B38 | BIT_SAW_2600_RANGE;
+    }
+    if (m2 === null && lo > 2570 && hi < 2620 && lo !== 2600) {
+      return BIT_B38 | BIT_SAW_2600_RANGE;
+    }
+    return BIT_B7 | BIT_SAW_2600_RANGE;
+  }
+  if (lo >= 1920 && hi <= 2170) {
+    return BIT_B1;
+  }
+  if (lo >= 1710 && hi <= 1880) {
+    return BIT_B3;
+  }
+  if (lo >= 880 && hi <= 960) {
+    return BIT_G9;
+  }
+  if (lo >= 791 && hi <= 862) {
+    return BIT_B20;
+  }
+  if (lo >= 703 && hi <= 788) {
+    return BIT_N28;
+  }
+  return 0;
+}
+
+function classifyCommercialBandLabelBits(
+  rawLabel: string,
+  saw2600Range: boolean,
+): number {
+  const trimmed = rawLabel.trim();
+  if (!trimmed) return 0;
+  const directBit = DIRECT_BAND_CODE_BITS[trimmed.toLowerCase()];
+  if (directBit !== undefined) {
+    return directBit;
+  }
+
+  FREQ_NUM_TOKEN_RE.lastIndex = 0;
+  const m = FREQ_NUM_TOKEN_RE.exec(trimmed);
+  if (!m) return 0;
+  let val = parseDecimalToken(m[0]);
+  if (!Number.isFinite(val)) return 0;
+  if (GHZ_UNIT_RE.test(trimmed) && val < 1000) {
+    val *= 1000;
+  }
+
+  if ((val >= 24 && val <= 29.5) || (val >= 24000 && val <= 29500)) {
+    return BIT_N258;
+  }
+  if (val >= 3300 && val <= 3900) {
+    return BIT_N78;
+  }
+  if (val >= 2490 && val <= 2700) {
+    return saw2600Range ? 0 : BIT_B7;
+  }
+  if (val >= 1920 && val <= 2170) {
+    return BIT_B1;
+  }
+  if (val >= 1710 && val <= 1880) {
+    return BIT_B3;
+  }
+  if (val >= 880 && val <= 960) {
+    return BIT_G9;
+  }
+  if (val >= 791 && val <= 862) {
+    return BIT_B20;
+  }
+  if (val >= 703 && val <= 788) {
+    return BIT_N28;
+  }
+  return 0;
+}
+
+function deriveAntennaBandCodesText(ant: AntennaRecord): string {
+  const { frecuencias, concesiones, bandas } = ant;
+  if (
+    (!frecuencias || frecuencias.length === 0) &&
+    (!concesiones || concesiones.length === 0) &&
+    (!bandas || bandas.length === 0)
+  ) {
+    return '';
+  }
+
+  let mask = 0;
+  if (frecuencias) {
+    for (let i = 0; i < frecuencias.length; i++) {
+      mask |= classifyFrequencyRangeBits(frecuencias[i]);
+    }
+  }
+  if (concesiones) {
+    for (let i = 0; i < concesiones.length; i++) {
+      mask |= classifyFrequencyRangeBits(concesiones[i].freq);
+    }
+  }
+  if (bandas) {
+    const saw2600Range = (mask & BIT_SAW_2600_RANGE) !== 0;
+    for (let i = 0; i < bandas.length; i++) {
+      mask |= classifyCommercialBandLabelBits(bandas[i], saw2600Range);
+    }
+  }
+
+  const codeMask = mask & 0x1ff;
+  const cached = BAND_MASK_TEXT_CACHE[codeMask];
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const parts: string[] = [];
+  for (let i = 0; i < BAND_CODE_ENTRIES.length; i++) {
+    const [bit, code] = BAND_CODE_ENTRIES[i];
+    if ((codeMask & bit) !== 0) {
+      parts.push(code);
+    }
+  }
+  const joined = parts.join(' ');
+  BAND_MASK_TEXT_CACHE[codeMask] = joined;
+  return joined;
+}
+
 export function buildDerivedAntenasStructures(
   inputDataset: AntenasDataset,
 ): DerivedAntenasStructures {
@@ -899,8 +1092,11 @@ export function buildDerivedAntenasStructures(
       ant.concesiones && ant.concesiones.length > 0
         ? ant.concesiones.map((c) => `${c.ref} ${c.freq}`).join(' ')
         : '';
+    const bandCodesText = deriveAntennaBandCodesText(ant);
     searchIndex[i] = normalizeSearchText(
-      `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText} ${concesionesText}`,
+      bandCodesText
+        ? `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText} ${concesionesText} ${bandCodesText}`
+        : `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText} ${concesionesText}`,
     );
   }
 
@@ -1475,6 +1671,8 @@ interface SearchMatcher {
   exactWord: boolean;
 }
 
+const RF_BAND_CODE_TOKEN_RE = /^(n258|n78|n28|b38|b20|b7|b3|b1|g9)$/;
+
 function buildSearchMatchers(normalizedQuery: string): SearchMatcher[] {
   if (!normalizedQuery) return [];
   const matchers: SearchMatcher[] = [];
@@ -1488,7 +1686,13 @@ function buildSearchMatchers(normalizedQuery: string): SearchMatcher[] {
   );
   const plainTokens = remainder.split(/\s+/).filter(Boolean);
   for (let i = 0; i < plainTokens.length; i++) {
-    matchers.push({ token: plainTokens[i], exactWord: false });
+    const rawTok = plainTokens[i];
+    const strippedTok = rawTok.replace(/^[,;]+|[,;]+$/g, '');
+    if (RF_BAND_CODE_TOKEN_RE.test(strippedTok)) {
+      matchers.push({ token: strippedTok, exactWord: true });
+    } else {
+      matchers.push({ token: rawTok, exactWord: false });
+    }
   }
   return matchers;
 }

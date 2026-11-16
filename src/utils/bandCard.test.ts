@@ -5,7 +5,9 @@ import {
   BAND_CARD_PIXEL_RATIO,
   buildSiteBandCardKey,
   buildSiteBandCardRows,
+  classifyFrequencyRangeToBandCode,
   clearBandCardSpriteCache,
+  extractAntennaBandCodes,
   formatAntennaBandsCompact,
   formatCompactBandToken,
   getOrCreateBandCardSprite,
@@ -268,60 +270,257 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('formatCompactBandToken', () => {
-  it('strips trailing MHz case-insensitively and trims whitespace', () => {
-    expect(formatCompactBandToken('700 MHz')).toBe('700');
-    expect(formatCompactBandToken('1800 mhz')).toBe('1800');
-    expect(formatCompactBandToken('3500MHz')).toBe('3500');
-    expect(formatCompactBandToken('  2100 MHz  ')).toBe('2100');
-    expect(formatCompactBandToken('2600 MHz')).toBe('2600');
+describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
+  it('maps every standard RF band label and frequency range to its canonical band code', () => {
+    // N28 (700 MHz / 703..788 MHz)
+    expect(classifyFrequencyRangeToBandCode('700 MHz')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('703.00 - 733.00')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('758.00 - 788.00')).toBe('N28');
+    expect(formatCompactBandToken('700 MHz')).toBe('N28');
+
+    // B20 (800 MHz / 791..862 MHz)
+    expect(classifyFrequencyRangeToBandCode('800 MHz')).toBe('B20');
+    expect(classifyFrequencyRangeToBandCode('791.00 - 801.00')).toBe('B20');
+    expect(classifyFrequencyRangeToBandCode('832.00 - 862.00')).toBe('B20');
+    expect(formatCompactBandToken('800 MHz')).toBe('B20');
+
+    // G9 (900 MHz / 880..960 MHz)
+    expect(classifyFrequencyRangeToBandCode('900 MHz')).toBe('G9');
+    expect(classifyFrequencyRangeToBandCode('880.00 - 915.00')).toBe('G9');
+    expect(classifyFrequencyRangeToBandCode('935.00 - 950.00')).toBe('G9');
+    expect(formatCompactBandToken('900 MHz')).toBe('G9');
+
+    // B3 (1800 MHz / 1710..1880 MHz)
+    expect(classifyFrequencyRangeToBandCode('1800 MHz')).toBe('B3');
+    expect(classifyFrequencyRangeToBandCode('1710.00 - 1785.00')).toBe('B3');
+    expect(classifyFrequencyRangeToBandCode('1805.00 - 1825.00')).toBe('B3');
+    expect(formatCompactBandToken('1800 mhz')).toBe('B3');
+
+    // B1 (2100 MHz / 1920..2170 MHz)
+    expect(classifyFrequencyRangeToBandCode('2100 MHz')).toBe('B1');
+    expect(classifyFrequencyRangeToBandCode('1920.00 - 1980.00')).toBe('B1');
+    expect(classifyFrequencyRangeToBandCode('2110.00 - 2130.00')).toBe('B1');
+    expect(formatCompactBandToken('  2100 MHz  ')).toBe('B1');
+
+    // B7 (2600 MHz FDD)
+    expect(classifyFrequencyRangeToBandCode('2600 MHz')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2620.00 - 2640.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2660.00 - 2680.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2500.00 - 2570.00')).toBe('B7');
+    expect(formatCompactBandToken('2600 MHz')).toBe('B7');
+
+    // N78 (3500 MHz / 3300..3900 MHz)
+    expect(classifyFrequencyRangeToBandCode('3500 MHz')).toBe('N78');
+    expect(classifyFrequencyRangeToBandCode('3460.00 - 3600.00')).toBe('N78');
+    expect(classifyFrequencyRangeToBandCode('3710.00 - 3800.00')).toBe('N78');
+    expect(formatCompactBandToken('3500MHz')).toBe('N78');
+
+    // N258 (26 GHz / 27 GHz / MINETUR 26 MHz & 27 MHz bug / 25.70-27.10)
+    expect(classifyFrequencyRangeToBandCode('26 MHz')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('27 MHz')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('26 GHz')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('27 GHz')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('25.70 - 26.70')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('26.70 - 27.10')).toBe('N258');
+    expect(classifyFrequencyRangeToBandCode('24250.00 - 27500.00')).toBe(
+      'N258',
+    );
+    expect(formatCompactBandToken('26 MHz')).toBe('N258');
+    expect(formatCompactBandToken('27 MHz')).toBe('N258');
+    expect(formatCompactBandToken('26 GHz')).toBe('N258');
   });
 
-  it('normalizes MINETUR 26 MHz and 27 MHz mmWave buckets to 26 GHz', () => {
-    expect(formatCompactBandToken('26 MHz')).toBe('26 GHz');
-    expect(formatCompactBandToken('27 MHz')).toBe('26 GHz');
-    expect(formatCompactBandToken('  26 mhz ')).toBe('26 GHz');
-    expect(formatCompactBandToken('27MHz')).toBe('26 GHz');
+  it('enforces exact [2570, 2620] MHz inclusive boundaries for TDD B38 vs FDD B7', () => {
+    // Inside [2570, 2620] inclusive -> B38
+    expect(classifyFrequencyRangeToBandCode('2570.00 - 2620.00')).toBe('B38');
+    expect(classifyFrequencyRangeToBandCode('2575.00 - 2585.00')).toBe('B38');
+    expect(classifyFrequencyRangeToBandCode('2575.00 - 2595.00')).toBe('B38');
+    expect(classifyFrequencyRangeToBandCode('2595.00 - 2605.00')).toBe('B38');
+    expect(classifyFrequencyRangeToBandCode('2605.00 - 2615.00')).toBe('B38');
+
+    // Touching 2620 or 2570 but extending outside [2570, 2620] -> B7
+    expect(classifyFrequencyRangeToBandCode('2620.00 - 2640.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2640.00 - 2660.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2680.00 - 2690.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2550.00 - 2570.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2500.00 - 2570.00')).toBe('B7');
+
+    // Reversed / malformed range rejected
+    expect(classifyFrequencyRangeToBandCode('2620.00 - 2570.00')).toBeNull();
   });
 
-  it('preserves GHz labels and handles empty strings cleanly', () => {
-    expect(formatCompactBandToken('26 GHz')).toBe('26 GHz');
-    expect(formatCompactBandToken('  26 GHz  ')).toBe('26 GHz');
+  it('normalizes already-formatted band codes case-insensitively and handles unknown/empty strings', () => {
+    expect(formatCompactBandToken('n258')).toBe('N258');
+    expect(formatCompactBandToken('n78')).toBe('N78');
+    expect(formatCompactBandToken('b7')).toBe('B7');
+    expect(formatCompactBandToken('b38')).toBe('B38');
+    expect(formatCompactBandToken('b1')).toBe('B1');
+    expect(formatCompactBandToken('b3')).toBe('B3');
+    expect(formatCompactBandToken('g9')).toBe('G9');
+    expect(formatCompactBandToken('b20')).toBe('B20');
+    expect(formatCompactBandToken('n28')).toBe('N28');
+
+    // Unknown future frequency keeps compact MHz-stripped token
+    expect(classifyFrequencyRangeToBandCode('1500 MHz')).toBeNull();
+    expect(formatCompactBandToken('1500 MHz')).toBe('1500');
+
+    expect(classifyFrequencyRangeToBandCode('')).toBeNull();
+    expect(classifyFrequencyRangeToBandCode('   ')).toBeNull();
     expect(formatCompactBandToken('')).toBe('');
     expect(formatCompactBandToken('   ')).toBe('');
   });
 });
 
-describe('formatAntennaBandsCompact', () => {
-  it('sorts unsorted MHz bands ascending and joins compact tokens with spaces', () => {
+describe('extractAntennaBandCodes & formatAntennaBandsCompact', () => {
+  it('sorts all 9 canonical band codes strictly descending: N258 N78 B7 B38 B1 B3 G9 B20 N28', () => {
+    expect(
+      formatAntennaBandsCompact(
+        [
+          '700 MHz',
+          '800 MHz',
+          '900 MHz',
+          '1800 MHz',
+          '2100 MHz',
+          '2600 MHz',
+          '3500 MHz',
+          '26 MHz',
+        ],
+        ['2575.00 - 2595.00', '2660.00 - 2680.00'],
+      ),
+    ).toBe('N258 N78 B7 B38 B1 B3 G9 B20 N28');
+  });
+
+  it('matches real-world Spanish stations (standard 7-band FDD, Vodafone #57833 Getafe, Movistar #3300033 Oviedo)', () => {
+    // Standard 7-band FDD station
     expect(
       formatAntennaBandsCompact([
-        '3500 MHz',
-        '1800 MHz',
         '700 MHz',
-        '2600 MHz',
         '800 MHz',
-        '2100 MHz',
         '900 MHz',
-      ]),
-    ).toBe('700 800 900 1800 2100 2600 3500');
-  });
-
-  it('deduplicates repeated bands and normalizes 26 MHz / 27 MHz to 26 GHz after 3500', () => {
-    expect(
-      formatAntennaBandsCompact([
-        '26 MHz',
-        '3500 MHz',
-        '1800 mhz',
-        '27 MHz',
-        '700 MHz',
         '1800 MHz',
-        '700',
+        '2100 MHz',
+        '2600 MHz',
+        '3500 MHz',
       ]),
-    ).toBe('700 1800 3500 26 GHz');
+    ).toBe('N78 B7 B1 B3 G9 B20 N28');
+
+    // Vodafone #57833 in Getafe (B7 + B38 + N78 + sub-2.1GHz)
+    const vodafoneGetafe = makeAntenna({
+      id: 'VOD-57833',
+      gid: '57833',
+      op: 'vodafone',
+      bandas: [
+        '700 MHz',
+        '800 MHz',
+        '900 MHz',
+        '1800 MHz',
+        '2100 MHz',
+        '2600 MHz',
+        '3500 MHz',
+      ],
+      frecuencias: [
+        '758.00 - 768.00',
+        '791.00 - 801.00',
+        '935.00 - 950.00',
+        '1805.00 - 1825.00',
+        '2110.00 - 2130.00',
+        '2575.00 - 2595.00',
+        '2660.00 - 2680.00',
+        '3710.00 - 3800.00',
+      ],
+    });
+    expect(extractAntennaBandCodes(vodafoneGetafe)).toEqual([
+      'N78',
+      'B7',
+      'B38',
+      'B1',
+      'B3',
+      'G9',
+      'B20',
+      'N28',
+    ]);
+    expect(
+      formatAntennaBandsCompact(
+        vodafoneGetafe.bandas,
+        vodafoneGetafe.frecuencias,
+      ),
+    ).toBe('N78 B7 B38 B1 B3 G9 B20 N28');
+
+    // Movistar #3300033 in Oviedo (N258 + N78 + B7 + sub-2.1GHz)
+    expect(
+      formatAntennaBandsCompact(
+        [
+          '26 MHz',
+          '700 MHz',
+          '800 MHz',
+          '900 MHz',
+          '1800 MHz',
+          '2100 MHz',
+          '2600 MHz',
+          '3500 MHz',
+        ],
+        [
+          '25.70 - 26.70',
+          '768.00 - 778.00',
+          '801.00 - 811.00',
+          '925.00 - 935.00',
+          '1825.00 - 1845.00',
+          '2130.00 - 2150.00',
+          '2620.00 - 2640.00',
+          '3460.00 - 3600.00',
+        ],
+      ),
+    ).toBe('N258 N78 B7 B1 B3 G9 B20 N28');
   });
 
-  it('returns empty string for null, undefined, or empty band arrays', () => {
+  it('separates B38-only, B7-only, dual B7+B38, and synthetic 2600 MHz fallback stations accurately', () => {
+    // B38-only station via frecuencias -> ONLY B38 (must NOT add false B7 from "2600 MHz")
+    expect(
+      formatAntennaBandsCompact(['2600 MHz'], ['2595.00 - 2605.00']),
+    ).toBe('B38');
+
+    // B38-only station via concesiones -> ONLY B38
+    expect(
+      formatAntennaBandsCompact(['2600 MHz'], undefined, [
+        { ref: 'M M -2605', freq: '2605.00 - 2615.00' },
+      ]),
+    ).toBe('B38');
+
+    // B7-only station -> ONLY B7
+    expect(
+      formatAntennaBandsCompact(['2600 MHz'], ['2620.00 - 2640.00']),
+    ).toBe('B7');
+
+    // Dual B7 + B38 + N78 station -> N78 B7 B38
+    expect(
+      formatAntennaBandsCompact(
+        ['2600 MHz', '3500 MHz'],
+        ['2575.00 - 2595.00', '2660.00 - 2680.00', '3710.00 - 3800.00'],
+      ),
+    ).toBe('N78 B7 B38');
+
+    // Synthetic record with only bandas: ['2600 MHz'] -> falls back cleanly to B7
+    expect(formatAntennaBandsCompact(['2600 MHz'])).toBe('B7');
+  });
+
+  it('deduplicates 26 MHz + 27 MHz (25.70 - 26.70 + 26.70 - 27.10) into a single leading N258', () => {
+    expect(
+      formatAntennaBandsCompact(
+        ['26 MHz', '3500 MHz', '1800 mhz', '27 MHz', '700 MHz', '1800 MHz'],
+        ['25.70 - 26.70', '26.70 - 27.10', '3460.00 - 3600.00'],
+      ),
+    ).toBe('N258 N78 B3 N28');
+  });
+
+  it('slots unknown future frequencies by descending MHz value (e.g. 1500 MHz between B3 and G9)', () => {
+    expect(
+      formatAntennaBandsCompact(['900 MHz', '1500 MHz', '1800 MHz', '700 MHz']),
+    ).toBe('B3 1500 G9 N28');
+  });
+
+  it('returns empty array / empty string for null, undefined, or empty inputs', () => {
+    expect(extractAntennaBandCodes(undefined)).toEqual([]);
+    expect(extractAntennaBandCodes(null)).toEqual([]);
     expect(formatAntennaBandsCompact(undefined)).toBe('');
     expect(formatAntennaBandsCompact(null)).toBe('');
     expect(formatAntennaBandsCompact([])).toBe('');
@@ -330,7 +529,7 @@ describe('formatAntennaBandsCompact', () => {
 });
 
 describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', () => {
-  it('builds single-operator rows and keys with exact OPERATOR_META colors (Movistar, Orange, DIGI)', () => {
+  it('builds single-operator rows and keys with exact OPERATOR_META colors and descending band codes', () => {
     const movistarSite = {
       members: [
         makeAntenna({
@@ -345,30 +544,31 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
       {
         op: 'movistar',
         color: '#0066CC',
-        text: '700 800 1800 3500',
+        text: 'N78 B3 B20 N28',
       },
     ]);
     const movKey = buildSiteBandCardKey(movistarSite);
-    expect(movKey).toBe('bandcard:movistar:700 800 1800 3500');
+    expect(movKey).toBe('bandcard:movistar:N78 B3 B20 N28');
     expect(parseSiteBandCardKey(movKey)).toEqual(
       buildSiteBandCardRows(movistarSite),
     );
 
-    const orangeSite = {
+    const orangeB38Site = {
       members: [
         makeAntenna({
           id: 'ORA-1',
           gid: '2800002',
           op: 'orange',
-          bandas: ['2100 MHz', '900 MHz'],
+          bandas: ['2100 MHz', '900 MHz', '2600 MHz'],
+          frecuencias: ['2595.00 - 2605.00'],
         }),
       ],
     };
-    expect(buildSiteBandCardRows(orangeSite)).toEqual([
+    expect(buildSiteBandCardRows(orangeB38Site)).toEqual([
       {
         op: 'orange',
         color: '#EA580C',
-        text: '900 2100',
+        text: 'B38 B1 G9',
       },
     ]);
 
@@ -379,6 +579,10 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
           gid: '2800003',
           op: 'digi',
           bandas: ['2600 MHz', '1800 MHz', '3500 MHz'],
+          concesiones: [
+            { ref: 'M M -2575', freq: '2575.00 - 2595.00' },
+            { ref: 'M M -2660', freq: '2660.00 - 2680.00' },
+          ],
         }),
       ],
     };
@@ -387,15 +591,15 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
       {
         op: 'digi',
         color: '#7C3AED',
-        text: '1800 2600 3500',
+        text: 'N78 B7 B38 B3',
       },
     ]);
     const digiKey = buildSiteBandCardKey(digiSite);
-    expect(digiKey).toBe(`${BAND_CARD_KEY_PREFIX}digi:1800 2600 3500`);
+    expect(digiKey).toBe(`${BAND_CARD_KEY_PREFIX}digi:N78 B7 B38 B3`);
     expect(parseSiteBandCardKey(digiKey)).toEqual(digiRows);
   });
 
-  it('orders multi-operator < 35 m shared sites canonically with exact OPERATOR_META colors', () => {
+  it('orders multi-operator < 35 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
     // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~10 m (< 35 m)
     const rawAntennas: AntennaRecord[] = [
       makeAntenna({
@@ -404,7 +608,8 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
         op: 'vodafone',
         lat: 40.4168,
         lon: -3.7038,
-        bandas: ['900 MHz', '700 MHz', '3500 MHz'],
+        bandas: ['900 MHz', '700 MHz', '2600 MHz', '3500 MHz'],
+        frecuencias: ['2575.00 - 2595.00', '2660.00 - 2680.00'],
       }),
       makeAntenna({
         id: 'MOV-1',
@@ -428,7 +633,8 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
         op: 'orange',
         lat: 40.41681,
         lon: -3.70381,
-        bandas: ['26 MHz', '3500 MHz', '700 MHz'],
+        bandas: ['26 MHz', '27 MHz', '3500 MHz', '700 MHz'],
+        frecuencias: ['25.70 - 26.70', '26.70 - 27.10'],
       }),
     ];
 
@@ -441,28 +647,28 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
       {
         op: 'movistar',
         color: OPERATOR_META.movistar.color,
-        text: '700 800 1800 3500',
+        text: 'N78 B3 B20 N28',
       },
       {
         op: 'orange',
         color: OPERATOR_META.orange.color,
-        text: '700 3500 26 GHz',
+        text: 'N258 N78 N28',
       },
       {
         op: 'vodafone',
         color: OPERATOR_META.vodafone.color,
-        text: '700 900 3500',
+        text: 'N78 B7 B38 G9 N28',
       },
       {
         op: 'digi',
         color: OPERATOR_META.digi.color,
-        text: '1800 2100',
+        text: 'B1 B3',
       },
     ]);
 
     const key = buildSiteBandCardKey(sites[0]);
     expect(key).toBe(
-      'bandcard:movistar:700 800 1800 3500|orange:700 3500 26 GHz|vodafone:700 900 3500|digi:1800 2100',
+      'bandcard:movistar:N78 B3 B20 N28|orange:N258 N78 N28|vodafone:N78 B7 B38 G9 N28|digi:B1 B3',
     );
     expect(parseSiteBandCardKey(key)).toEqual(rows);
   });
@@ -493,11 +699,11 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
 
     const rows = buildSiteBandCardRows(site);
     expect(rows).toEqual([
-      { op: 'movistar', color: '#0066CC', text: '800 1800' },
-      { op: 'masmovil', color: '#0D9488', text: '1800 2100' },
+      { op: 'movistar', color: '#0066CC', text: 'B3 B20' },
+      { op: 'masmovil', color: '#0D9488', text: 'B1 B3' },
     ]);
     expect(buildSiteBandCardKey(site)).toBe(
-      'bandcard:movistar:800 1800|masmovil:1800 2100',
+      'bandcard:movistar:B3 B20|masmovil:B1 B3',
     );
   });
 
@@ -524,8 +730,8 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
     expect(parseSiteBandCardKey('bandcard:')).toEqual([]);
     expect(parseSiteBandCardKey('single:movistar')).toEqual([]);
     expect(
-      parseSiteBandCardKey('bandcard:invalidOp:700|digi:  |otros:900'),
-    ).toEqual([{ op: 'otros', color: '#64748B', text: '900' }]);
+      parseSiteBandCardKey('bandcard:invalidOp:N28|digi:  |otros:G9'),
+    ).toEqual([{ op: 'otros', color: '#64748B', text: 'G9' }]);
     expect(getOrCreateBandCardSprite('')).toBeNull();
     expect(getOrCreateBandCardSprite('bandcard:')).toBeNull();
     expect(getOrCreateBandCardSprite('multi:movistar|orange')).toBeNull();
@@ -538,8 +744,8 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
 
     const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
     const rows: BandCardRow[] = [
-      { op: 'movistar', color: '#0066CC', text: '700 800 1800 3500' },
-      { op: 'digi', color: '#7C3AED', text: '1800 2600 3500' },
+      { op: 'movistar', color: '#0066CC', text: 'N78 B7 B3 B20 N28' },
+      { op: 'digi', color: '#7C3AED', text: 'N78 B7 B38 B3' },
     ];
 
     const sprite = renderBandCardSprite(rows);
@@ -582,7 +788,7 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     const expectedCenterX = 8 + 232 / 2; // 124
     expect(env.fillTexts).toHaveLength(2);
     expect(env.fillTexts[0]).toMatchObject({
-      text: '700 800 1800 3500',
+      text: 'N78 B7 B3 B20 N28',
       x: expectedCenterX,
       y: 4 + 8 + 13,
       fillStyle: '#0066CC',
@@ -592,7 +798,7 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     });
     expect(env.fillTexts[0].font).toContain('700 21px');
     expect(env.fillTexts[1]).toMatchObject({
-      text: '1800 2600 3500',
+      text: 'N78 B7 B38 B3',
       x: expectedCenterX,
       y: 4 + 8 + 26 + 13,
       fillStyle: '#7C3AED',
@@ -605,20 +811,20 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
   it('uses deterministic fallback width when getContext("2d") is null or measureText returns 0', () => {
     const nullCtxEnv = createMockCanvasEnvironment({ nullContext: true });
     const row: BandCardRow[] = [
-      { op: 'orange', color: '#EA580C', text: '700 1800 3500' },
+      { op: 'orange', color: '#EA580C', text: 'N78 B38 B3 N28' },
     ];
     const fallbackSprite = renderBandCardSprite(row);
-    // 13 chars * 12.2 = 158.6 -> ceil = 159 -> boxW = 187 -> canvasW = 203
+    // 14 chars * 12.2 = 170.8 -> ceil = 171 -> boxW = 199 -> canvasW = 215
     // 1 row * 26 + 16 = 42 -> canvasH = 42 + 14 = 56
-    expect(fallbackSprite.width).toBe(203);
+    expect(fallbackSprite.width).toBe(215);
     expect(fallbackSprite.height).toBe(56);
-    expect(nullCtxEnv.getCanvasSize()).toEqual({ width: 203, height: 56 });
+    expect(nullCtxEnv.getCanvasSize()).toEqual({ width: 215, height: 56 });
 
     const zeroMeasureEnv = createMockCanvasEnvironment({
       measureWidthPerChar: 0,
     });
     const zeroMeasureSprite = renderBandCardSprite(row);
-    expect(zeroMeasureSprite.width).toBe(203);
+    expect(zeroMeasureSprite.width).toBe(215);
     expect(zeroMeasureSprite.height).toBe(56);
     expect(zeroMeasureEnv.fillTexts[0]?.fillStyle).toBe('#EA580C');
 
@@ -626,15 +832,15 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     vi.stubGlobal('document', undefined);
     vi.stubGlobal('ImageData', undefined);
     const headlessSprite = renderBandCardSprite(row);
-    expect(headlessSprite.width).toBe(203);
+    expect(headlessSprite.width).toBe(215);
     expect(headlessSprite.height).toBe(56);
     expect(headlessSprite.data).toBeInstanceOf(Uint8ClampedArray);
-    expect(headlessSprite.data).toHaveLength(203 * 56 * 4);
+    expect(headlessSprite.data).toHaveLength(215 * 56 * 4);
   });
 
   it('caches sprites by key and re-renders after clearBandCardSpriteCache()', () => {
     const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
-    const key = 'bandcard:vodafone:700 800 900 1800 2100 3500';
+    const key = 'bandcard:vodafone:N78 B7 B38 B1 B3 G9 B20 N28';
 
     const first = getOrCreateBandCardSprite(key);
     expect(first).not.toBeNull();
