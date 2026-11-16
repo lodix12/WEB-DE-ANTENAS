@@ -351,14 +351,23 @@ export function getOperatorRowBackground(op: OperatorKey, alpha = 0.5): string {
  */
 export function classifyFrequencyBandMhz(freqText: string): string | null {
   if (!freqText) return null;
-  const matches = freqText.match(/\d+(?:[.,]\d+)?/g);
+  const trimmed = freqText.trim();
+  if (!trimmed) return null;
+  const matches = trimmed.match(/\d+(?:[.,]\d+)?/g);
   if (!matches || matches.length === 0) return null;
   const nums = matches
     .map((n) => Number.parseFloat(n.replace(',', '.')))
     .filter((n) => Number.isFinite(n));
   if (nums.length === 0) return null;
 
-  const isGhz = /ghz/i.test(freqText) && nums[0] < 100;
+  const first = nums[0];
+  const second = nums[1] ?? first;
+  const lo = Math.min(first, second);
+  const hi = Math.max(first, second);
+  const isGhz =
+    /^2[67](?:[.,]\d+)?\s*[mg]hz$/i.test(trimmed) ||
+    (lo >= 24 && hi <= 29.5) ||
+    (/ghz/i.test(trimmed) && first < 100);
   const mhzValues = isGhz ? nums.map((n) => n * 1000) : nums;
   const mid =
     mhzValues.length >= 2
@@ -373,7 +382,7 @@ export function classifyFrequencyBandMhz(freqText: string): string | null {
   if (mid >= 1895 && mid <= 2205) return '2100 MHz';
   if (mid >= 2495 && mid <= 2695) return '2600 MHz';
   if (mid >= 3300 && mid <= 3850) return '3500 MHz';
-  if (mid >= 24250 && mid <= 27500) return '26 GHz';
+  if (mid >= 24000 && mid <= 29500) return '26 GHz';
   return null;
 }
 
@@ -461,8 +470,10 @@ export function filterNovedades({
       const tipoLabel =
         row.tipo === 'antena' ? 'antena nueva' : 'frecuencia nueva';
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia) ?? '';
+      const inferredBandSearch =
+        inferredBand === '26 GHz' ? '26 GHz 26GHz' : inferredBand;
       const haystack = normalizeSearchText(
-        `${tipoLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${row.op} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBand} ${row.ubicacion} ${row.prov ?? ''} ${formattedDate}`,
+        `${tipoLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${row.op} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${formattedDate}`,
       );
       let matchesAll = true;
       for (let t = 0; t < tokens.length; t++) {

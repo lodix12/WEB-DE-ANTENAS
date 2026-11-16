@@ -8,8 +8,8 @@ import {
   X,
 } from 'lucide-react';
 import {
-  compareBandLabels,
   compareFrequencyRanges,
+  normalizeAntennaBandsList,
 } from '../../hooks/useAntenasData';
 import {
   getDetalleEstacionUrl,
@@ -26,22 +26,35 @@ function formatFrequencyRangeEntry(raw: string): {
   spanLabel: string | null;
 } {
   const trimmed = raw.trim();
-  const rangeLabel = /[mg]hz$/i.test(trimmed) ? trimmed : `${trimmed} MHz`;
   const match =
-    /^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)(?:\s*mhz)?$/i.exec(trimmed);
+    /^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)(?:\s*[mg]hz)?$/i.exec(trimmed);
   if (!match) {
+    if (/^2[67](?:[.,]\d+)?(?:\s*[mg]hz)?$/i.test(trimmed) || /ghz$/i.test(trimmed)) {
+      const clean = trimmed.replace(/\s*[mg]hz$/i, '');
+      return { rangeLabel: `${clean} GHz`, spanLabel: null };
+    }
+    const rangeLabel = /mhz$/i.test(trimmed) ? trimmed : `${trimmed} MHz`;
     return { rangeLabel, spanLabel: null };
   }
+
   const start = Number(match[1].replace(',', '.'));
   const end = Number(match[2].replace(',', '.'));
+  const cleanRange = trimmed.replace(/\s*[mg]hz$/i, '');
+  const isMmWaveOrGhz =
+    (start >= 24 && end <= 29.5) || (/ghz/i.test(trimmed) && end < 100);
+  const rangeLabel = isMmWaveOrGhz ? `${cleanRange} GHz` : `${cleanRange} MHz`;
+
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
     return { rangeLabel, spanLabel: null };
   }
-  const bw = Math.round((end - start) * 100) / 100;
+
+  const bwMhz = isMmWaveOrGhz
+    ? Math.round((end - start) * 1000 * 100) / 100
+    : Math.round((end - start) * 100) / 100;
   return {
     rangeLabel,
-    spanLabel: `${bw.toLocaleString('es-ES', {
-      minimumFractionDigits: Number.isInteger(bw) ? 0 : 1,
+    spanLabel: `${bwMhz.toLocaleString('es-ES', {
+      minimumFractionDigits: Number.isInteger(bwMhz) ? 0 : 1,
       maximumFractionDigits: 2,
     })} MHz`,
   };
@@ -102,14 +115,22 @@ export function StationDetailDrawer({
 
   const sortedBands = useMemo(() => {
     if (!antenna?.bandas) return null;
-    return [...antenna.bandas].sort(compareBandLabels);
+    return normalizeAntennaBandsList(antenna.bandas);
   }, [antenna]);
 
   const sortedFreqEntries = useMemo(() => {
     if (!antenna?.frecuencias || antenna.frecuencias.length === 0) return [];
-    return [...antenna.frecuencias]
-      .sort(compareFrequencyRanges)
-      .map(formatFrequencyRangeEntry);
+    const seen = new Set<string>();
+    const entries: Array<{ rangeLabel: string; spanLabel: string | null }> = [];
+    const sorted = [...antenna.frecuencias].sort(compareFrequencyRanges);
+    for (let i = 0; i < sorted.length; i++) {
+      const formatted = formatFrequencyRangeEntry(sorted[i]);
+      if (!seen.has(formatted.rangeLabel)) {
+        seen.add(formatted.rangeLabel);
+        entries.push(formatted);
+      }
+    }
+    return entries;
   }, [antenna]);
 
   if (!antenna) return null;
@@ -234,15 +255,15 @@ export function StationDetailDrawer({
           </section>
         )}
 
-        {/* Bandas y Frecuencias Asignadas (MHz) */}
+        {/* Bandas y Frecuencias Asignadas */}
         <section
           className="station-bands-card"
-          aria-label="Bandas y Frecuencias Asignadas (MHz)"
+          aria-label="Bandas y Frecuencias Asignadas"
         >
           <div className="station-bands-head">
             <span className="station-bands-title">
               <Radio size={13} aria-hidden="true" />
-              <span>Bandas y Frecuencias Asignadas (MHz)</span>
+              <span>Bandas y Frecuencias Asignadas</span>
             </span>
             <span className="colocation-count-pill">
               {sortedBands && sortedBands.length > 0
@@ -270,10 +291,10 @@ export function StationDetailDrawer({
                 <div
                   className="station-freq-table"
                   role="table"
-                  aria-label="Rangos exactos de frecuencias asignadas en MHz"
+                  aria-label="Rangos exactos de frecuencias asignadas"
                 >
                   <div className="station-freq-thead" role="row">
-                    <span role="columnheader">Rango Asignado (MHz)</span>
+                    <span role="columnheader">Rango Asignado</span>
                     <span role="columnheader">Bloque</span>
                   </div>
                   {sortedFreqEntries.map((entry) => (
@@ -302,7 +323,7 @@ export function StationDetailDrawer({
                 <div
                   className="station-freq-table"
                   role="table"
-                  aria-label="Rangos exactos de frecuencias asignadas en MHz"
+                  aria-label="Rangos exactos de frecuencias asignadas"
                 >
                   {sortedFreqEntries.map((entry) => (
                     <div
@@ -495,13 +516,13 @@ export function StationDetailDrawer({
             className="btn btn-primary minetur-cta-btn"
           >
             <span>
-              Consultar niveles de exposición y bandas (MHz) en MINETUR
+              Consultar niveles de exposición y bandas en MINETUR
             </span>
             <ExternalLink size={15} style={{ flexShrink: 0 }} aria-hidden="true" />
           </a>
           <p style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.4 }}>
             Abre la ficha oficial del Ministerio para la Transformación Digital
-            con las bandas activas (700–3500 MHz) y mediciones certificadas en
+            con las bandas activas (700 MHz–26 GHz) y mediciones certificadas en
             µW/cm².
           </p>
 

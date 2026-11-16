@@ -1514,8 +1514,22 @@ def fuse_vodafone_duplicates(
     representantes distintos quede jamás a `< max_distance_m`), rellena `mergedGids`
     cuando se fusionan `> 1` declaraciones y devuelve `(registros_fusionados, duplicados_eliminados)`.
     """
+    def _copy_with_normalized_bands(item: dict[str, Any]) -> dict[str, Any]:
+        copied = dict(item)
+        if isinstance(copied.get("mergedGids"), list):
+            copied["mergedGids"] = list(copied["mergedGids"])
+        if isinstance(copied.get("bandas"), list):
+            copied["bandas"] = normalize_band_labels(copied["bandas"])
+        if isinstance(copied.get("frecuencias"), list):
+            copied["frecuencias"] = list(copied["frecuencias"])
+        if isinstance(copied.get("concesiones"), list):
+            copied["concesiones"] = [
+                dict(c) for c in copied["concesiones"] if isinstance(c, dict)
+            ]
+        return copied
+
     if max_distance_m <= 0.0 or len(records) <= 1:
-        return [dict(r) for r in records], 0
+        return [_copy_with_normalized_bands(r) for r in records], 0
 
     voda_records: list[dict[str, Any]] = []
     voda_pos_by_record_idx: dict[int, int] = {}
@@ -1526,7 +1540,7 @@ def fuse_vodafone_duplicates(
 
     n_voda = len(voda_records)
     if n_voda <= 1:
-        return [dict(r) for r in records], 0
+        return [_copy_with_normalized_bands(r) for r in records], 0
 
     parent = list(range(n_voda))
 
@@ -1587,18 +1601,7 @@ def fuse_vodafone_duplicates(
 
     for root, comp_members in components.items():
         if len(comp_members) == 1:
-            single = dict(comp_members[0])
-            if isinstance(single.get("mergedGids"), list):
-                single["mergedGids"] = list(single["mergedGids"])
-            if isinstance(single.get("bandas"), list):
-                single["bandas"] = list(single["bandas"])
-            if isinstance(single.get("frecuencias"), list):
-                single["frecuencias"] = list(single["frecuencias"])
-            if isinstance(single.get("concesiones"), list):
-                single["concesiones"] = [
-                    dict(c) for c in single["concesiones"] if isinstance(c, dict)
-                ]
-            merged_by_root[root] = single
+            merged_by_root[root] = _copy_with_normalized_bands(comp_members[0])
             continue
 
         fused_duplicates += len(comp_members) - 1
@@ -1657,7 +1660,7 @@ def fuse_vodafone_duplicates(
                     for b in (member.get("bandas") or [])
                     if str(b).strip()
                 }
-                bandas_u = sorted(extra_bands, key=_band_sort_key)
+                bandas_u = normalize_band_labels(extra_bands)
             merged_rec["bandas"] = bandas_u
             merged_rec["frecuencias"] = freqs_u
         else:
@@ -1691,16 +1694,7 @@ def fuse_vodafone_duplicates(
     for rec_idx, rec in enumerate(records):
         voda_k = voda_pos_by_record_idx.get(rec_idx)
         if voda_k is None:
-            copied = dict(rec)
-            if isinstance(copied.get("bandas"), list):
-                copied["bandas"] = list(copied["bandas"])
-            if isinstance(copied.get("frecuencias"), list):
-                copied["frecuencias"] = list(copied["frecuencias"])
-            if isinstance(copied.get("concesiones"), list):
-                copied["concesiones"] = [
-                    dict(c) for c in copied["concesiones"] if isinstance(c, dict)
-                ]
-            output_records.append(copied)
+            output_records.append(_copy_with_normalized_bands(rec))
             continue
         root = find(voda_k)
         if root not in emitted_roots:
@@ -1759,8 +1753,21 @@ def _norm_freq_str(value: str) -> str:
     return cleaned.upper()
 
 
+_MMWAVE_26GHZ_LABEL_RE = re.compile(r"^(?:26|27)\s*(?:MHz|GHz)$", re.IGNORECASE)
+
+
+def normalize_band_label(label: str) -> str:
+    """Normaliza variantes históricas/erróneas de la banda milimétrica (`26/27 MHz` o `26/27 GHz`) a `'26 GHz'`."""
+    cleaned = " ".join(str(label or "").strip().split())
+    if not cleaned:
+        return ""
+    if _MMWAVE_26GHZ_LABEL_RE.match(cleaned):
+        return "26 GHz"
+    return cleaned
+
+
 def _band_sort_key(label: str) -> tuple[float, str]:
-    text = label.strip()
+    text = normalize_band_label(label)
     m = re.match(r"^(\d+(?:\.\d+)?)\s*(GHz|MHz)$", text, flags=re.IGNORECASE)
     if m:
         value = float(m.group(1))
@@ -1770,9 +1777,23 @@ def _band_sort_key(label: str) -> tuple[float, str]:
     return (float("inf"), text)
 
 
+def normalize_band_labels(labels: list[str] | set[str]) -> list[str]:
+    """Normaliza, deduplica y ordena numéricamente etiquetas de banda (situando `'26 GHz'` tras `'3500 MHz'`)."""
+    deduped = {
+        norm
+        for item in labels
+        if item is not None and (norm := normalize_band_label(str(item)))
+    }
+    return sorted(deduped, key=_band_sort_key)
+
+
 def classify_frequency_band(min_mhz: float, max_mhz: float) -> str:
     """Clasifica un rango de frecuencias (MHz) en su etiqueta comercial española."""
-    mid = (float(min_mhz) + float(max_mhz)) / 2.0
+    lo = min(float(min_mhz), float(max_mhz))
+    hi = max(float(min_mhz), float(max_mhz))
+    mid = (lo + hi) / 2.0
+    if (24.0 <= lo <= 29.5 and 24.0 <= hi <= 29.5) or 24000.0 <= mid <= 29500.0:
+        return "26 GHz"
     if 700.0 <= mid <= 790.0:
         return "700 MHz"
     if 790.0 < mid <= 870.0:
@@ -1789,8 +1810,6 @@ def classify_frequency_band(min_mhz: float, max_mhz: float) -> str:
         return "2600 MHz"
     if 3300.0 <= mid <= 3900.0:
         return "3500 MHz"
-    if 24000.0 <= mid <= 28000.0:
-        return "26 GHz"
     return f"{round(mid)} MHz"
 
 
@@ -1819,7 +1838,7 @@ def summarize_frequency_ranges(
     sorted_items = sorted(parsed.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[0]))
     frecuencias = [kv[0] for kv in sorted_items]
     band_set = {classify_frequency_band(lo, hi) for _, (lo, hi) in sorted_items}
-    bandas = sorted(band_set, key=_band_sort_key)
+    bandas = normalize_band_labels(band_set)
     return bandas, frecuencias
 
 
@@ -2221,6 +2240,7 @@ def preserve_bands_in_records(
     restored = 0
     for rec in records:
         if isinstance(rec.get("bandas"), list):
+            rec["bandas"] = normalize_band_labels(rec["bandas"])
             continue
         rec_id = str(rec.get("id") or "").strip()
         rec_op = str(rec.get("op") or "").strip()
@@ -2238,7 +2258,7 @@ def preserve_bands_in_records(
         if new_gids and not new_gids.issubset(old_gids):
             continue
 
-        rec["bandas"] = list(cand["bandas"])
+        rec["bandas"] = normalize_band_labels(cand["bandas"])
         rec["frecuencias"] = list(cand.get("frecuencias") or [])
         if isinstance(cand.get("concesiones"), list):
             rec["concesiones"] = [
@@ -3473,6 +3493,8 @@ class BandEnricher:
         pending_by_gid: dict[str, list[int]] = {}
         for idx, rec in enumerate(antenas):
             if not self._needs_band_scan(rec):
+                if isinstance(rec.get("bandas"), list):
+                    rec["bandas"] = normalize_band_labels(rec["bandas"])
                 continue
             gids = get_record_gids(rec)
             if not gids:

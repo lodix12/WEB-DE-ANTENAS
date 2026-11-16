@@ -14,6 +14,7 @@ import * as AntenasMapModule from '../components/map/AntenasMap';
 import antenasMapRawSource from '../components/map/AntenasMap.tsx?raw';
 import { MapOverlays } from '../components/map/MapOverlays';
 import { FilterPanel } from '../components/ui/FilterPanel';
+import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
@@ -30,17 +31,21 @@ import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
+import { EstadisticasView } from '../views/EstadisticasView';
 import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
 import { WorkspaceProvider } from './WorkspaceProvider';
 import {
   buildDerivedAntenasStructures,
+  compareFrequencyRanges,
   filterAntenas,
   fuseVodafoneAntennasInDataset,
   getComunidadAutonomaByProvince,
   importAntenasJsonDataset,
   matchesAntennaBandsFilter,
   mergeLiveDeltaIntoAntenasDataset,
+  normalizeAntennaBandsList,
+  normalizeCommercialBandLabel,
   parseCustomAntenasJson,
   useFilteredAntenas,
 } from './useAntenasData';
@@ -3352,17 +3357,16 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     expect(search('B20')).toEqual(['GALR0453B1']);
     expect(search('N28')).toEqual(['B10023']);
 
-    // Conserva intactos availableBands (etiquetas comerciales MHz/GHz) y matchesAntennaBandsFilter
-    expect(derived.availableBands.map((b) => b.band)).toEqual([
-      '26 MHz',
-      '700 MHz',
-      '800 MHz',
-      '900 MHz',
-      '1800 MHz',
-      '2100 MHz',
-      '2600 MHz',
-      '3500 MHz',
-      '26 GHz',
+    // Unifica '26 MHz' y '26 GHz' en una única etiqueta comercial '26 GHz' después de '3500 MHz'
+    expect(derived.availableBands).toEqual([
+      { band: '700 MHz', count: 1 },
+      { band: '800 MHz', count: 1 },
+      { band: '900 MHz', count: 1 },
+      { band: '1800 MHz', count: 1 },
+      { band: '2100 MHz', count: 1 },
+      { band: '2600 MHz', count: 4 },
+      { band: '3500 MHz', count: 2 },
+      { band: '26 GHz', count: 2 },
     ]);
     expect(
       matchesAntennaBandsFilter(['2600 MHz'], ['2600 MHz'], true),
@@ -3399,3 +3403,574 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     );
   });
 });
+
+describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () => {
+  it('normaliza etiquetas comerciales y listas de bandas deduplicando 26 MHz y 27 MHz en 26 GHz tras 3500 MHz', () => {
+    expect(normalizeCommercialBandLabel('26MHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('27MHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('26 MHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('27 MHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('26,5 MHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('26GHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('26 ghz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('27 GHz')).toBe('26 GHz');
+    expect(normalizeCommercialBandLabel('700mhz')).toBe('700 MHz');
+    expect(normalizeCommercialBandLabel('2600 MHz')).toBe('2600 MHz');
+    expect(normalizeCommercialBandLabel('3500 MHz')).toBe('3500 MHz');
+
+    expect(
+      normalizeAntennaBandsList([
+        '27 MHz',
+        '3500 MHz',
+        '26 MHz',
+        '700mhz',
+        '26GHz',
+      ]),
+    ).toEqual(['700 MHz', '3500 MHz', '26 GHz']);
+  });
+
+  it('unifica 26 MHz y 27 MHz (en estaciones distintas, en la misma estación, en parseCustomAntenasJson, fusión Vodafone y live-scan-delta) en una sola banda 26 GHz con conteo deduplicado tras 3500 MHz', () => {
+    const base = createSampleCustomDataset();
+    const rawPayload = {
+      ...base,
+      total: 5,
+      antenas: [
+        // 1. Estación con solo 26 MHz
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MMW001',
+          gid: 'MMW001',
+          op: 'movistar' as const,
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'GRAN VIA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 MHz', '3500 MHz'],
+          frecuencias: ['25.70 - 26.70', '3500.00 - 3600.00'],
+        },
+        // 2. Estación con solo 27 MHz
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - MMW002',
+          gid: 'MMW002',
+          op: 'orange' as const,
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 41.3874,
+          lon: 2.1686,
+          dir: 'DIAGONAL 20',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['27 MHz', '700 MHz'],
+          frecuencias: ['26.70 - 27.10', '768.00 - 778.00'],
+        },
+        // 3. Estación con AMBAS 26 MHz y 27 MHz -> debe contar 1 sola vez en 26 GHz
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MMW003',
+          gid: 'MMW003',
+          op: 'movistar' as const,
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 37.3891,
+          lon: -5.9845,
+          dir: 'SIERPES 10',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['26 MHz', '27 MHz', '2600 MHz'],
+          frecuencias: ['25.70 - 26.70', '26.70 - 27.10', '2620.00 - 2640.00'],
+        },
+        // 4 y 5. Dos registros Vodafone a < 35 m (uno con 26 MHz y otro con 27 MHz) -> fusionan en 1 estación con ['26 GHz']
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 0287700',
+          gid: '0287700',
+          op: 'vodafone' as const,
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 39.4699,
+          lon: -0.3763,
+          dir: 'COLON 15',
+          mun: 'VALENCIA',
+          prov: 'VALENCIA',
+          bandas: ['26 MHz'],
+          frecuencias: ['25.30 - 25.70'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 287700',
+          gid: '287700',
+          op: 'vodafone' as const,
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 39.46995,
+          lon: -0.3763,
+          dir: 'COLON 15',
+          mun: 'VALENCIA',
+          prov: 'VALENCIA',
+          bandas: ['27 MHz'],
+          frecuencias: ['27.10 - 27.50'],
+        },
+      ],
+    };
+
+    const parsed = parseCustomAntenasJson(rawPayload);
+    expect(parsed.antenas.find((a) => a.gid === 'MMW003')?.bandas).toEqual([
+      '2600 MHz',
+      '26 GHz',
+    ]);
+    expect(parsed.antenas.find((a) => a.gid === '287700')?.bandas).toEqual([
+      '26 GHz',
+    ]);
+
+    // También probar entradas legacy en memoria sin pasar antes por parseCustomAntenasJson + mergeLiveDeltaIntoAntenasDataset
+    const unnormalizedDataset: AntenasDataset = {
+      ...base,
+      total: 3,
+      antenas: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MMW001',
+          gid: 'MMW001',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'GRAN VIA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 MHz', '3500 MHz'],
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - MMW002',
+          gid: 'MMW002',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 41.3874,
+          lon: 2.1686,
+          dir: 'DIAGONAL 20',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['27 MHz', '700 MHz'],
+        },
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - MMW003',
+          gid: 'MMW003',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 37.3891,
+          lon: -5.9845,
+          dir: 'SIERPES 10',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['26 MHz', '27 MHz', '2600 MHz'],
+        },
+      ],
+    };
+
+    const accumulatedMmwDelta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'scan-mmw-delta',
+          seq: 1,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-16T10:00:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-15T10:00:00Z',
+          replacesNewAntennas: false,
+          newAntennas: [
+            {
+              id: 'DIGI SPAIN TELECOM, S.L.U. - MMW004',
+              gid: 'MMW004',
+              op: 'digi',
+              opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+              lat: 43.263,
+              lon: -2.935,
+              dir: 'GRAN VIA 40',
+              mun: 'BILBAO',
+              prov: 'BIZKAIA',
+              bandas: ['26MHz', '27MHz'],
+            },
+          ],
+          bandPatches: [
+            {
+              id: 'ORANGE ESPAGNE, S.A.U. - MMW002',
+              gid: 'MMW002',
+              bandas: ['700 MHz', '26 MHz', '27 MHz'],
+              frecuencias: ['768.00 - 778.00', '26.70 - 27.10'],
+              concesiones: [{ ref: 'OR-26G-BCN', freq: '26.70 - 27.10' }],
+              bandsScannedAt: '2026-11-16T10:00:00Z',
+            },
+          ],
+          novedades: [],
+        },
+      ],
+      'scan-mmw-delta',
+    );
+
+    const withLiveDelta = mergeLiveDeltaIntoAntenasDataset(
+      unnormalizedDataset,
+      accumulatedMmwDelta,
+    );
+
+    const derived = buildDerivedAntenasStructures(withLiveDelta);
+    expect(derived.availableBands).toEqual([
+      { band: '700 MHz', count: 1 },
+      { band: '2600 MHz', count: 1 },
+      { band: '3500 MHz', count: 1 },
+      { band: '26 GHz', count: 4 },
+    ]);
+    expect(
+      derived.dataset.antenas.find((a) => a.gid === 'MMW004')?.bandas,
+    ).toEqual(['26 GHz']);
+    expect(
+      derived.dataset.antenas.find((a) => a.gid === 'MMW002')?.bandas,
+    ).toEqual(['700 MHz', '26 GHz']);
+  });
+
+  it('matchesAntennaBandsFilter y filterAntenas unifican 26 MHz, 27 MHz, 26GHz y 26 GHz en modo unión y en exclusiveBands = true', () => {
+    // Modo unión (exclusiveBands = false)
+    expect(matchesAntennaBandsFilter(['26 MHz'], ['26 GHz'], false)).toBe(true);
+    expect(matchesAntennaBandsFilter(['27 MHz'], ['26 GHz'], false)).toBe(true);
+    expect(matchesAntennaBandsFilter(['26 MHz'], ['26GHz'], false)).toBe(true);
+    expect(matchesAntennaBandsFilter(['26 GHz'], ['27MHz'], false)).toBe(true);
+    expect(
+      matchesAntennaBandsFilter(['26 MHz', '3500 MHz'], ['26 GHz'], false),
+    ).toBe(true);
+    expect(matchesAntennaBandsFilter(['2600 MHz'], ['26 GHz'], false)).toBe(
+      false,
+    );
+
+    // Modo exclusivo (exclusiveBands = true): ['26 MHz', '27 MHz'] se deduplica a {'26 GHz'} y coincide exactamente con ['26 GHz'] o ['26GHz']
+    expect(
+      matchesAntennaBandsFilter(['26 MHz', '27 MHz'], ['26 GHz'], true),
+    ).toBe(true);
+    expect(
+      matchesAntennaBandsFilter(['26 MHz', '27 MHz'], ['26GHz'], true),
+    ).toBe(true);
+    expect(matchesAntennaBandsFilter(['27 MHz'], ['26 GHz'], true)).toBe(true);
+    expect(
+      matchesAntennaBandsFilter(['26 MHz', '3500 MHz'], ['26 GHz'], true),
+    ).toBe(false);
+    expect(
+      matchesAntennaBandsFilter(
+        ['26 MHz', '27 MHz', '3500 MHz'],
+        ['26GHz', '3500 MHz'],
+        true,
+      ),
+    ).toBe(true);
+
+    // También a través de filterAntenas
+    const base = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures({
+      ...base,
+      total: 3,
+      antenas: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - ONLY26G',
+          gid: 'ONLY26G',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.41,
+          lon: -3.7,
+          dir: 'SOL 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 MHz', '27 MHz'],
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - MIX26G',
+          gid: 'MIX26G',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.42,
+          lon: -3.71,
+          dir: 'ALCALA 2',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['27 MHz', '3500 MHz'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - ONLY2600',
+          gid: 'ONLY2600',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.43,
+          lon: -3.72,
+          dir: 'GOYA 3',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+        },
+      ],
+    });
+
+    for (const bandQuery of ['26 GHz', '26GHz', '26 MHz', '27 MHz']) {
+      expect(
+        filterAntenas({
+          derived,
+          searchQuery: '',
+          selectedProvince: '',
+          selectedMunicipality: '',
+          selectedBands: [bandQuery],
+          exclusiveBands: false,
+          activeOperators: [...OPERATOR_ORDER],
+        }).map((a) => a.gid),
+      ).toEqual(['ONLY26G', 'MIX26G']);
+
+      expect(
+        filterAntenas({
+          derived,
+          searchQuery: '',
+          selectedProvince: '',
+          selectedMunicipality: '',
+          selectedBands: [bandQuery],
+          exclusiveBands: true,
+          activeOperators: [...OPERATOR_ORDER],
+        }).map((a) => a.gid),
+      ).toEqual(['ONLY26G']);
+    }
+  });
+
+  it('buscar 26GHz, 26 GHz, 26MHz, 26 MHz, 27MHz y 27 MHz en filterAntenas devuelve todas las estaciones unificadas de 26 GHz sin confundir 2600 MHz', () => {
+    const base = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures({
+      ...base,
+      total: 4,
+      antenas: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - S26M',
+          gid: 'S26M',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.41,
+          lon: -3.7,
+          dir: 'CASTELLANA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 MHz'],
+          frecuencias: ['25.70 - 26.70'],
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - S27M',
+          gid: 'S27M',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.42,
+          lon: -3.71,
+          dir: 'CASTELLANA 2',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['27 MHz'],
+          frecuencias: ['26.70 - 27.10'],
+        },
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - S26G',
+          gid: 'S26G',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.43,
+          lon: -3.72,
+          dir: 'CASTELLANA 3',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['26 GHz'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - S2600',
+          gid: 'S2600',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.44,
+          lon: -3.73,
+          dir: 'CASTELLANA 4',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: ['2620.00 - 2640.00'],
+        },
+      ],
+    });
+
+    for (const q of ['26GHz', '26 GHz', '26MHz', '26 MHz', '27MHz', '27 MHz']) {
+      expect(
+        filterAntenas({
+          derived,
+          searchQuery: q,
+          selectedProvince: '',
+          selectedMunicipality: '',
+          activeOperators: [...OPERATOR_ORDER],
+        }).map((a) => a.gid),
+      ).toEqual(['S26M', 'S27M', 'S26G']);
+    }
+  });
+
+  it('compareFrequencyRanges ordena los rangos milimétricos 25.70 - 26.70 y 26.70 - 27.10 después de 3460.00 - 3600.00', () => {
+    expect(compareFrequencyRanges('25.70 - 26.70', '3460.00 - 3600.00')).toBeGreaterThan(0);
+    expect(compareFrequencyRanges('3460.00 - 3600.00', '25.70 - 26.70')).toBeLessThan(0);
+
+    const sorted = [
+      '26.70 - 27.10',
+      '3460.00 - 3600.00',
+      '25.70 - 26.70',
+      '758.00 - 768.00',
+      '2620.00 - 2640.00',
+    ].sort(compareFrequencyRanges);
+
+    expect(sorted).toEqual([
+      '758.00 - 768.00',
+      '2620.00 - 2640.00',
+      '3460.00 - 3600.00',
+      '25.70 - 26.70',
+      '26.70 - 27.10',
+    ]);
+  });
+
+  it('clasifica rangos 26/27 en Novedades como 26 GHz y actualiza UI en FilterPanel, StationDetailDrawer, EstadisticasView y AntenasMap', async () => {
+    expect(classifyFrequencyBandMhz('25.70 - 26.70 MHz')).toBe('26 GHz');
+    expect(classifyFrequencyBandMhz('26.70 - 27.10 MHz')).toBe('26 GHz');
+    expect(classifyFrequencyBandMhz('25.70 - 26.70 GHz')).toBe('26 GHz');
+    expect(classifyFrequencyBandMhz('26 MHz')).toBe('26 GHz');
+    expect(classifyFrequencyBandMhz('27 MHz')).toBe('26 GHz');
+    expect(classifyFrequencyBandMhz('26 GHz')).toBe('26 GHz');
+
+    const mmwNovItems = filterNovedades({
+      novedades: [
+        {
+          id: 'freq::MMW::1',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800258',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800258',
+          codigoBanda: 'MM-26G',
+          frecuencia: '25.70 - 26.70 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T10:00:00Z',
+          fecha: '16/11/2026 11:00:00',
+        },
+      ],
+      tipoFilter: 'all',
+      operatorFilter: 'all',
+      bandFilter: '26 GHz',
+      searchQuery: '26GHz',
+    });
+    expect(mmwNovItems).toHaveLength(1);
+
+    // AntenasMap mantiene AntenasMap como única exportación para react-refresh
+    expect(Object.keys(AntenasMapModule)).toEqual(['AntenasMap']);
+    expect(antenasMapRawSource).toContain('normalizeAntennaBandsList');
+
+    const base = createSampleCustomDataset();
+    const mmwAntenna = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800258',
+      gid: '2800258',
+      op: 'movistar' as const,
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: 40.45,
+      lon: -3.69,
+      dir: 'PASEO DE LA CASTELLANA 100',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['26 MHz', '27 MHz', '3500 MHz'],
+      frecuencias: ['25.70 - 26.70', '26.70 - 27.10', '3460.00 - 3600.00'],
+      concesiones: [
+        { ref: 'MM-26G-1', freq: '25.70 - 26.70' },
+        { ref: 'MM-26G-2', freq: '26.70 - 27.10' },
+        { ref: 'MM-3500', freq: '3460.00 - 3600.00' },
+      ],
+    };
+    const datasetWithMmw: AntenasDataset = {
+      ...base,
+      total: base.antenas.length + 1,
+      antenas: [...base.antenas, mmwAntenna],
+    };
+    const derived = buildDerivedAntenasStructures(datasetWithMmw);
+
+    // FilterPanel muestra "Frecuencias" y aria-label "Filtrar por bandas de frecuencia" + chip 26 GHz
+    const filterHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterHtml).toContain('aria-label="Filtrar por bandas de frecuencia"');
+    expect(filterHtml).toContain('>Frecuencias<');
+    expect(filterHtml).not.toContain('Frecuencias (MHz)');
+    expect(filterHtml).toContain('id="filter-band-26-ghz"');
+
+    // StationDetailDrawer muestra "Bandas y Frecuencias Asignadas", chip único "26 GHz", rangos en GHz y bloque en MHz
+    const drawerHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: mmwAntenna,
+        allAntenas: derived.dataset.antenas,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(drawerHtml).toContain('aria-label="Bandas y Frecuencias Asignadas"');
+    expect(drawerHtml).not.toContain('Bandas y Frecuencias Asignadas (MHz)');
+    expect(drawerHtml).toContain('>26 GHz<');
+    expect(drawerHtml).not.toContain('>26 MHz<');
+    expect(drawerHtml).not.toContain('>27 MHz<');
+    expect(drawerHtml).toContain('25.70 - 26.70 GHz');
+    expect(drawerHtml).toContain('26.70 - 27.10 GHz');
+    expect(drawerHtml).toMatch(/1\.?000 MHz/);
+    expect(drawerHtml).toContain('400 MHz');
+
+    // EstadisticasView muestra "Cobertura y Desglose por Banda de Frecuencia", "(700 MHz a 26 GHz)" y el rol mmWave n258
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], datasetWithMmw);
+    const statsRoot = createRootRoute({ component: Outlet });
+    const statsRoute = createRoute({
+      getParentRoute: () => statsRoot,
+      path: '/estadisticas',
+      component: EstadisticasView,
+    });
+    const statsRouter = createRouter({
+      routeTree: statsRoot.addChildren([statsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    });
+    await statsRouter.load();
+
+    const statsHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: statsRouter }),
+        ),
+      ),
+    );
+    expect(statsHtml).toContain('Cobertura y Desglose por Banda de Frecuencia');
+    expect(statsHtml).not.toContain(
+      'Cobertura y Desglose por Banda de Frecuencia (MHz)',
+    );
+    expect(statsHtml).toContain('(700 MHz a 26 GHz)');
+    expect(statsHtml).toContain(
+      '5G NR mmWave (n258 · 26 GHz) · Ultra-alta capacidad milimétrica',
+    );
+  });
+});
+

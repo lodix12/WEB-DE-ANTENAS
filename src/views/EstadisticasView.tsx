@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink, MapPin, Search, X } from 'lucide-react';
-import { useAntenasData } from '../hooks/useAntenasData';
+import {
+  normalizeAntennaBandsList,
+  useAntenasData,
+} from '../hooks/useAntenasData';
 import { useWorkspace } from '../hooks/useWorkspace';
 import {
   OPERATOR_META,
@@ -33,6 +36,9 @@ function formatDuration(seconds: number): string {
 
 function describeBandRole(band: string): string {
   const normalized = band.trim().toUpperCase();
+  if (normalized.startsWith('26 GHZ') || normalized === '26GHZ') {
+    return '5G NR mmWave (n258 · 26 GHz) · Ultra-alta capacidad milimétrica';
+  }
   if (normalized.startsWith('700')) {
     return '5G NR (n28) / LTE B28 · Cobertura interior y rural de largo alcance';
   }
@@ -133,8 +139,9 @@ export function EstadisticasView() {
     for (let i = 0; i < antenas.length; i++) {
       const ant = antenas[i];
       if (!ant.bandas || ant.bandas.length === 0) continue;
-      for (let b = 0; b < ant.bandas.length; b++) {
-        const counts = opMapByBand.get(ant.bandas[b]);
+      const normalizedAntBands = normalizeAntennaBandsList(ant.bandas);
+      for (let b = 0; b < normalizedAntBands.length; b++) {
+        const counts = opMapByBand.get(normalizedAntBands[b]);
         if (counts) {
           counts[ant.op] = (counts[ant.op] ?? 0) + 1;
         }
@@ -400,17 +407,17 @@ export function EstadisticasView() {
         </div>
       </section>
 
-      {/* Cobertura y Desglose por Banda de Frecuencia (MHz) */}
+      {/* Cobertura y Desglose por Banda de Frecuencia */}
       <section className="section-block" aria-labelledby="stats-bands-h2">
         <div className="section-block-header">
           <div>
             <h2 id="stats-bands-h2" className="section-h2">
-              Cobertura y Desglose por Banda de Frecuencia (MHz)
+              Cobertura y Desglose por Banda de Frecuencia
             </h2>
             <p className="section-desc">
               Sincronización incremental desde{' '}
               <code>detalleEstacion.do</code> (MINETUR) y presencia por banda
-              comercial asignada (700 MHz a 3500 MHz).
+              comercial asignada (700 MHz a 26 GHz).
             </p>
           </div>
 
@@ -541,13 +548,13 @@ export function EstadisticasView() {
           ) : (
             <div className="callout-note">
               <strong>Sincronización incremental en curso:</strong> Las bandas y
-              rangos de frecuencia en MHz se incorporan progresivamente en lotes
+              rangos de frecuencia se incorporan progresivamente en lotes
               diarios consultando{' '}
               <code>detalleEstacion.do?emplazamiento=&lt;Gis_ID&gt;</code> en el
               Geoportal MINETUR. En cuanto haya estaciones sincronizadas, aquí
               se mostrará el desglose nacional entre{' '}
               <span className="mono">700 MHz</span> y{' '}
-              <span className="mono">3500 MHz</span>.
+              <span className="mono">26 GHz</span>.
             </div>
           )}
         </div>

@@ -352,12 +352,12 @@ export function FilterPanel({
           </div>
         </section>
 
-        {/* Filtro por Bandas de Frecuencia (MHz) */}
+        {/* Filtro por Bandas de Frecuencia */}
         {derived && derived.availableBands.length > 0 && (
           <section className="panel-section">
             <div className="field-label">
               <span>
-                Frecuencias (MHz)
+                Frecuencias
                 {selectedBands.length > 0 ? ` · ${selectedBands.length}` : ''}
               </span>
               {selectedBands.length > 0 && (
@@ -375,7 +375,7 @@ export function FilterPanel({
             <div
               className="band-pills-grid"
               role="group"
-              aria-label="Filtrar por bandas de frecuencia en MHz"
+              aria-label="Filtrar por bandas de frecuencia"
             >
               {derived.availableBands.map((item) => {
                 const isSelected = selectedBands.includes(item.band);

@@ -538,6 +538,8 @@ class FetchAntenasUnitTests(unittest.TestCase):
             (2155.0, 2170.0, "2100 MHz"),
             (2620.0, 2640.0, "2600 MHz"),
             (3460.0, 3600.0, "3500 MHz"),
+            (25.70, 26.70, "26 GHz"),
+            (26.70, 27.10, "26 GHz"),
             (26500.0, 27500.0, "26 GHz"),
             (450.0, 460.0, "455 MHz"),
         ]
@@ -587,6 +589,128 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 "3460.00 - 3600.00",
                 "26500.00 - 27500.00",
             ],
+        )
+
+    def test_mmwave_26ghz_unification_and_legacy_label_normalization(self) -> None:
+        # Las concesiones mmWave declaradas en MINETUR sin unidad GHz (25.70..27.10)
+        # clasifican y se unifican en una sola entrada "26 GHz" situada tras "3500 MHz".
+        self.assertEqual(fa.classify_frequency_band(25.70, 26.70), "26 GHz")
+        self.assertEqual(fa.classify_frequency_band(26.70, 27.10), "26 GHz")
+        self.assertEqual(fa._band_sort_key("26 GHz"), (26000.0, "26 GHz"))
+
+        mmwave_bandas, mmwave_freqs = fa.summarize_frequency_ranges(
+            [
+                "25.70 - 26.70",
+                "26.70 - 27.10",
+                "3460.00 - 3600.00",
+                "758.00 - 768.00",
+            ]
+        )
+        self.assertEqual(mmwave_bandas, ["700 MHz", "3500 MHz", "26 GHz"])
+        self.assertEqual(
+            mmwave_freqs,
+            [
+                "25.70 - 26.70",
+                "26.70 - 27.10",
+                "758.00 - 768.00",
+                "3460.00 - 3600.00",
+            ],
+        )
+
+        # Todas las variantes históricas ("26 MHz", "27 MHz", "26MHz", "27MHz", etc.) -> "26 GHz"
+        for variant in (
+            "26 MHz",
+            "27 MHz",
+            "26MHz",
+            "27MHz",
+            "26 GHz",
+            "27 GHz",
+            "26GHz",
+            "27GHz",
+            " 26 mhz ",
+            "27ghz",
+        ):
+            with self.subTest(variant=variant):
+                self.assertEqual(fa.normalize_band_label(variant), "26 GHz")
+
+        self.assertEqual(
+            fa.normalize_band_labels(
+                ["26 MHz", "27 MHz", "3500 MHz", "2600 MHz", "700 MHz", "27GHz"]
+            ),
+            ["700 MHz", "2600 MHz", "3500 MHz", "26 GHz"],
+        )
+
+        # Restauración y fusión desde JSON previos normalizan bandas heredadas a "26 GHz"
+        prior_ds = {
+            "antenas": [
+                {
+                    "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811597",
+                    "gid": "2811597",
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 40.42,
+                    "lon": -3.70,
+                    "dir": "CL TEST, 1",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["26 MHz", "1800 MHz", "3500 MHz"],
+                    "frecuencias": ["25.70 - 26.70", "1805.10 - 1825.10", "3460.00 - 3600.00"],
+                }
+            ]
+        }
+        target_records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811597",
+                "gid": "2811597",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.42,
+                "lon": -3.70,
+                "dir": "CL TEST, 1",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            }
+        ]
+        fa.preserve_bands_in_records(target_records, prior_ds)
+        self.assertEqual(
+            target_records[0]["bandas"],
+            ["1800 MHz", "3500 MHz", "26 GHz"],
+        )
+
+        # Fusión Vodafone sin frecuencias declaradas explícitas también normaliza extra_bands
+        voda_fused, _ = fa.fuse_vodafone_duplicates(
+            [
+                {
+                    "id": "VODAFONE ESPAÑA, S.A.U. - 1001",
+                    "gid": "1001",
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                    "lat": 40.420000,
+                    "lon": -3.700000,
+                    "dir": "CL VODA, 1",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["26 MHz", "3500 MHz"],
+                    "frecuencias": [],
+                },
+                {
+                    "id": "VODAFONE ESPAÑA, S.A. - 01001",
+                    "gid": "01001",
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.",
+                    "lat": 40.420050,
+                    "lon": -3.700000,
+                    "dir": "CL VODA, 1",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["27 MHz", "700 MHz"],
+                    "frecuencias": [],
+                },
+            ]
+        )
+        self.assertEqual(
+            voda_fused[0]["bandas"],
+            ["700 MHz", "3500 MHz", "26 GHz"],
         )
 
     def test_parse_detalle_estacion_html_extracts_caracteristicas_and_ignores_niveles_medidos(

@@ -235,15 +235,38 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Normaliza cualquier etiqueta comercial de banda móvil a su formato canónico,
+ * unificando las etiquetas heredadas de MINETUR "26MHz"/"27MHz" ("26 MHz"/"27 MHz")
+ * y variantes GHz ("26GHz"/"27GHz") en la banda única "26 GHz".
+ */
+export function normalizeCommercialBandLabel(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^2[67](?:[.,]\d+)?\s*[mg]hz$/i.test(trimmed)) {
+    return '26 GHz';
+  }
+  const mhzMatch = /^(\d+(?:[.,]\d+)?)\s*mhz$/i.exec(trimmed);
+  if (mhzMatch) {
+    return `${mhzMatch[1]} MHz`;
+  }
+  const ghzMatch = /^(\d+(?:[.,]\d+)?)\s*ghz$/i.exec(trimmed);
+  if (ghzMatch) {
+    return `${ghzMatch[1]} GHz`;
+  }
+  return trimmed;
+}
+
+/**
  * Extrae el valor numérico equivalente en MHz de una etiqueta de banda comercial
  * (ej. "700 MHz" -> 700, "3500 MHz" -> 3500, "26 GHz" -> 26000) para ordenación estricta.
  */
 export function parseBandMhzSortValue(label: string): number {
-  const match = /(\d+(?:[.,]\d+)?)/.exec(label);
+  const normalized = normalizeCommercialBandLabel(label);
+  const match = /(\d+(?:[.,]\d+)?)/.exec(normalized);
   if (!match) return Number.POSITIVE_INFINITY;
   const num = Number(match[1].replace(',', '.'));
   if (!Number.isFinite(num)) return Number.POSITIVE_INFINITY;
-  return /ghz/i.test(label) ? num * 1000 : num;
+  return /ghz/i.test(normalized) ? num * 1000 : num;
 }
 
 export function compareBandLabels(a: string, b: string): number {
@@ -252,16 +275,59 @@ export function compareBandLabels(a: string, b: string): number {
   return a.localeCompare(b, 'es', { numeric: true });
 }
 
+/**
+ * Normaliza, deduplica y ordena numéricamente las bandas comerciales de una estación
+ * (situando "26 GHz" justo después de "3500 MHz").
+ */
+export function normalizeAntennaBandsList(
+  bandas: readonly string[] | undefined,
+): string[] {
+  if (!bandas || bandas.length === 0) {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < bandas.length; i++) {
+    const normalized = normalizeCommercialBandLabel(bandas[i]);
+    if (normalized) {
+      seen.add(normalized);
+    }
+  }
+  return Array.from(seen).sort(compareBandLabels);
+}
+
+function isNormalizedBandsArray(bandas: readonly string[]): boolean {
+  for (let i = 0; i < bandas.length; i++) {
+    const raw = bandas[i];
+    if (!raw || normalizeCommercialBandLabel(raw) !== raw) {
+      return false;
+    }
+    if (i > 0 && compareBandLabels(bandas[i - 1], raw) >= 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function parseFrequencyRangeSortBounds(raw: string): [number, number] {
+  const nums =
+    raw.match(/\d+(?:[.,]\d+)?/g)?.map((n) => Number(n.replace(',', '.'))) ?? [];
+  const rawStart = nums[0];
+  if (rawStart === undefined || !Number.isFinite(rawStart)) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const rawEnd =
+    nums[1] !== undefined && Number.isFinite(nums[1]) ? nums[1] : rawStart;
+  const lo = Math.min(rawStart, rawEnd);
+  const hi = Math.max(rawStart, rawEnd);
+  const scaleToMhz =
+    (lo >= 24 && hi <= 29.5) || (/ghz/i.test(raw) && hi < 100);
+  return scaleToMhz ? [rawStart * 1000, rawEnd * 1000] : [rawStart, rawEnd];
+}
+
 export function compareFrequencyRanges(a: string, b: string): number {
-  const numsA =
-    a.match(/\d+(?:[.,]\d+)?/g)?.map((n) => Number(n.replace(',', '.'))) ?? [];
-  const numsB =
-    b.match(/\d+(?:[.,]\d+)?/g)?.map((n) => Number(n.replace(',', '.'))) ?? [];
-  const startA = numsA[0] ?? Number.POSITIVE_INFINITY;
-  const startB = numsB[0] ?? Number.POSITIVE_INFINITY;
+  const [startA, endA] = parseFrequencyRangeSortBounds(a);
+  const [startB, endB] = parseFrequencyRangeSortBounds(b);
   if (startA !== startB) return startA - startB;
-  const endA = numsA[1] ?? startA;
-  const endB = numsB[1] ?? startB;
   if (endA !== endB) return endA - endB;
   return a.localeCompare(b, 'es', { numeric: true });
 }
@@ -343,14 +409,16 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
         `Campo mergedGids inválido en antenas[${i}]: se esperaba un array de strings.`,
       );
     }
-    if (
-      item.bandas !== undefined &&
-      (!Array.isArray(item.bandas) ||
-        !item.bandas.every((band): band is string => typeof band === 'string'))
-    ) {
-      throw new Error(
-        `Campo bandas inválido en antenas[${i}]: se esperaba un array de strings.`,
-      );
+    if (item.bandas !== undefined) {
+      if (
+        !Array.isArray(item.bandas) ||
+        !item.bandas.every((band): band is string => typeof band === 'string')
+      ) {
+        throw new Error(
+          `Campo bandas inválido en antenas[${i}]: se esperaba un array de strings.`,
+        );
+      }
+      item.bandas = normalizeAntennaBandsList(item.bandas);
     }
     if (
       item.frecuencias !== undefined &&
@@ -622,7 +690,7 @@ export function fuseVodafoneAntennasInDataset(
       if (Array.isArray(member.bandas)) {
         anyHasBandas = true;
         for (let b = 0; b < member.bandas.length; b++) {
-          const bLabel = member.bandas[b].trim();
+          const bLabel = normalizeCommercialBandLabel(member.bandas[b]);
           if (bLabel) {
             seenBandas.add(bLabel);
           }
@@ -675,7 +743,7 @@ export function fuseVodafoneAntennasInDataset(
       merged.mergedGids = mergedGids;
     }
     if (anyHasBandas) {
-      merged.bandas = Array.from(seenBandas).sort(compareBandLabels);
+      merged.bandas = normalizeAntennaBandsList(Array.from(seenBandas));
     }
     if (anyHasFrecuencias) {
       merged.frecuencias = Array.from(seenFrecuencias).sort(
@@ -1010,7 +1078,27 @@ function deriveAntennaBandCodesText(ant: AntennaRecord): string {
 export function buildDerivedAntenasStructures(
   inputDataset: AntenasDataset,
 ): DerivedAntenasStructures {
-  const dataset = fuseVodafoneAntennasInDataset(inputDataset);
+  const fusedDataset = fuseVodafoneAntennasInDataset(inputDataset);
+  let normalizedAntenas: AntennaRecord[] | null = null;
+  for (let i = 0; i < fusedDataset.antenas.length; i++) {
+    const candidate = fusedDataset.antenas[i];
+    if (
+      Array.isArray(candidate.bandas) &&
+      !isNormalizedBandsArray(candidate.bandas)
+    ) {
+      if (normalizedAntenas === null) {
+        normalizedAntenas = fusedDataset.antenas.slice();
+      }
+      normalizedAntenas[i] = {
+        ...candidate,
+        bandas: normalizeAntennaBandsList(candidate.bandas),
+      };
+    }
+  }
+  const dataset: AntenasDataset =
+    normalizedAntenas !== null
+      ? { ...fusedDataset, antenas: normalizedAntenas }
+      : fusedDataset;
   const { antenas } = dataset;
 
   const operatorCounts: Record<OperatorKey, number> = {
@@ -1043,20 +1131,15 @@ export function buildDerivedAntenasStructures(
       byGid.set(ant.gid, ant);
     }
 
-    if (Array.isArray(ant.bandas)) {
+    const normalizedAntBands = Array.isArray(ant.bandas)
+      ? normalizeAntennaBandsList(ant.bandas)
+      : undefined;
+
+    if (normalizedAntBands !== undefined) {
       bandsPopulatedCount += 1;
-      if (ant.bandas.length > 0) {
-        const seenAntBands = new Set<string>();
-        for (let b = 0; b < ant.bandas.length; b++) {
-          const bandLabel = ant.bandas[b].trim();
-          if (bandLabel && !seenAntBands.has(bandLabel)) {
-            seenAntBands.add(bandLabel);
-            bandCountsMap.set(
-              bandLabel,
-              (bandCountsMap.get(bandLabel) ?? 0) + 1,
-            );
-          }
-        }
+      for (let b = 0; b < normalizedAntBands.length; b++) {
+        const bandLabel = normalizedAntBands[b];
+        bandCountsMap.set(bandLabel, (bandCountsMap.get(bandLabel) ?? 0) + 1);
       }
     }
 
@@ -1086,13 +1169,20 @@ export function buildDerivedAntenasStructures(
       ant.mergedGids && ant.mergedGids.length > 0
         ? ant.mergedGids.join(' ')
         : '';
-    const bandsText = (ant.bandas ?? []).join(' ');
+    const bandCodesText = deriveAntennaBandCodesText(ant);
+    const antBandsArr = normalizedAntBands ?? [];
+    const has26GhzBand = antBandsArr.includes('26 GHz');
+    const hasN258Code = /\bn258\b/.test(bandCodesText);
+    const bandsText = has26GhzBand
+      ? `${antBandsArr.join(' ')} 26ghz`
+      : hasN258Code
+        ? `${antBandsArr.join(' ')} 26 ghz 26ghz`.trim()
+        : antBandsArr.join(' ');
     const freqsText = (ant.frecuencias ?? []).join(' ');
     const concesionesText =
       ant.concesiones && ant.concesiones.length > 0
         ? ant.concesiones.map((c) => `${c.ref} ${c.freq}`).join(' ')
         : '';
-    const bandCodesText = deriveAntennaBandCodesText(ant);
     searchIndex[i] = normalizeSearchText(
       bandCodesText
         ? `${ant.gid} ${extraGids} ${ant.mun} ${ant.prov} ${ant.dir} ${ant.opRaw} ${ant.op} ${bandsText} ${freqsText} ${concesionesText} ${bandCodesText}`
@@ -1413,7 +1503,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
       mergedAntenas[i] = {
         ...ant,
         ...(nextMergedGids !== undefined ? { mergedGids: nextMergedGids } : {}),
-        bandas: patch.bandas,
+        bandas: normalizeAntennaBandsList(patch.bandas),
         frecuencias: patch.frecuencias,
         concesiones: patch.concesiones,
         bandsScannedAt: patch.bandsScannedAt,
@@ -1439,12 +1529,14 @@ export function mergeLiveDeltaIntoAntenasDataset(
             ...(nextNewMergedGids !== undefined
               ? { mergedGids: nextNewMergedGids }
               : {}),
-            bandas: newPatch.bandas,
+            bandas: normalizeAntennaBandsList(newPatch.bandas),
             frecuencias: newPatch.frecuencias,
             concesiones: newPatch.concesiones,
             bandsScannedAt: newPatch.bandsScannedAt,
           }
-        : { ...rawNew };
+        : rawNew.bandas !== undefined
+          ? { ...rawNew, bandas: normalizeAntennaBandsList(rawNew.bandas) }
+          : { ...rawNew };
 
     let existingIdx = existingIndexById.get(candidate.id);
     if (existingIdx === undefined && candidate.gid) {
@@ -1584,6 +1676,17 @@ export function useAntenasData() {
   };
 }
 
+function buildNormalizedBandsSet(bands: readonly string[]): Set<string> {
+  const set = new Set<string>();
+  for (let i = 0; i < bands.length; i++) {
+    const normalized = normalizeCommercialBandLabel(bands[i]);
+    if (normalized) {
+      set.add(normalized);
+    }
+  }
+  return set;
+}
+
 function matchesNormalizedBandsSet(
   antBands: readonly string[] | undefined,
   selectedSet: ReadonlySet<string>,
@@ -1597,7 +1700,7 @@ function matchesNormalizedBandsSet(
   }
   if (!exclusiveBands) {
     for (let i = 0; i < antBands.length; i++) {
-      const b = antBands[i].trim();
+      const b = normalizeCommercialBandLabel(antBands[i]);
       if (b && selectedSet.has(b)) {
         return true;
       }
@@ -1612,7 +1715,7 @@ function matchesNormalizedBandsSet(
   if (selectedSet.size === 1) {
     let matchedSingle = false;
     for (let i = 0; i < antBands.length; i++) {
-      const b = antBands[i].trim();
+      const b = normalizeCommercialBandLabel(antBands[i]);
       if (!b) continue;
       if (!selectedSet.has(b)) {
         return false;
@@ -1624,7 +1727,7 @@ function matchesNormalizedBandsSet(
 
   const seen = new Set<string>();
   for (let i = 0; i < antBands.length; i++) {
-    const b = antBands[i].trim();
+    const b = normalizeCommercialBandLabel(antBands[i]);
     if (!b) continue;
     if (!selectedSet.has(b)) {
       return false;
@@ -1644,13 +1747,7 @@ export function matchesAntennaBandsFilter(
   selectedBands: readonly string[],
   exclusiveBands: boolean,
 ): boolean {
-  const selectedSet = new Set<string>();
-  for (let i = 0; i < selectedBands.length; i++) {
-    const trimmed = selectedBands[i].trim();
-    if (trimmed) {
-      selectedSet.add(trimmed);
-    }
-  }
+  const selectedSet = buildNormalizedBandsSet(selectedBands);
   return matchesNormalizedBandsSet(antBands, selectedSet, exclusiveBands);
 }
 
@@ -1680,7 +1777,21 @@ function buildSearchMatchers(normalizedQuery: string): SearchMatcher[] {
   const remainder = normalizedQuery.replace(
     bandRegex,
     (_full, num: string, unit: string) => {
-      matchers.push({ token: `${num} ${unit}`, exactWord: true });
+      const parsedNum = Number(num.replace(',', '.'));
+      if (
+        (num === '26' || num === '27') &&
+        (unit === 'mhz' || unit === 'ghz')
+      ) {
+        matchers.push({ token: '26 ghz', exactWord: true });
+      } else if (
+        Number.isFinite(parsedNum) &&
+        parsedNum >= 24 &&
+        parsedNum <= 29.5
+      ) {
+        matchers.push({ token: '26 ghz', exactWord: true });
+      } else {
+        matchers.push({ token: `${num} ${unit}`, exactWord: true });
+      }
       return ' ';
     },
   );
@@ -1724,13 +1835,7 @@ export function filterAntenas({
       : selectedBand && selectedBand.trim()
         ? [selectedBand.trim()]
         : [];
-  const selectedBandsSet = new Set<string>();
-  for (let i = 0; i < rawBands.length; i++) {
-    const trimmed = rawBands[i].trim();
-    if (trimmed) {
-      selectedBandsSet.add(trimmed);
-    }
-  }
+  const selectedBandsSet = buildNormalizedBandsSet(rawBands);
 
   // Si el usuario escribe coordenadas válidas ("40.4168, -3.7038"), no filtramos el texto literal
   // para que pueda ver las antenas alrededor de ese punto en el mapa.

@@ -14,6 +14,7 @@ import {
   type AntennaRecord,
   type OperatorKey,
 } from '../../types/antena';
+import { normalizeAntennaBandsList } from '../../hooks/useAntenasData';
 import type { AntenasMapProps, MeasurePoint } from '../../types/map';
 import {
   BAND_CARD_KEY_PREFIX,
@@ -255,9 +256,12 @@ function buildPopupHtml(
   const locationLine = [props.mun, props.prov].filter(Boolean).join(', ');
   const safeLocation = escapeHtml(locationLine || 'Ubicación registrada');
   const safeDir = escapeHtml(props.dir || 'Sin dirección postal detallada');
+  const popupBands = primaryAnt?.bandas
+    ? normalizeAntennaBandsList(primaryAnt.bandas)
+    : [];
   const bandsHtml =
-    primaryAnt?.bandas && primaryAnt.bandas.length > 0
-      ? `<div class="map-popup-bands">${primaryAnt.bandas
+    popupBands.length > 0
+      ? `<div class="map-popup-bands">${popupBands
           .map(
             (band) =>
               `<span class="map-popup-band-chip">${escapeHtml(band)}</span>`,
