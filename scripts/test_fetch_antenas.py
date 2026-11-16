@@ -21,6 +21,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import evaluate_schedule_gate as esg  # noqa: E402
 import fetch_antenas as fa  # noqa: E402
 import publish_scan_status as pss  # noqa: E402
 
@@ -3158,7 +3159,168 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(res_status_doc["deltaSeq"], 3)
 
 
+class ScheduleGateUnitTests(unittest.TestCase):
+    def test_winter_cet_skips_before_18h_and_triggers_at_1803_or_late_catchup(
+        self,
+    ) -> None:
+        # Invierno (CET = UTC+1): 16:03 UTC son las 17:03 en España -> debe omitirse
+        should_1703, reason_1703 = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 16, 3, 15, tzinfo=timezone.utc),
+            current_run_id="50001",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_1703)
+        self.assertIn("Antes de las 18:00", reason_1703)
+
+        # 17:03 UTC son las 18:03 CET -> debe disparar (incluso si hubo escaneo manual a las 15:38 UTC < 17:00 UTC)
+        should_1803, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 17, 3, 10, tzinfo=timezone.utc),
+            current_run_id="50002",
+            scan_status_doc={
+                "state": "completed",
+                "scanId": "43898601263",
+                "recordNovedades": True,
+                "startedAt": "2026-11-16T15:38:51Z",
+                "updatedAt": "2026-11-16T15:54:40Z",
+            },
+            recent_runs_with_jobs=[],
+        )
+        self.assertTrue(should_1803)
+
+        # Recuperación automática tardía: si GitHub retrasó o descartó los turnos de las 18:xx
+        # y el respaldo entra a las 18:13 UTC (19:13 CET), SÍ debe ejecutarse (antes fallaba por HOUR=="18")
+        should_1913, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 18, 13, 5, tzinfo=timezone.utc),
+            current_run_id="50003",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertTrue(should_1913)
+
+    def test_summer_cest_and_idempotent_deduplication_across_backup_slots(
+        self,
+    ) -> None:
+        # Verano (CEST = UTC+2): 16:03 UTC son las 18:03 en España -> dispara
+        should_summer, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 7, 15, 16, 3, 0, tzinfo=timezone.utc),
+            current_run_id="60001",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertTrue(should_summer)
+
+        # Turno de respaldo a las 17:23 UTC (19:23 CEST) cuando el de las 16:03 UTC ya completó -> se omite
+        should_dup_status, reason_dup = esg.decide_schedule_action(
+            now_utc=datetime(2026, 7, 15, 17, 23, 0, tzinfo=timezone.utc),
+            current_run_id="60002",
+            scan_status_doc={
+                "state": "completed",
+                "scanId": "60001",
+                "recordNovedades": True,
+                "startedAt": "2026-07-15T16:03:04Z",
+                "updatedAt": "2026-07-15T16:21:10Z",
+            },
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_dup_status)
+        self.assertIn("ya completado hoy", reason_dup)
+
+        # Si el escaneo anterior tras las 18:00 falló (state=stopped, conclusion=failure), el respaldo reintenta
+        should_retry, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 17, 43, 0, tzinfo=timezone.utc),
+            current_run_id="70002",
+            scan_status_doc={
+                "state": "stopped",
+                "scanId": "70001",
+                "recordNovedades": True,
+                "startedAt": "2026-11-16T17:03:05Z",
+                "updatedAt": "2026-11-16T17:06:00Z",
+            },
+            recent_runs_with_jobs=[
+                (
+                    {
+                        "id": 70001,
+                        "event": "schedule",
+                        "created_at": "2026-11-16T17:03:02Z",
+                    },
+                    [
+                        {
+                            "name": "Escaneo Nacional MINETUR (Parte 1/2 · Censo + Bandas Keep-Alive)",
+                            "status": "completed",
+                            "conclusion": "failure",
+                        }
+                    ],
+                )
+            ],
+        )
+        self.assertTrue(should_retry)
+
+    def test_main_cli_writes_github_output_and_respects_active_run_jobs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = Path(tmpdir) / "github_output.txt"
+
+            def fake_api_get(url: str, _token: str, timeout: float = 10.0) -> object:
+                if "contents/scan-status.json" in url:
+                    # Aún muestra el escaneo de ayer
+                    import base64 as b64
+
+                    doc = {
+                        "state": "completed",
+                        "scanId": "old-yesterday",
+                        "recordNovedades": True,
+                        "startedAt": "2026-11-15T17:03:00Z",
+                        "updatedAt": "2026-11-15T17:20:00Z",
+                    }
+                    return {
+                        "encoding": "base64",
+                        "content": b64.b64encode(json.dumps(doc).encode("utf-8")).decode(
+                            "ascii"
+                        ),
+                    }
+                if "/workflows/update-and-deploy.yml/runs" in url:
+                    return {
+                        "workflow_runs": [
+                            {
+                                "id": 88001,
+                                "event": "schedule",
+                                "created_at": "2026-11-16T17:03:05Z",
+                            }
+                        ]
+                    }
+                if "/runs/88001/jobs" in url:
+                    return {
+                        "jobs": [
+                            {
+                                "name": "Escaneo Nacional MINETUR (Parte 1/2 · Censo + Bandas Keep-Alive)",
+                                "status": "in_progress",
+                                "conclusion": None,
+                            }
+                        ]
+                    }
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            with mock.patch.object(esg, "_github_api_get_json", side_effect=fake_api_get):
+                rc = esg.main(
+                    [
+                        "--run-id",
+                        "88002",
+                        "--now-utc",
+                        "2026-11-16T17:23:10Z",
+                        "--github-output",
+                        str(out_file),
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            written = out_file.read_text(encoding="utf-8")
+            self.assertIn("should_scan=false\n", written)
+            self.assertIn("record_novedades=false\n", written)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

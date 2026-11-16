@@ -1165,6 +1165,75 @@ async function fetchCommitPinnedRawStatus(): Promise<ScanStatusPayload | null> {
   return parsed;
 }
 
+const MADRID_PARTS_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Madrid',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  hourCycle: 'h23',
+});
+
+function getMadridDateAndHour(
+  epochMs: number,
+): { dateKey: string; hour: number } | null {
+  if (!Number.isFinite(epochMs)) return null;
+  const parts = MADRID_PARTS_FORMATTER.formatToParts(new Date(epochMs));
+  let year = '';
+  let month = '';
+  let day = '';
+  let hourStr = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.type === 'year') year = p.value;
+    else if (p.type === 'month') month = p.value;
+    else if (p.type === 'day') day = p.value;
+    else if (p.type === 'hour') hourStr = p.value;
+  }
+  const hour = Number.parseInt(hourStr, 10);
+  if (!year || !month || !day || !Number.isFinite(hour)) return null;
+  return { dateKey: `${year}-${month}-${day}`, hour: hour === 24 ? 0 : hour };
+}
+
+/**
+ * Determina si un disparo `schedule` fugaz de GitHub Actions corresponde a una
+ * comprobación de puerta horaria que se autodescartará (`check-trigger` -> `should_scan=false`),
+ * evitando parpadeos sintéticos en el monitor de Novedades:
+ * 1) Antes de las 18:00 en `Europe/Madrid` (turnos `16:xx UTC` en horario de invierno CET).
+ * 2) Cuando `scan-status.json` ya acredita un escaneo válido hoy a partir de las 18:00 `Europe/Madrid`
+ *    (turnos de respaldo posteriores del mismo día).
+ */
+export function shouldIgnoreScheduleWorkflowRun(
+  nowMs: number,
+  knownPayload: ScanStatusPayload | null,
+): boolean {
+  const nowMadrid = getMadridDateAndHour(nowMs);
+  if (!nowMadrid) return false;
+  if (nowMadrid.hour < 18) {
+    return true;
+  }
+  if (
+    knownPayload &&
+    knownPayload.recordNovedades !== false &&
+    (knownPayload.state === 'completed' ||
+      knownPayload.state === 'running' ||
+      knownPayload.state === 'handoff') &&
+    knownPayload.startedAt
+  ) {
+    const startedMadrid = getMadridDateAndHour(
+      Date.parse(knownPayload.startedAt),
+    );
+    if (
+      startedMadrid &&
+      startedMadrid.dateKey === nowMadrid.dateKey &&
+      startedMadrid.hour >= 18
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
   if (!canUseGitHubApiNow(1)) {
     return null;
@@ -1191,6 +1260,11 @@ async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
     }
 
     const nowMs = Date.now();
+    const ignoreScheduleGateNow = shouldIgnoreScheduleWorkflowRun(
+      nowMs,
+      etagCache.payload,
+    );
+    let seenCompletedRealScan = false;
     let result: ActiveWorkflowRunInfo = {
       hasActiveScanRun: false,
       runId: '',
@@ -1211,6 +1285,9 @@ async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
         typeof run.conclusion === 'string' ? run.conclusion : '';
 
       if (status === 'in_progress') {
+        if (event === 'schedule' && ignoreScheduleGateNow) {
+          continue;
+        }
         result = {
           hasActiveScanRun: true,
           runId: String(run.id ?? ''),
@@ -1230,6 +1307,12 @@ async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
         status === 'waiting' ||
         status === 'pending'
       ) {
+        if (
+          seenCompletedRealScan ||
+          (event === 'schedule' && ignoreScheduleGateNow)
+        ) {
+          continue;
+        }
         const createdRaw =
           typeof run.created_at === 'string'
             ? run.created_at
@@ -1253,9 +1336,25 @@ async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
       }
 
       // `workflow_runs` viene ordenado del más reciente al más antiguo:
-      // si ya encontramos un escaneo reciente completado con éxito, no mirar runs antiguos atascados.
+      // si ya hubo un escaneo real completado con éxito (no un check-trigger `schedule` omitido en <60s),
+      // ignorar runs `queued` más antiguos sin dejar de detectar nunca un run `in_progress` activo.
       if (status === 'completed' && conclusion === 'success') {
-        break;
+        const cMs =
+          typeof run.created_at === 'string'
+            ? Date.parse(run.created_at)
+            : NaN;
+        const uMs =
+          typeof run.updated_at === 'string'
+            ? Date.parse(run.updated_at)
+            : NaN;
+        const isQuickSkippedScheduleGate =
+          event === 'schedule' &&
+          Number.isFinite(cMs) &&
+          Number.isFinite(uMs) &&
+          uMs - cMs < 60_000;
+        if (!isQuickSkippedScheduleGate) {
+          seenCompletedRealScan = true;
+        }
       }
     }
 

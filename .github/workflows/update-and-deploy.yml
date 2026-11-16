@@ -2,9 +2,14 @@ name: Actualizar Censo Infoantenas y Desplegar en GitHub Pages
 
 on:
   schedule:
-    # Ejecuta a las 18:00 hora peninsular española (Europe/Madrid):
-    # 17:00 UTC en horario de invierno (CET) y 16:00 UTC en horario de verano (CEST).
-    - cron: '0 16,17 * * *'
+    # Ventanas escalonadas fuera de minutos punta (:00/:30) para garantizar el escaneo
+    # diario de las 18:00 hora peninsular española (Europe/Madrid: 17:xx UTC en CET / 16:xx UTC en CEST)
+    # con recuperación automática idempotente si GitHub Actions retrasa o descarta un turno puntual:
+    - cron: '3 16,17 * * *'
+    - cron: '23 16,17 * * *'
+    - cron: '43 16,17 * * *'
+    - cron: '13 18 * * *'
+    - cron: '37 19 * * *'
   push:
     branches:
       - main
@@ -22,6 +27,7 @@ on:
         default: true
 
 permissions:
+  actions: read
   contents: write
   pages: write
   id-token: write
@@ -37,6 +43,15 @@ jobs:
       scan_started_at: ${{ steps.decide.outputs.scan_started_at }}
       scan_trigger: ${{ steps.decide.outputs.scan_trigger }}
     steps:
+      - name: Descargar evaluador horario ligero (solo eventos programados)
+        if: github.event_name == 'schedule'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          sparse-checkout: |
+            scripts
+
       - name: Determinar parámetros de ejecución
         id: decide
         env:
@@ -44,38 +59,36 @@ jobs:
           INPUT_REFRESH_DATA: ${{ inputs.refresh_data }}
           INPUT_RECORD_NOVEDADES: ${{ inputs.record_novedades }}
           RUN_ID: ${{ github.run_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           SCAN_STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          SHOULD_SCAN="false"
-          RECORD_NOVEDADES="false"
 
-          if [ "$EVENT_NAME" = "push" ]; then
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            python3 scripts/evaluate_schedule_gate.py \
+              --run-id "$RUN_ID" \
+              --github-output "$GITHUB_OUTPUT"
+          else
             SHOULD_SCAN="false"
             RECORD_NOVEDADES="false"
-          elif [ "$EVENT_NAME" = "schedule" ]; then
-            HOUR="$(TZ=Europe/Madrid date +%H)"
-            echo "Hora actual en Europe/Madrid: ${HOUR}:00"
-            if [ "$HOUR" = "18" ]; then
-              SHOULD_SCAN="true"
-              RECORD_NOVEDADES="true"
-            else
-              echo "Fuera de la ventana de las 18:00 Europe/Madrid; omitiendo disparo horario duplicado DST."
+
+            if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              if [ "$INPUT_REFRESH_DATA" = "false" ]; then
+                SHOULD_SCAN="false"
+              else
+                SHOULD_SCAN="true"
+              fi
+              if [ "$INPUT_RECORD_NOVEDADES" = "false" ]; then
+                RECORD_NOVEDADES="false"
+              else
+                RECORD_NOVEDADES="true"
+              fi
             fi
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "$INPUT_REFRESH_DATA" = "false" ]; then
-              SHOULD_SCAN="false"
-            else
-              SHOULD_SCAN="true"
-            fi
-            if [ "$INPUT_RECORD_NOVEDADES" = "false" ]; then
-              RECORD_NOVEDADES="false"
-            else
-              RECORD_NOVEDADES="true"
-            fi
+
+            echo "should_scan=$SHOULD_SCAN" | tee -a "$GITHUB_OUTPUT"
+            echo "record_novedades=$RECORD_NOVEDADES" | tee -a "$GITHUB_OUTPUT"
           fi
 
-          echo "should_scan=$SHOULD_SCAN" | tee -a "$GITHUB_OUTPUT"
-          echo "record_novedades=$RECORD_NOVEDADES" | tee -a "$GITHUB_OUTPUT"
           echo "scan_id=$RUN_ID" | tee -a "$GITHUB_OUTPUT"
           echo "scan_started_at=$SCAN_STARTED_AT" | tee -a "$GITHUB_OUTPUT"
           echo "scan_trigger=$EVENT_NAME" | tee -a "$GITHUB_OUTPUT"

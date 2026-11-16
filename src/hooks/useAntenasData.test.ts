@@ -75,6 +75,7 @@ import {
   parseScanStatusPayload,
   resetScanProgressInternalCacheForTests,
   setStoredScanDispatchToken,
+  shouldIgnoreScheduleWorkflowRun,
   triggerForcedAntennasScan,
   type LiveScanMergedDelta,
 } from './useScanProgress';
@@ -4508,6 +4509,13 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
     installMockLocalStorage();
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
+    const baseNowMs = Date.now();
+    const prevStartedIso = new Date(baseNowMs - 45 * 60_000).toISOString();
+    const prevUpdatedIso = new Date(baseNowMs - 25 * 60_000).toISOString();
+    const zombieQueuedIso = new Date(baseNowMs - 120 * 60_000).toISOString();
+    const liveStartedIso = new Date(baseNowMs - 60_000).toISOString();
+    const liveUpdatedIso = new Date(baseNowMs - 5_000).toISOString();
+
     const prevCompletedDoc: ScanStatusPayload = {
       schemaVersion: 2,
       state: 'completed',
@@ -4516,8 +4524,8 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
       recordNovedades: true,
       part: '1/2',
       phase: 'frecuencias',
-      startedAt: '2026-11-16T15:15:00Z',
-      updatedAt: '2026-11-16T15:34:00Z',
+      startedAt: prevStartedIso,
+      updatedAt: prevUpdatedIso,
       censusBoxesVisited: 239,
       estimatedCensusBoxes: 239,
       discoveredAntennas: 62238,
@@ -4588,7 +4596,7 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
                 event: 'workflow_dispatch',
                 status: 'queued',
                 conclusion: null,
-                created_at: '2026-11-16T10:00:00Z',
+                created_at: zombieQueuedIso,
               },
             ],
           }),
@@ -4626,8 +4634,8 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
       recordNovedades: true,
       part: '1/2',
       phase: 'frecuencias',
-      startedAt: '2026-11-16T16:00:00Z',
-      updatedAt: '2026-11-16T16:05:00Z',
+      startedAt: liveStartedIso,
+      updatedAt: liveUpdatedIso,
       censusBoxesVisited: 239,
       estimatedCensusBoxes: 239,
       discoveredAntennas: 62238,
@@ -4720,6 +4728,110 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
 
     const idlePoll = await fetchLiveScanStatus();
     expect(idlePoll?.state).toBe('completed');
+  });
+
+  it('ignora comprobaciones fugaces de schedule antes de las 18:00 o tras completar hoy y no oculta un escaneo activo debajo de un schedule omitido (<60s)', async () => {
+    // 16:03 UTC en invierno (17:03 CET) -> siempre se ignora un schedule de invierno previo a las 18:00
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-11-16T16:03:10Z'),
+        null,
+      ),
+    ).toBe(true);
+
+    // 17:03 UTC en invierno (18:03 CET) sin escaneo de hoy >= 18:00 -> NO se ignora (es el escaneo diario real)
+    const before18Doc: ScanStatusPayload = {
+      schemaVersion: 2,
+      state: 'completed',
+      scanId: 'manual-afternoon',
+      trigger: 'workflow_dispatch',
+      recordNovedades: true,
+      part: '1/2',
+      phase: 'frecuencias',
+      startedAt: '2026-11-16T15:38:51Z',
+      updatedAt: '2026-11-16T15:54:40Z',
+      censusBoxesVisited: 239,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 62238,
+      scannedAntennas: 62238,
+      totalAntennas: 62238,
+      percent: 100,
+    };
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-11-16T17:03:10Z'),
+        before18Doc,
+      ),
+    ).toBe(false);
+
+    // 17:43 UTC (18:43 CET) cuando el escaneo de las 17:03 UTC (18:03 CET) YA completó -> se ignora respaldo
+    const done18Doc: ScanStatusPayload = {
+      ...before18Doc,
+      scanId: 'daily-1803',
+      trigger: 'schedule',
+      startedAt: '2026-11-16T17:03:05Z',
+      updatedAt: '2026-11-16T17:20:00Z',
+    };
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-11-16T17:43:10Z'),
+        done18Doc,
+      ),
+    ).toBe(true);
+
+    // Si un respaldo `schedule` fugaz (<60s) terminó encima de un escaneo `in_progress`, sigue detectando el activo
+    resetScanProgressInternalCacheForTests();
+    const nowIso = new Date().toISOString();
+    const fiveSecAgoIso = new Date(Date.now() - 5_000).toISOString();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/git/ref/heads/scan-status')) {
+        return new Response(JSON.stringify({ object: { sha: 'sha-old' } }), {
+          status: 200,
+          headers: { 'X-RateLimit-Remaining': '58' },
+        });
+      }
+      if (url.includes('/sha-old/scan-status.json')) {
+        return new Response(JSON.stringify(before18Doc), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/actions/workflows/update-and-deploy.yml/runs')) {
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              {
+                id: 950002,
+                event: 'schedule',
+                status: 'completed',
+                conclusion: 'success',
+                created_at: fiveSecAgoIso,
+                updated_at: nowIso,
+              },
+              {
+                id: 950001,
+                event: 'workflow_dispatch',
+                status: 'in_progress',
+                conclusion: null,
+                created_at: fiveSecAgoIso,
+                run_started_at: fiveSecAgoIso,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'X-RateLimit-Remaining': '57' },
+          },
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const detected = await fetchLiveScanStatus();
+    expect(detected?.state).toBe('running');
+    expect(detected?.scanId).toBe('950001');
+    fetchSpy.mockRestore();
   });
 });
 
