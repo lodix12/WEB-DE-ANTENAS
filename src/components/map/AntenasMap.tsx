@@ -152,6 +152,30 @@ function parseOperatorsFromIconKey(iconKey: string): OperatorKey[] {
   return operators;
 }
 
+const MULTI_SPRITE_RADIUS_PX = 27;
+const MULTI_SPRITE_PIXEL_RATIO = 2;
+/** Radio base en píxeles CSS del icono multicolor cuando `icon-size` = 1 (`27 / 2 = 13.5` px) */
+const MULTI_SPRITE_BASE_CSS_RADIUS =
+  MULTI_SPRITE_RADIUS_PX / MULTI_SPRITE_PIXEL_RATIO;
+
+const CLUSTERED_MULTI_ICON_STOPS: readonly [number, number][] = [
+  [5, 0.34],
+  [8, 0.44],
+  [11, 0.54],
+  [14, 0.68],
+  [17, 0.88],
+];
+
+const UNCLUSTERED_MULTI_ICON_STOPS: readonly [number, number][] = [
+  [3, 0.13],
+  [5, 0.19],
+  [7, 0.29],
+  [9, 0.4],
+  [11, 0.53],
+  [14, 0.68],
+  [17, 0.88],
+];
+
 /**
  * Genera en Canvas 2D (`64x64` px, `pixelRatio: 2`) un icono circular multicolor de relleno
  * plano y sólido sin bordes exteriores ni líneas separadoras blancas, repartiendo en sectores
@@ -220,7 +244,7 @@ function registerMultiOperatorSprite(
     MULTI_SPRITE_CACHE.set(cacheKey, imageData);
   }
   if (!map.hasImage(iconKey)) {
-    map.addImage(iconKey, imageData, { pixelRatio: 2 });
+    map.addImage(iconKey, imageData, { pixelRatio: MULTI_SPRITE_PIXEL_RATIO });
   }
 }
 
@@ -251,83 +275,32 @@ function buildSelectedFilter(
 function buildUnclusteredCircleRadiusExpr(
   disableClustering: boolean,
 ): maplibregl.ExpressionSpecification {
-  if (disableClustering) {
-    return [
-      'interpolate',
-      ['linear'],
-      ['zoom'],
-      3,
-      1.25,
-      5,
-      1.85,
-      7,
-      2.8,
-      9,
-      4.1,
-      11,
-      5.9,
-      14,
-      8.5,
-      17,
-      11.5,
-    ];
+  const stops = disableClustering
+    ? UNCLUSTERED_MULTI_ICON_STOPS
+    : CLUSTERED_MULTI_ICON_STOPS;
+  const expr: unknown[] = ['interpolate', ['linear'], ['zoom']];
+  for (let i = 0; i < stops.length; i++) {
+    const [zoom, iconScale] = stops[i];
+    expr.push(
+      zoom,
+      Number((MULTI_SPRITE_BASE_CSS_RADIUS * iconScale).toFixed(4)),
+    );
   }
-  return [
-    'interpolate',
-    ['linear'],
-    ['zoom'],
-    5,
-    3.6,
-    8,
-    5,
-    11,
-    6.5,
-    14,
-    8.5,
-    17,
-    11.5,
-  ];
+  return expr as maplibregl.ExpressionSpecification;
 }
 
 function buildUnclusteredMultiIconSizeExpr(
   disableClustering: boolean,
 ): maplibregl.ExpressionSpecification {
-  if (disableClustering) {
-    return [
-      'interpolate',
-      ['linear'],
-      ['zoom'],
-      3,
-      0.13,
-      5,
-      0.19,
-      7,
-      0.29,
-      9,
-      0.4,
-      11,
-      0.53,
-      14,
-      0.68,
-      17,
-      0.88,
-    ];
+  const stops = disableClustering
+    ? UNCLUSTERED_MULTI_ICON_STOPS
+    : CLUSTERED_MULTI_ICON_STOPS;
+  const expr: unknown[] = ['interpolate', ['linear'], ['zoom']];
+  for (let i = 0; i < stops.length; i++) {
+    const [zoom, iconScale] = stops[i];
+    expr.push(zoom, iconScale);
   }
-  return [
-    'interpolate',
-    ['linear'],
-    ['zoom'],
-    5,
-    0.34,
-    8,
-    0.44,
-    11,
-    0.54,
-    14,
-    0.68,
-    17,
-    0.88,
-  ];
+  return expr as maplibregl.ExpressionSpecification;
 }
 
 function syncClusteringVisualLayers(
@@ -994,6 +967,7 @@ export function AntenasMap(props: AntenasMapProps) {
           'circle-radius': buildUnclusteredCircleRadiusExpr(
             disableClusteringActive,
           ),
+          'circle-pitch-scale': 'viewport',
           'circle-stroke-width': 0,
         },
       });

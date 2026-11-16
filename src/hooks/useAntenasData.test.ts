@@ -4177,6 +4177,25 @@ describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pa
     expect(indexCssSource).toContain('width: 100vw;');
     expect(indexCssSource).toContain('height: 100dvh;');
   });
+
+  it('iguala exactamente el radio CSS de las antenas de 1 operadora con el de los iconos multi-operadora en todos los niveles de zoom', async () => {
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapSource = readFileSync(
+      new URL('../components/map/AntenasMap.tsx', import.meta.url),
+      'utf-8',
+    );
+
+    expect(mapSource).toContain('const MULTI_SPRITE_RADIUS_PX = 27;');
+    expect(mapSource).toContain('const MULTI_SPRITE_PIXEL_RATIO = 2;');
+    expect(mapSource).toContain(
+      'MULTI_SPRITE_RADIUS_PX / MULTI_SPRITE_PIXEL_RATIO',
+    );
+    expect(mapSource).toContain(
+      'Number((MULTI_SPRITE_BASE_CSS_RADIUS * iconScale).toFixed(4))',
+    );
+    expect(mapSource).toContain("'circle-pitch-scale': 'viewport'");
+  });
 });
-
-
