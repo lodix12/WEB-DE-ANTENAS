@@ -71,4 +71,8 @@ export interface AntenasMapProps {
   showBandsOnMap?: boolean;
   /** Alternar la visualización directa de bandas de frecuencia en el mapa */
   onToggleShowBandsOnMap?: () => void;
+  /** Si está desactivada la agrupación en clústeres al alejar el mapa (por defecto false) */
+  disableClustering?: boolean;
+  /** Alternar la desactivación de clústeres para mostrar siempre todas las antenas individuales */
+  onToggleDisableClustering?: () => void;
 }

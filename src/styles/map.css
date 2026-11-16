@@ -300,7 +300,8 @@
   flex: 1;
 }
 
-.map-style-option-title {
+.map-style-option-title,
+.map-style-option-name {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--map-text);
@@ -317,7 +318,7 @@
   flex-shrink: 0;
 }
 
-/* Divisor e interruptor de bloqueo 3D / vertical en el desplegable de mapa */
+/* Divisor e interruptores de clustering y bloqueo 3D / vertical en el desplegable de mapa */
 
 .map-style-popover-divider {
   height: 1px;
@@ -353,7 +354,8 @@
   outline-offset: -1px;
 }
 
-.map-lock-3d-option.is-locked {
+.map-lock-3d-option.is-locked,
+.map-lock-3d-option.is-active {
   background: var(--map-accent-soft);
   border-color: var(--map-accent-border);
 }
@@ -375,13 +377,15 @@
     color 0.15s ease;
 }
 
-.map-lock-3d-option.is-locked .map-lock-3d-icon {
+.map-lock-3d-option.is-locked .map-lock-3d-icon,
+.map-lock-3d-option.is-active .map-lock-3d-icon {
   background: var(--map-accent-soft);
   border-color: var(--map-accent-border);
   color: var(--map-accent);
 }
 
-.map-lock-3d-switch {
+.map-lock-3d-switch,
+.map-switch-pill {
   width: 34px;
   height: 19px;
   border-radius: 999px;
@@ -396,7 +400,8 @@
     border-color 0.16s ease;
 }
 
-.map-lock-3d-switch.is-on {
+.map-lock-3d-switch.is-on,
+.map-switch-pill.is-on {
   background: var(--map-accent);
   border-color: var(--map-accent);
 }
@@ -411,12 +416,14 @@
     background-color 0.16s ease;
 }
 
-.map-lock-3d-switch.is-on .map-lock-3d-switch-thumb {
+.map-lock-3d-switch.is-on .map-lock-3d-switch-thumb,
+.map-switch-pill.is-on .map-lock-3d-switch-thumb {
   background: #ffffff;
   transform: translateX(15px);
 }
 
-.antenas-map-root[data-map-dark='true'] .map-lock-3d-switch.is-on .map-lock-3d-switch-thumb {
+.antenas-map-root[data-map-dark='true'] .map-lock-3d-switch.is-on .map-lock-3d-switch-thumb,
+.antenas-map-root[data-map-dark='true'] .map-switch-pill.is-on .map-lock-3d-switch-thumb {
   background: #0f172a;
 }
 
@@ -668,6 +675,14 @@
   }
 }
 
+@media (max-width: 860px) {
+  .antenas-map-root .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group,
+  .antenas-map-root .maplibregl-ctrl-bottom-left .maplibregl-ctrl-group,
+  .antenas-map-root .maplibregl-ctrl-scale {
+    display: none !important;
+  }
+}
+
 @media (max-width: 680px) {
   .map-tool-btn-label {
     display: none;
@@ -684,6 +699,11 @@
     left: 10px;
     right: 10px;
     gap: 6px;
+  }
+
+  .map-style-popover,
+  .map-regions-popover {
+    max-width: calc(100vw - 20px);
   }
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import {
+  LayoutGrid,
   PanelLeftOpen,
   RefreshCw,
   SlidersHorizontal,
@@ -48,6 +49,10 @@ export function MapaView() {
     toggleMeasureMode,
     showBandsOnMap,
     toggleShowBandsOnMap,
+    disableClustering,
+    toggleDisableClustering,
+    sectionsMenuOpen,
+    setSectionsMenuOpen,
     focusAntennaOnMap,
   } = useWorkspace();
 
@@ -61,6 +66,23 @@ export function MapaView() {
     document.title =
       'RadioMapa España · Mapa Interactivo de Antenas de Redes Móviles';
   }, []);
+
+  useEffect(() => {
+    if (!mobilePanelOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobilePanelOpen(false);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobilePanelOpen]);
 
   // Soporte de enlace directo #/?gid=3600449&id=...
   useEffect(() => {
@@ -140,6 +162,18 @@ export function MapaView() {
   if (isError) {
     return (
       <main className="mapa-workspace">
+        <button
+          type="button"
+          id="error-open-sections-btn"
+          className="btn btn-secondary btn-sm page-floating-sections-btn"
+          onClick={() => setSectionsMenuOpen(true)}
+          aria-expanded={sectionsMenuOpen}
+          aria-controls="sections-drawer"
+        >
+          <LayoutGrid size={14} aria-hidden="true" />
+          <span>Secciones</span>
+        </button>
+
         <div className="state-center-box">
           <h1 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>
             Error al cargar la cartografía de estaciones
@@ -217,32 +251,64 @@ export function MapaView() {
       />
 
       <div className="map-stage">
-        {/* Botón para reabrir panel en escritorio cuando está plegado */}
-        {sidebarCollapsed && (
+        {/* Botones flotantes superiores izquierdos en escritorio: Secciones encima de Filtros */}
+        <div className="desktop-floating-controls">
           <button
             type="button"
-            id="sidebar-reopen-btn"
-            className="btn btn-secondary sidebar-reopen-btn"
-            onClick={() => setSidebarCollapsed(false)}
+            id="desktop-open-sections-btn"
+            className="btn btn-secondary btn-sm desktop-sections-btn"
+            onClick={() => setSectionsMenuOpen(true)}
+            aria-expanded={sectionsMenuOpen}
+            aria-controls="sections-drawer"
           >
-            <PanelLeftOpen size={15} aria-hidden="true" />
-            <span>
-              Filtros (
-              <span className="mono">
-                {filteredAntenas.length.toLocaleString('es-ES')}
-              </span>
-              )
-            </span>
+            <LayoutGrid size={14} aria-hidden="true" />
+            <span>Secciones</span>
           </button>
-        )}
 
-        {/* Botón flotante superior izquierdo en móvil para abrir filtros */}
+          {sidebarCollapsed && (
+            <button
+              type="button"
+              id="sidebar-reopen-btn"
+              className="btn btn-secondary btn-sm sidebar-reopen-btn"
+              onClick={() => setSidebarCollapsed(false)}
+            >
+              <PanelLeftOpen size={14} aria-hidden="true" />
+              <span>
+                Filtros (
+                <span className="mono">
+                  {filteredAntenas.length.toLocaleString('es-ES')}
+                </span>
+                )
+              </span>
+            </button>
+          )}
+        </div>
+
+        {/* Botones flotantes superiores izquierdos en móvil: Secciones encima de Filtros */}
         <div className="mobile-controls-bar">
+          <button
+            type="button"
+            id="mobile-open-sections-btn"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setMobilePanelOpen(false);
+              setSectionsMenuOpen(true);
+            }}
+            aria-expanded={sectionsMenuOpen}
+            aria-controls="sections-drawer"
+          >
+            <LayoutGrid size={14} aria-hidden="true" />
+            <span>Secciones</span>
+          </button>
+
           <button
             type="button"
             id="mobile-open-filters-btn"
             className="btn btn-secondary btn-sm"
-            onClick={() => setMobilePanelOpen(true)}
+            onClick={() => {
+              setSectionsMenuOpen(false);
+              setMobilePanelOpen(true);
+            }}
           >
             <SlidersHorizontal size={14} aria-hidden="true" />
             <span>
@@ -277,6 +343,8 @@ export function MapaView() {
             onToggleMeasureMode={toggleMeasureMode}
             showBandsOnMap={showBandsOnMap}
             onToggleShowBandsOnMap={toggleShowBandsOnMap}
+            disableClustering={disableClustering}
+            onToggleDisableClustering={toggleDisableClustering}
             activeOperators={activeOperators}
             onToggleOperator={toggleOperator}
           />

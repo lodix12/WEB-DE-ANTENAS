@@ -248,6 +248,115 @@ function buildSelectedFilter(
   ];
 }
 
+function buildUnclusteredCircleRadiusExpr(
+  disableClustering: boolean,
+): maplibregl.ExpressionSpecification {
+  if (disableClustering) {
+    return [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      3,
+      1.25,
+      5,
+      1.85,
+      7,
+      2.8,
+      9,
+      4.1,
+      11,
+      5.9,
+      14,
+      8.5,
+      17,
+      11.5,
+    ];
+  }
+  return [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    5,
+    3.6,
+    8,
+    5,
+    11,
+    6.5,
+    14,
+    8.5,
+    17,
+    11.5,
+  ];
+}
+
+function buildUnclusteredMultiIconSizeExpr(
+  disableClustering: boolean,
+): maplibregl.ExpressionSpecification {
+  if (disableClustering) {
+    return [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      3,
+      0.13,
+      5,
+      0.19,
+      7,
+      0.29,
+      9,
+      0.4,
+      11,
+      0.53,
+      14,
+      0.68,
+      17,
+      0.88,
+    ];
+  }
+  return [
+    'interpolate',
+    ['linear'],
+    ['zoom'],
+    5,
+    0.34,
+    8,
+    0.44,
+    11,
+    0.54,
+    14,
+    0.68,
+    17,
+    0.88,
+  ];
+}
+
+function syncClusteringVisualLayers(
+  map: maplibregl.Map,
+  disableClustering: boolean,
+): void {
+  const clusterVisibility = disableClustering ? 'none' : 'visible';
+  if (map.getLayer(LAYER_CLUSTERS)) {
+    map.setLayoutProperty(LAYER_CLUSTERS, 'visibility', clusterVisibility);
+  }
+  if (map.getLayer(LAYER_CLUSTER_COUNT)) {
+    map.setLayoutProperty(LAYER_CLUSTER_COUNT, 'visibility', clusterVisibility);
+  }
+  if (map.getLayer(LAYER_UNCLUSTERED)) {
+    map.setPaintProperty(
+      LAYER_UNCLUSTERED,
+      'circle-radius',
+      buildUnclusteredCircleRadiusExpr(disableClustering),
+    );
+  }
+  if (map.getLayer(LAYER_UNCLUSTERED_MULTI)) {
+    map.setLayoutProperty(
+      LAYER_UNCLUSTERED_MULTI,
+      'icon-size',
+      buildUnclusteredMultiIconSizeExpr(disableClustering),
+    );
+  }
+}
+
 function buildPopupHtml(
   props: AntennaFeatureProperties,
   site?: MapSiteEntry,
@@ -351,6 +460,8 @@ export function AntenasMap(props: AntenasMapProps) {
     onToggleLock3dPitch,
     showBandsOnMap,
     onToggleShowBandsOnMap,
+    disableClustering,
+    onToggleDisableClustering,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -391,6 +502,26 @@ export function AntenasMap(props: AntenasMapProps) {
       setInternalShowBandsOnMap((prev) => !prev);
     }
   }, [onToggleShowBandsOnMap]);
+
+  // Soporte híbrido controlado o autónomo para desactivar clústeres al hacer zoom out ("Eliminar clustering")
+  const [internalDisableClustering, setInternalDisableClustering] =
+    useState<boolean>(() => disableClustering ?? false);
+  const isDisableClusteringControlled =
+    disableClustering !== undefined &&
+    onToggleDisableClustering !== undefined;
+  const effectiveDisableClustering = isDisableClusteringControlled
+    ? disableClustering
+    : internalDisableClustering;
+  const disableClusteringRef = useRef<boolean>(effectiveDisableClustering);
+
+  const handleToggleDisableClustering = useCallback(() => {
+    if (isDisableClusteringControlled) {
+      onToggleDisableClustering();
+    } else {
+      setInternalDisableClustering((prev) => !prev);
+      onToggleDisableClustering?.();
+    }
+  }, [isDisableClusteringControlled, onToggleDisableClustering]);
 
   // Soporte híbrido controlado o autónomo para la regla de distancia entre 2 puntos ("Medir en mapa")
   const [internalMeasurePoints, setInternalMeasurePoints] = useState<
@@ -664,6 +795,30 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [effectiveShowBandsOnMap]);
 
+  // Sincronización inmediata en GPU al activar/desactivar la agrupación en clústeres ("Eliminar clustering")
+  useEffect(() => {
+    disableClusteringRef.current = effectiveDisableClustering;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    const source = map.getSource(ANTENAS_SOURCE_ID) as
+      | maplibregl.GeoJSONSource
+      | undefined;
+    if (source && typeof source.setClusterOptions === 'function') {
+      void source
+        .setClusterOptions({
+          cluster: !effectiveDisableClustering,
+          clusterMaxZoom: 12,
+          clusterRadius: 46,
+        })
+        .catch(() => {
+          // Ignorar si el estilo cambia durante la actualización del worker
+        });
+    }
+    syncClusteringVisualLayers(map, effectiveDisableClustering);
+  }, [effectiveDisableClustering]);
+
   // Permitir cancelar o limpiar la medición de 2 puntos pulsando la tecla Escape
   useEffect(() => {
     if (!effectiveMeasureModeActive && effectiveMeasurePoints.length === 0) {
@@ -700,6 +855,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     const isDark = isDarkStyleRef.current;
+    const disableClusteringActive = disableClusteringRef.current;
 
     // Registrar todos los sprites multicolor activos en el atlas WebGL del estilo actual
     const activeIconKeys = multiIconKeysRef.current;
@@ -712,7 +868,7 @@ export function AntenasMap(props: AntenasMapProps) {
       map.addSource(ANTENAS_SOURCE_ID, {
         type: 'geojson',
         data: antenasGeoJsonRef.current,
-        cluster: true,
+        cluster: !disableClusteringActive,
         clusterMaxZoom: 12,
         clusterRadius: 46,
         clusterProperties: {
@@ -734,6 +890,9 @@ export function AntenasMap(props: AntenasMapProps) {
         type: 'circle',
         source: ANTENAS_SOURCE_ID,
         filter: ['has', 'point_count'],
+        layout: {
+          visibility: disableClusteringActive ? 'none' : 'visible',
+        },
         paint: {
           'circle-color': [
             'step',
@@ -773,6 +932,7 @@ export function AntenasMap(props: AntenasMapProps) {
         source: ANTENAS_SOURCE_ID,
         filter: ['has', 'point_count'],
         layout: {
+          visibility: disableClusteringActive ? 'none' : 'visible',
           'text-field': [
             'step',
             clusterCountExpr,
@@ -831,21 +991,9 @@ export function AntenasMap(props: AntenasMapProps) {
             OPERATOR_META.digi.color,
             OPERATOR_META.otros.color,
           ],
-          'circle-radius': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            5,
-            3.6,
-            8,
-            5,
-            11,
-            6.5,
-            14,
-            8.5,
-            17,
-            11.5,
-          ],
+          'circle-radius': buildUnclusteredCircleRadiusExpr(
+            disableClusteringActive,
+          ),
           'circle-stroke-width': 0,
         },
       });
@@ -865,21 +1013,9 @@ export function AntenasMap(props: AntenasMapProps) {
           'icon-image': ['get', 'iconKey'],
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
-          'icon-size': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            5,
-            0.34,
-            8,
-            0.44,
-            11,
-            0.54,
-            14,
-            0.68,
-            17,
-            0.88,
-          ],
+          'icon-size': buildUnclusteredMultiIconSizeExpr(
+            disableClusteringActive,
+          ),
         },
       });
     }
@@ -1214,6 +1350,24 @@ export function AntenasMap(props: AntenasMapProps) {
       const antSource = map.getSource(ANTENAS_SOURCE_ID) as
         | maplibregl.GeoJSONSource
         | undefined;
+      if (antSource && typeof antSource.setClusterOptions === 'function') {
+        const currentCluster =
+          typeof antSource.getClusterOptions === 'function'
+            ? antSource.getClusterOptions().cluster
+            : undefined;
+        if (currentCluster !== !disableClusteringRef.current) {
+          void antSource
+            .setClusterOptions({
+              cluster: !disableClusteringRef.current,
+              clusterMaxZoom: 12,
+              clusterRadius: 46,
+            })
+            .catch(() => {
+              // Ignorar si el estilo cambia durante la actualización del worker
+            });
+        }
+      }
+      syncClusteringVisualLayers(map, disableClusteringRef.current);
       if (
         antSource &&
         lastAppliedGeoJsonRef.current !== antenasGeoJsonRef.current
@@ -1261,7 +1415,8 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const handleMapClick = (event: maplibregl.MapMouseEvent) => {
       const unclusteredLayers = getActiveUnclusteredLayers();
-      const hasClusterLayer = Boolean(map.getLayer(LAYER_CLUSTERS));
+      const hasClusterLayer =
+        !disableClusteringRef.current && Boolean(map.getLayer(LAYER_CLUSTERS));
 
       // 0. Modo "Medir en mapa" (distancia entre 2 puntos: Punto A y Punto B)
       if (measureModeActiveRef.current) {
@@ -1398,7 +1553,7 @@ export function AntenasMap(props: AntenasMapProps) {
     const handleMouseMove = (event: maplibregl.MapMouseEvent) => {
       const isCrosshairActive = measureModeActiveRef.current;
       const interactiveLayers = getActiveUnclusteredLayers();
-      if (map.getLayer(LAYER_CLUSTERS)) {
+      if (!disableClusteringRef.current && map.getLayer(LAYER_CLUSTERS)) {
         interactiveLayers.push(LAYER_CLUSTERS);
       }
 
@@ -1666,6 +1821,8 @@ export function AntenasMap(props: AntenasMapProps) {
         onToggleLock3dPitch={handleToggleLock3dPitch}
         showBandsOnMap={effectiveShowBandsOnMap}
         onToggleShowBandsOnMap={handleToggleShowBandsOnMap}
+        disableClustering={effectiveDisableClustering}
+        onToggleDisableClustering={handleToggleDisableClustering}
         onFlyToRegion={handleFlyToRegion}
       />
     </div>

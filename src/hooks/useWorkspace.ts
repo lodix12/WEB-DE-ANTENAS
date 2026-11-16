@@ -59,6 +59,16 @@ export interface WorkspaceContextValue {
   setShowBandsOnMap: (show: boolean) => void;
   toggleShowBandsOnMap: () => void;
 
+  /* Agrupación cartográfica (clustering) en el mapa */
+  disableClustering: boolean;
+  setDisableClustering: (disable: boolean) => void;
+  toggleDisableClustering: () => void;
+
+  /* Menú deslizable de secciones y apariencia */
+  sectionsMenuOpen: boolean;
+  setSectionsMenuOpen: (open: boolean) => void;
+  toggleSectionsMenu: () => void;
+
   /* Geolocalización GPS */
   gpsLoading: boolean;
   gpsError: string | null;

@@ -76,6 +76,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [measureModeActive, setMeasureModeActive] = useState<boolean>(false);
   const [showBandsOnMap, setShowBandsOnMap] = useState<boolean>(false);
+  const [disableClustering, setDisableClustering] = useState<boolean>(false);
+  const [sectionsMenuOpen, setSectionsMenuOpen] = useState<boolean>(false);
 
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -243,6 +245,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setShowBandsOnMap((prev) => !prev);
   }, []);
 
+  const toggleDisableClustering = useCallback(() => {
+    setDisableClustering((prev) => !prev);
+  }, []);
+
+  const toggleSectionsMenu = useCallback(() => {
+    setSectionsMenuOpen((prev) => !prev);
+  }, []);
+
   const jumpToCoordinates = useCallback(
     (lat: number, lon: number, _label?: string) => {
       setRadarModeActive(false);
@@ -359,6 +369,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       showBandsOnMap,
       setShowBandsOnMap,
       toggleShowBandsOnMap,
+      disableClustering,
+      setDisableClustering,
+      toggleDisableClustering,
+      sectionsMenuOpen,
+      setSectionsMenuOpen,
+      toggleSectionsMenu,
       gpsLoading,
       gpsError,
       requestGpsLocation,
@@ -401,6 +417,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       showBandsOnMap,
       setShowBandsOnMap,
       toggleShowBandsOnMap,
+      disableClustering,
+      setDisableClustering,
+      toggleDisableClustering,
+      sectionsMenuOpen,
+      setSectionsMenuOpen,
+      toggleSectionsMenu,
       gpsLoading,
       gpsError,
       requestGpsLocation,

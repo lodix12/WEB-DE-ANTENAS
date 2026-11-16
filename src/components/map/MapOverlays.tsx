@@ -9,6 +9,7 @@ import {
   LockOpen,
   Radio,
   Ruler,
+  Ungroup,
 } from 'lucide-react';
 import {
   OPENFREEMAP_STYLES,
@@ -31,6 +32,8 @@ export interface MapOverlaysProps {
   onToggleLock3dPitch?: () => void;
   showBandsOnMap?: boolean;
   onToggleShowBandsOnMap?: () => void;
+  disableClustering?: boolean;
+  onToggleDisableClustering?: () => void;
   onFlyToRegion: (
     lon: number,
     lat: number,
@@ -52,6 +55,8 @@ export function MapOverlays({
   onToggleLock3dPitch,
   showBandsOnMap = false,
   onToggleShowBandsOnMap,
+  disableClustering = false,
+  onToggleDisableClustering,
   onFlyToRegion,
 }: MapOverlaysProps) {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
@@ -279,40 +284,36 @@ export function MapOverlays({
                   })}
                 </div>
 
-                {onToggleShowBandsOnMap && (
-                  <>
-                    <div
-                      className="map-style-popover-divider"
-                      role="separator"
-                    />
-                    <button
-                      id="map-show-bands-option"
-                      type="button"
-                      role="switch"
-                      aria-checked={showBandsOnMap}
-                      className={`map-lock-3d-option${showBandsOnMap ? ' is-locked' : ''}`}
-                      onClick={() => onToggleShowBandsOnMap()}
-                    >
-                      <span className="map-lock-3d-icon" aria-hidden="true">
-                        <Radio size={14} strokeWidth={2.2} />
-                      </span>
-                      <span className="map-style-option-body">
-                        <span className="map-style-option-title">
-                          Mostrar bandas en antenas
-                        </span>
-                        <span className="map-style-option-desc">
-                          Ver códigos de banda sin hacer clic
-                        </span>
-                      </span>
-                      <span
-                        className={`map-lock-3d-switch${showBandsOnMap ? ' is-on' : ''}`}
-                        aria-hidden="true"
-                      >
-                        <span className="map-lock-3d-switch-thumb" />
-                      </span>
-                    </button>
-                  </>
-                )}
+                <div
+                  className="map-style-popover-divider"
+                  role="separator"
+                />
+                <button
+                  id="map-disable-clustering-option"
+                  type="button"
+                  role="switch"
+                  aria-checked={disableClustering}
+                  className={`map-lock-3d-option${disableClustering ? ' is-active' : ''}`}
+                  onClick={() => onToggleDisableClustering?.()}
+                >
+                  <span className="map-lock-3d-icon" aria-hidden="true">
+                    <Ungroup size={15} aria-hidden="true" />
+                  </span>
+                  <span className="map-style-option-body">
+                    <span className="map-style-option-title map-style-option-name">
+                      Eliminar clustering
+                    </span>
+                    <span className="map-style-option-desc">
+                      Mostrar antenas sin agrupar al hacer zoom out
+                    </span>
+                  </span>
+                  <span
+                    className={`map-lock-3d-switch map-switch-pill${disableClustering ? ' is-on' : ''}`}
+                    aria-hidden="true"
+                  >
+                    <span className="map-lock-3d-switch-thumb" />
+                  </span>
+                </button>
 
                 {onToggleLock3dPitch && (
                   <>

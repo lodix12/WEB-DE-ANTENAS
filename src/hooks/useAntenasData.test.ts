@@ -13,7 +13,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as AntenasMapModule from '../components/map/AntenasMap';
 import antenasMapRawSource from '../components/map/AntenasMap.tsx?raw';
 import { MapOverlays } from '../components/map/MapOverlays';
+import mapOverlaysRawSource from '../components/map/MapOverlays.tsx?raw';
 import { FilterPanel } from '../components/ui/FilterPanel';
+import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
   OPERATOR_META,
@@ -3373,13 +3375,15 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     ).toBe(true);
   });
 
-  it('muestra en MapOverlays los títulos descriptivos de códigos de banda para #map-toggle-bands-btn', () => {
+  it('mantiene #map-toggle-bands-btn en la barra superior de MapOverlays y reemplaza #map-show-bands-option por #map-disable-clustering-option ("Eliminar clustering") en el selector de estilos', () => {
     const inactiveHtml = renderToStaticMarkup(
       createElement(MapOverlays, {
         styleId: 'positron',
         onStyleChange: () => {},
         showBandsOnMap: false,
         onToggleShowBandsOnMap: () => {},
+        disableClustering: false,
+        onToggleDisableClustering: () => {},
         onFlyToRegion: () => {},
       }),
     );
@@ -3388,6 +3392,7 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     expect(inactiveHtml).toContain(
       'title="Mostrar directamente los códigos de banda que emite cada antena sin hacer clic"',
     );
+    expect(inactiveHtml).not.toContain('map-show-bands-option');
 
     const activeHtml = renderToStaticMarkup(
       createElement(MapOverlays, {
@@ -3395,11 +3400,23 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
         onStyleChange: () => {},
         showBandsOnMap: true,
         onToggleShowBandsOnMap: () => {},
+        disableClustering: true,
+        onToggleDisableClustering: () => {},
         onFlyToRegion: () => {},
       }),
     );
     expect(activeHtml).toContain(
       'title="Ocultar las tarjetas de códigos de banda en el mapa"',
+    );
+    expect(activeHtml).not.toContain('map-show-bands-option');
+
+    // En el desplegable de estilos (.map-style-popover) ya no se duplica "Mostrar bandas en antenas" y en su lugar figura "Eliminar clustering"
+    expect(mapOverlaysRawSource).not.toContain('map-show-bands-option');
+    expect(mapOverlaysRawSource).not.toContain('Mostrar bandas en antenas');
+    expect(mapOverlaysRawSource).toContain('id="map-disable-clustering-option"');
+    expect(mapOverlaysRawSource).toContain('Eliminar clustering');
+    expect(mapOverlaysRawSource).toContain(
+      'Mostrar antenas sin agrupar al hacer zoom out',
     );
   });
 });
@@ -3973,4 +3990,193 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     );
   });
 });
+
+describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pantalla completa (100vw × 100dvh)', () => {
+  it('elimina la cabecera superior grande y muestra el botón flotante "Secciones" encima de "Filtros" en MapaView y en rutas secundarias', async () => {
+    const sample = createSampleCustomDataset();
+    const sampleNovedades: NovedadesDataset = {
+      updatedAt: '2026-11-16T06:00:00Z',
+      scanId: 'scan-2026-11-16',
+      previousScanAt: '2026-11-15T06:00:00Z',
+      total: 7,
+      antenasNuevas: 4,
+      frecuenciasNuevas: 3,
+      novedades: [],
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], sample);
+    queryClient.setQueryData(['novedades-dataset'], sampleNovedades);
+    queryClient.setQueryData(['scan-status'], null);
+
+    const buildAppRouter = (initialPath: string) => {
+      const root = createRootRoute({ component: RootLayout });
+      const mapR = createRoute({
+        getParentRoute: () => root,
+        path: '/',
+        validateSearch: (s: Record<string, unknown>) => ({
+          gid: typeof s.gid === 'string' ? s.gid : undefined,
+          id: typeof s.id === 'string' ? s.id : undefined,
+        }),
+        component: MapaView,
+      });
+      const novR = createRoute({
+        getParentRoute: () => root,
+        path: '/novedades',
+        component: NovedadesView,
+      });
+      const statsR = createRoute({
+        getParentRoute: () => root,
+        path: '/estadisticas',
+        component: EstadisticasView,
+      });
+      return createRouter({
+        routeTree: root.addChildren([mapR, novR, statsR]),
+        history: createMemoryHistory({ initialEntries: [initialPath] }),
+      });
+    };
+
+    // 1. En "/" (MapaView): no existe cabecera .app-header, "Secciones" se apila encima de "Filtros"
+    const mapRouter = buildAppRouter('/');
+    await mapRouter.load();
+    const mapHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: mapRouter }),
+        ),
+      ),
+    );
+
+    expect(mapHtml).not.toContain('class="app-header"');
+    expect(mapHtml).not.toContain('id="page-open-sections-btn"');
+    expect(mapHtml).toContain('id="desktop-open-sections-btn"');
+    expect(mapHtml).toContain('id="mobile-open-sections-btn"');
+    expect(mapHtml).toContain('id="mobile-open-filters-btn"');
+    expect(
+      mapHtml.indexOf('id="mobile-open-sections-btn"'),
+    ).toBeLessThan(mapHtml.indexOf('id="mobile-open-filters-btn"'));
+
+    // El cajón #sections-drawer contiene las secciones, el selector de modo oscuro/claro y el censo
+    expect(mapHtml).toContain('id="sections-drawer"');
+    expect(mapHtml).toContain('id="sections-drawer-close-btn"');
+    expect(mapHtml).toContain('id="nav-tab-mapa"');
+    expect(mapHtml).toContain('id="nav-tab-novedades"');
+    expect(mapHtml).toContain('id="nav-tab-estadisticas"');
+    expect(mapHtml).toContain('id="theme-toggle-btn"');
+    expect(mapHtml).toContain('Modo oscuro');
+    expect(mapHtml).toContain('>7<');
+
+    // 2. En "/novedades" y "/estadisticas": aparece el botón flotante compacto #page-open-sections-btn
+    const novRouter = buildAppRouter('/novedades');
+    await novRouter.load();
+    const novHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: novRouter }),
+        ),
+      ),
+    );
+    expect(novHtml).not.toContain('class="app-header"');
+    expect(novHtml).toContain('id="page-open-sections-btn"');
+    expect(novHtml).toContain('>Secciones<');
+    expect(novHtml).toContain('id="sections-drawer"');
+  });
+
+  it('renderiza FilterPanel con clase is-mobile-open, botón #sidebar-collapse-btn intuitivo y reglas CSS 100vw × 100dvh sin huecos en móvil', async () => {
+    const derived = buildDerivedAntenasStructures(createSampleCustomDataset());
+    const mobileFilterHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: true,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+
+    expect(mobileFilterHtml).toContain('is-mobile-open');
+    expect(mobileFilterHtml).toContain('id="sidebar-collapse-btn"');
+    expect(mobileFilterHtml).toContain('aria-label="Cerrar panel de filtros"');
+    expect(mobileFilterHtml).toContain('sidebar-close-icon-mobile');
+    expect(mobileFilterHtml).toContain('sidebar-close-icon-desktop');
+
+    // En ruta desconocida (NotFoundView bajo RootLayout) también se muestra el botón flotante #page-open-sections-btn
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], derived.dataset);
+    queryClient.setQueryData(['scan-status'], null);
+    const nfRoot = createRootRoute({
+      component: RootLayout,
+      notFoundComponent: NotFoundView,
+    });
+    const nfMap = createRoute({
+      getParentRoute: () => nfRoot,
+      path: '/',
+      component: MapaView,
+    });
+    const nfRouter = createRouter({
+      routeTree: nfRoot.addChildren([nfMap]),
+      history: createMemoryHistory({ initialEntries: ['/ruta-inexistente'] }),
+    });
+    await nfRouter.load();
+    const nfHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: nfRouter }),
+        ),
+      ),
+    );
+    expect(nfHtml).toContain('id="page-open-sections-btn"');
+    expect(nfHtml).toContain('Ruta no encontrada');
+
+    // Verificación de las reglas CSS de pantalla completa (100vw × 100dvh) sin el antiguo min(92vw, 380px)
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toContain('--header-height: 0px;');
+    expect(indexCssSource).not.toContain('min(92vw, 380px)');
+    expect(indexCssSource).toContain('width: 100vw;');
+    expect(indexCssSource).toContain('height: 100dvh;');
+  });
+});
+
 

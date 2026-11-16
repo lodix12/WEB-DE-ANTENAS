@@ -147,15 +147,31 @@ export function FilterPanel({
             type="button"
             className="icon-btn"
             onClick={() => {
-              onCollapseDesktop();
-              onCloseMobile();
+              if (
+                typeof window !== 'undefined' &&
+                window.matchMedia?.('(max-width: 860px)').matches
+              ) {
+                onCloseMobile();
+              } else {
+                onCollapseDesktop();
+                onCloseMobile();
+              }
             }}
             id="sidebar-collapse-btn"
-            title="Ocultar panel lateral"
-            aria-label="Ocultar panel lateral"
+            title="Cerrar filtros"
+            aria-label="Cerrar panel de filtros"
             style={{ padding: '0 8px' }}
           >
-            <PanelLeftClose size={15} aria-hidden="true" />
+            <PanelLeftClose
+              size={15}
+              className="sidebar-close-icon-desktop"
+              aria-hidden="true"
+            />
+            <X
+              size={16}
+              className="sidebar-close-icon-mobile"
+              aria-hidden="true"
+            />
           </button>
         </div>
       </div>
