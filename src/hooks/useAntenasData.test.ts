@@ -68,6 +68,7 @@ import {
   accumulateLiveDeltaChunks,
   clearStoredScanDispatchToken,
   computeInterpolatedScanMetrics,
+  fetchLiveScanStatus,
   formatScanPercentEs,
   getStoredScanDispatchToken,
   parseLiveScanDeltaChunk,
@@ -4502,6 +4503,225 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
     expect(getStoredScanDispatchToken()).toBe('');
     expect(storageMap.size).toBe(0);
   });
+
+  it('mantiene ESCANEO EN VIVO sin cortes durante el arranque del runner, envía Bearer en lecturas API (5.000 req/h), filtra runs zombie en cola y bloquea retrocesos de caché CDN', async () => {
+    installMockLocalStorage();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const prevCompletedDoc: ScanStatusPayload = {
+      schemaVersion: 2,
+      state: 'completed',
+      scanId: 'prev-scan-100',
+      trigger: 'workflow_dispatch',
+      recordNovedades: true,
+      part: '1/2',
+      phase: 'frecuencias',
+      startedAt: '2026-11-16T15:15:00Z',
+      updatedAt: '2026-11-16T15:34:00Z',
+      censusBoxesVisited: 239,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 62238,
+      scannedAntennas: 62238,
+      totalAntennas: 62238,
+      percent: 100,
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['scan-status'], prevCompletedDoc);
+
+    // 1. Disparo forzado exitoso
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const disp = await triggerForcedAntennasScan({
+      token: 'Bearer github_pat_owner_token_5000',
+      totalAntennas: 62238,
+      queryClient,
+    });
+    expect(disp.status).toBe('dispatched');
+    // Prefijo accidental "Bearer " eliminado al normalizar
+    expect(getStoredScanDispatchToken()).toBe('github_pat_owner_token_5000');
+
+    // 2. Sondeo #1 (T = +4 s): scan-status.json aún contiene prev-scan-100 (completed),
+    //    pero /actions/runs muestra el nuevo run 900200 en progreso.
+    //    Debe autenticar con Bearer y NO vaciar optimisticDispatchState prematuramente.
+    let currentSha = 'sha-old-completed';
+    let currentStatusDoc: ScanStatusPayload = prevCompletedDoc;
+    const seenAuthHeaders: string[] = [];
+
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const h = new Headers(init?.headers);
+      if (url.includes('api.github.com')) {
+        seenAuthHeaders.push(h.get('authorization') ?? '');
+      }
+      if (url.includes('/git/ref/heads/scan-status')) {
+        return new Response(JSON.stringify({ object: { sha: currentSha } }), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            ETag: `"etag-${currentSha}"`,
+            'X-RateLimit-Remaining': '4998',
+          },
+        });
+      }
+      if (url.includes(`/${currentSha}/scan-status.json`)) {
+        return new Response(JSON.stringify(currentStatusDoc), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/actions/workflows/update-and-deploy.yml/runs')) {
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              {
+                id: 900200,
+                event: 'workflow_dispatch',
+                status: 'in_progress',
+                conclusion: null,
+                created_at: new Date().toISOString(),
+                run_started_at: new Date().toISOString(),
+              },
+              {
+                id: 900001,
+                event: 'workflow_dispatch',
+                status: 'queued',
+                conclusion: null,
+                created_at: '2026-11-16T10:00:00Z',
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-RateLimit-Remaining': '4997',
+            },
+          },
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const poll1 = await fetchLiveScanStatus();
+    expect(poll1?.state).toBe('running');
+    expect(seenAuthHeaders.every((a) => a === 'Bearer github_pat_owner_token_5000')).toBe(
+      true,
+    );
+
+    // 3. Sondeo #2 (T = +10 s): scan-status.json SIGUE en prev-scan-100 mientras arranca Python,
+    //    y /actions/runs está en enfriamiento (< 15 s). NO debe caer a "completed" ("En espera")!
+    const poll2 = await fetchLiveScanStatus();
+    expect(poll2?.state).toBe('running');
+    expect(poll2?.scanId).not.toBe('prev-scan-100');
+
+    // 4. Sondeo #3: Python publica el primer latido real del nuevo escaneo 900200 -> relevo limpio
+    currentSha = 'sha-live-900200-1';
+    currentStatusDoc = {
+      schemaVersion: 2,
+      state: 'running',
+      scanId: '900200',
+      trigger: 'workflow_dispatch',
+      recordNovedades: true,
+      part: '1/2',
+      phase: 'frecuencias',
+      startedAt: '2026-11-16T16:00:00Z',
+      updatedAt: '2026-11-16T16:05:00Z',
+      censusBoxesVisited: 239,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 62238,
+      scannedAntennas: 31119,
+      totalAntennas: 62238,
+      percent: 50,
+      requestsPerSecond: 80,
+    };
+
+    const poll3 = await fetchLiveScanStatus();
+    expect(poll3).toMatchObject({
+      state: 'running',
+      scanId: '900200',
+      percent: 50,
+    });
+
+    // 5. Si por límite de cuota (403 + X-RateLimit-Remaining: 0) cae al respaldo CDN de raw.githubusercontent.com
+    //    y Fastly devuelve una copia antigua (prev-scan-100 con updatedAt anterior), NO retrocede a completed!
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/git/ref/heads/scan-status')) {
+        return new Response(JSON.stringify({ message: 'rate limit' }), {
+          status: 403,
+          headers: { 'X-RateLimit-Remaining': '0' },
+        });
+      }
+      if (url.includes('/scan-status/scan-status.json')) {
+        // Copia antigua cacheada por CDN (15:34 < 16:05)
+        return new Response(JSON.stringify(prevCompletedDoc), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const poll4 = await fetchLiveScanStatus();
+    expect(poll4).toMatchObject({
+      state: 'running',
+      scanId: '900200',
+      percent: 50,
+    });
+
+    // 6. En estado reposo, un run zombie atascado en "queued" detrás de un run más nuevo ya "completed" se ignora
+    resetScanProgressInternalCacheForTests();
+    const freshNowIso = new Date().toISOString();
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/git/ref/heads/scan-status')) {
+        return new Response(JSON.stringify({ object: { sha: 'sha-done' } }), {
+          status: 200,
+          headers: { 'X-RateLimit-Remaining': '55' },
+        });
+      }
+      if (url.includes('/sha-done/scan-status.json')) {
+        return new Response(JSON.stringify(prevCompletedDoc), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/actions/workflows/update-and-deploy.yml/runs')) {
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              {
+                id: 900300,
+                event: 'workflow_dispatch',
+                status: 'completed',
+                conclusion: 'success',
+                created_at: freshNowIso,
+              },
+              {
+                // Run antiguo atascado en queued antes del completado (como 43894165638)
+                id: 900100,
+                event: 'workflow_dispatch',
+                status: 'queued',
+                conclusion: null,
+                created_at: freshNowIso,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'X-RateLimit-Remaining': '54' },
+          },
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    const idlePoll = await fetchLiveScanStatus();
+    expect(idlePoll?.state).toBe('completed');
+  });
 });
+
 
 

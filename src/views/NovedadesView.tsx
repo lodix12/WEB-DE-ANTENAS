@@ -552,8 +552,12 @@ export function NovedadesView() {
                     scanProgress.part ? ` · Parte ${scanProgress.part}` : ''
                   }`
               : scanProgress.status?.state === 'completed'
-                ? 'Último escaneo completado (100 %) · Diario 18:00 h'
-                : 'Se activa durante el escaneo diario (18:00) o forzado'}
+                ? scanProgress.status.trigger === 'schedule'
+                  ? 'Último escaneo completado (100 %) · Diario 18:00 h'
+                  : 'Último escaneo forzado completado (100 %)'
+                : scanProgress.status?.state === 'stopped'
+                  ? 'Último escaneo interrumpido · Listo para reintentar'
+                  : 'Se activa durante el escaneo diario (18:00) o forzado'}
           </span>
         </div>
 

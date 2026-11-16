@@ -42,17 +42,21 @@ const GITHUB_WORKFLOW_DISPATCH_URL =
 const SCAN_DISPATCH_TOKEN_STORAGE_KEY = 'radiomapa-gh-dispatch-token';
 
 /** Ventana optimista tras un disparo forzado mientras arranca el runner de GitHub Actions */
-const OPTIMISTIC_DISPATCH_WINDOW_MS = 75_000;
+const OPTIMISTIC_DISPATCH_WINDOW_MS = 150_000;
+const OPTIMISTIC_ACTIONS_CHECK_INTERVAL_MS = 15_000;
+const MAX_QUEUED_RUN_AGE_MS = 10 * 60 * 1000;
 
-/** Intervalo de sondeo en vivo fijado por SHA de commit (~12 min de escaneo completo = < 55 reqs < límite 60 req/h) */
-const ACTIVE_POLL_INTERVAL_MS = 10_000;
-const CONSERVATIVE_ACTIVE_POLL_INTERVAL_MS = 18_000;
-const IDLE_POLL_INTERVAL_MS = 20_000;
+/** Intervalos adaptativos: con token (5.000 req/h) sondeo rápido de 8 s; sin token (60 req/h) sondeo conservador */
+const AUTH_ACTIVE_POLL_INTERVAL_MS = 8_000;
+const AUTH_IDLE_POLL_INTERVAL_MS = 20_000;
+const ACTIVE_POLL_INTERVAL_MS = 15_000;
+const CONSERVATIVE_ACTIVE_POLL_INTERVAL_MS = 25_000;
+const IDLE_POLL_INTERVAL_MS = 45_000;
 
 /** Si un estado "running"/"handoff" supera 6 minutos sin latido, verificar si el job sigue vivo */
 const STALE_HEARTBEAT_MS = 6 * 60 * 1000;
 
-/** Evitar consultar /actions/runs más de una vez cada 2 minutos */
+/** Evitar consultar /actions/runs más de una vez cada 2 minutos en reposo */
 const ACTIONS_CHECK_COOLDOWN_MS = 120_000;
 
 const LIVE_CHUNK_FETCH_CONCURRENCY = 6;
@@ -89,11 +93,21 @@ export interface ForceScanDispatchResult {
   httpStatus?: number;
 }
 
+interface ActiveWorkflowRunInfo {
+  hasActiveScanRun: boolean;
+  runId: string;
+  event: string;
+  startedAt: string;
+}
+
 interface EtagCache {
   refEtag: string | null;
   commitSha: string | null;
   rateLimitRemaining: number;
+  rateLimitResetMs: number;
   etag: string | null;
+  runsEtag: string | null;
+  lastRunsData: ActiveWorkflowRunInfo | null;
   payload: ScanStatusPayload | null;
   lastActionsCheckMs: number;
 }
@@ -102,14 +116,21 @@ const etagCache: EtagCache = {
   refEtag: null,
   commitSha: null,
   rateLimitRemaining: 60,
+  rateLimitResetMs: 0,
   etag: null,
+  runsEtag: null,
+  lastRunsData: null,
   payload: null,
   lastActionsCheckMs: 0,
 };
 
+const rejectedAuthReadUrls = new Set<string>();
+
 interface OptimisticDispatchState {
+  dispatchedAtMs: number;
   untilMs: number;
   baselineScanId: string;
+  adoptedRunId: string;
   payload: ScanStatusPayload;
 }
 
@@ -142,6 +163,9 @@ export function getStoredScanDispatchToken(): string {
 export function setStoredScanDispatchToken(token: string): void {
   const trimmed = normalizeDispatchToken(token);
   memoryFallbackDispatchToken = trimmed;
+  rejectedAuthReadUrls.clear();
+  etagCache.rateLimitRemaining = trimmed.length > 0 ? 5000 : 60;
+  etagCache.rateLimitResetMs = 0;
   if (typeof window === 'undefined') {
     return;
   }
@@ -166,6 +190,9 @@ export function setStoredScanDispatchToken(token: string): void {
 
 export function clearStoredScanDispatchToken(): void {
   memoryFallbackDispatchToken = '';
+  rejectedAuthReadUrls.clear();
+  etagCache.rateLimitRemaining = 60;
+  etagCache.rateLimitResetMs = 0;
   if (typeof window === 'undefined') {
     return;
   }
@@ -183,9 +210,13 @@ export function resetScanProgressInternalCacheForTests(): void {
   etagCache.refEtag = null;
   etagCache.commitSha = null;
   etagCache.rateLimitRemaining = 60;
+  etagCache.rateLimitResetMs = 0;
   etagCache.etag = null;
+  etagCache.runsEtag = null;
+  etagCache.lastRunsData = null;
   etagCache.payload = null;
   etagCache.lastActionsCheckMs = 0;
+  rejectedAuthReadUrls.clear();
   optimisticDispatchState = null;
   memoryFallbackDispatchToken = '';
 }
@@ -947,49 +978,152 @@ export function computeInterpolatedScanMetrics(
   };
 }
 
-async function fetchRawBranchPrimary(): Promise<ScanStatusPayload | null> {
-  const url = etagCache.commitSha
-    ? `${GITHUB_RAW_REPO_BASE_URL}/${etagCache.commitSha}/scan-status.json`
-    : `${GITHUB_RAW_STATUS_URL}?t=${Date.now()}`;
-  const resp = await fetch(url, {
-    cache: 'no-store',
-  });
-  if (!resp.ok) {
-    return null;
-  }
-  const json: unknown = await resp.json();
-  return parseScanStatusPayload(json);
-}
-
-async function fetchCommitPinnedRawStatus(): Promise<ScanStatusPayload | null> {
-  if (etagCache.rateLimitRemaining <= 3) {
-    return null;
-  }
-  const headers: Record<string, string> = {
-    Accept: 'application/vnd.github+json',
-  };
-  if (etagCache.refEtag) {
-    headers['If-None-Match'] = etagCache.refEtag;
-  }
-  const refResp = await fetch(
-    `${GITHUB_GIT_REF_STATUS_URL}?t=${Date.now()}`,
-    {
-      headers,
-      cache: 'no-store',
-    },
-  );
-  const remHeader = refResp.headers.get('X-RateLimit-Remaining');
+function updateRateLimitFromHeaders(resp: Response): void {
+  const remHeader = resp.headers.get('X-RateLimit-Remaining');
   if (remHeader !== null) {
     const parsedRem = Number.parseInt(remHeader, 10);
     if (Number.isFinite(parsedRem)) {
       etagCache.rateLimitRemaining = parsedRem;
     }
   }
+  const resetHeader = resp.headers.get('X-RateLimit-Reset');
+  if (resetHeader !== null) {
+    const parsedReset = Number.parseInt(resetHeader, 10);
+    if (Number.isFinite(parsedReset) && parsedReset > 0) {
+      etagCache.rateLimitResetMs = parsedReset * 1000;
+    }
+  }
+  if (
+    (resp.status === 403 || resp.status === 429) &&
+    (remHeader === '0' || etagCache.rateLimitRemaining <= 0)
+  ) {
+    etagCache.rateLimitRemaining = 0;
+    etagCache.rateLimitResetMs = Math.max(
+      etagCache.rateLimitResetMs,
+      Date.now() + 60_000,
+    );
+  }
+}
+
+function canUseGitHubApiNow(minRemaining: number): boolean {
+  if (etagCache.rateLimitRemaining > minRemaining) {
+    return true;
+  }
+  if (
+    etagCache.rateLimitResetMs > 0 &&
+    Date.now() >= etagCache.rateLimitResetMs
+  ) {
+    etagCache.rateLimitRemaining =
+      getStoredScanDispatchToken().length > 0 ? 5000 : 60;
+    etagCache.rateLimitResetMs = 0;
+    return true;
+  }
+  return false;
+}
+
+async function fetchGitHubApiRead(
+  url: string,
+  extraHeaders?: Record<string, string>,
+): Promise<Response> {
+  const baseHeaders: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    ...extraHeaders,
+  };
+  const token = !rejectedAuthReadUrls.has(url)
+    ? getStoredScanDispatchToken()
+    : '';
+  if (token) {
+    const authHeaders: Record<string, string> = {
+      ...baseHeaders,
+      Authorization: `Bearer ${token}`,
+    };
+    const resp = await fetch(url, {
+      headers: authHeaders,
+      cache: 'no-store',
+    });
+    const isRateLimit =
+      resp.status === 403 && resp.headers.get('X-RateLimit-Remaining') === '0';
+    if (resp.status === 401 || (resp.status === 403 && !isRateLimit)) {
+      rejectedAuthReadUrls.add(url);
+      const retryResp = await fetch(url, {
+        headers: baseHeaders,
+        cache: 'no-store',
+      });
+      updateRateLimitFromHeaders(retryResp);
+      return retryResp;
+    }
+    updateRateLimitFromHeaders(resp);
+    return resp;
+  }
+
+  const resp = await fetch(url, {
+    headers: baseHeaders,
+    cache: 'no-store',
+  });
+  updateRateLimitFromHeaders(resp);
+  return resp;
+}
+
+/**
+ * Evita que una respuesta de respaldo cacheada por CDN (Fastly ~5 min)
+ * retroceda el porcentaje o reemplace un escaneo en curso con uno anterior ya completado.
+ */
+function pickFresherScanPayload(
+  cached: ScanStatusPayload | null,
+  incoming: ScanStatusPayload,
+): ScanStatusPayload {
+  if (!cached) {
+    return incoming;
+  }
+  const cachedMs = Date.parse(cached.updatedAt);
+  const incomingMs = Date.parse(incoming.updatedAt);
+  if (
+    Number.isFinite(cachedMs) &&
+    Number.isFinite(incomingMs) &&
+    incomingMs < cachedMs
+  ) {
+    return cached;
+  }
+  return incoming;
+}
+
+async function fetchRawBranchPrimary(): Promise<ScanStatusPayload | null> {
+  // Usar siempre la cabecera de rama `scan-status` (nunca un commitSha congelado)
+  const resp = await fetch(`${GITHUB_RAW_STATUS_URL}?t=${Date.now()}`, {
+    cache: 'no-store',
+  });
+  if (!resp.ok) {
+    return null;
+  }
+  const json: unknown = await resp.json();
+  const parsed = parseScanStatusPayload(json);
+  if (!parsed) {
+    return null;
+  }
+  return pickFresherScanPayload(etagCache.payload, parsed);
+}
+
+async function fetchCommitPinnedRawStatus(): Promise<ScanStatusPayload | null> {
+  if (!canUseGitHubApiNow(3)) {
+    etagCache.commitSha = null;
+    return null;
+  }
+  const extraHeaders: Record<string, string> = {};
+  if (etagCache.refEtag) {
+    extraHeaders['If-None-Match'] = etagCache.refEtag;
+  }
+  const refResp = await fetchGitHubApiRead(
+    GITHUB_GIT_REF_STATUS_URL,
+    extraHeaders,
+  );
 
   if (refResp.status === 304 && etagCache.payload) {
     return etagCache.payload;
   }
   if (!refResp.ok) {
+    if (refResp.status === 403 || refResp.status === 429) {
+      etagCache.commitSha = null;
+    }
     return null;
   }
 
@@ -1031,36 +1165,53 @@ async function fetchCommitPinnedRawStatus(): Promise<ScanStatusPayload | null> {
   return parsed;
 }
 
-interface ActiveWorkflowRunInfo {
-  hasActiveScanRun: boolean;
-  runId: string;
-  event: string;
-  startedAt: string;
-}
-
 async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
+  if (!canUseGitHubApiNow(1)) {
+    return null;
+  }
   try {
-    const resp = await fetch(GITHUB_WORKFLOW_RUNS_URL, {
-      headers: { Accept: 'application/vnd.github+json' },
-      cache: 'no-store',
-    });
+    const extraHeaders: Record<string, string> = {};
+    if (etagCache.runsEtag) {
+      extraHeaders['If-None-Match'] = etagCache.runsEtag;
+    }
+    const resp = await fetchGitHubApiRead(
+      GITHUB_WORKFLOW_RUNS_URL,
+      extraHeaders,
+    );
+    if (resp.status === 304 && etagCache.lastRunsData) {
+      return etagCache.lastRunsData;
+    }
     if (!resp.ok) {
       return null;
     }
+    const nextRunsEtag = resp.headers.get('ETag');
     const data: unknown = await resp.json();
     if (!isPlainObject(data) || !Array.isArray(data.workflow_runs)) {
       return null;
     }
+
+    const nowMs = Date.now();
+    let result: ActiveWorkflowRunInfo = {
+      hasActiveScanRun: false,
+      runId: '',
+      event: '',
+      startedAt: '',
+    };
+
     for (let i = 0; i < data.workflow_runs.length; i++) {
       const run = data.workflow_runs[i];
       if (!isPlainObject(run)) continue;
-      const status = typeof run.status === 'string' ? run.status : '';
       const event = typeof run.event === 'string' ? run.event : '';
-      if (
-        (status === 'in_progress' || status === 'queued') &&
-        (event === 'schedule' || event === 'workflow_dispatch')
-      ) {
-        return {
+      if (event !== 'schedule' && event !== 'workflow_dispatch') {
+        continue;
+      }
+
+      const status = typeof run.status === 'string' ? run.status : '';
+      const conclusion =
+        typeof run.conclusion === 'string' ? run.conclusion : '';
+
+      if (status === 'in_progress') {
+        result = {
           hasActiveScanRun: true,
           runId: String(run.id ?? ''),
           event,
@@ -1069,16 +1220,50 @@ async function checkActiveWorkflowRun(): Promise<ActiveWorkflowRunInfo | null> {
               ? run.run_started_at
               : typeof run.created_at === 'string'
                 ? run.created_at
-                : new Date().toISOString(),
+                : new Date(nowMs).toISOString(),
         };
+        break;
+      }
+
+      if (
+        status === 'queued' ||
+        status === 'waiting' ||
+        status === 'pending'
+      ) {
+        const createdRaw =
+          typeof run.created_at === 'string'
+            ? run.created_at
+            : typeof run.run_started_at === 'string'
+              ? run.run_started_at
+              : '';
+        const createdMs = createdRaw ? Date.parse(createdRaw) : NaN;
+        const isZombieQueued =
+          Number.isFinite(createdMs) &&
+          nowMs - createdMs > MAX_QUEUED_RUN_AGE_MS;
+        if (!isZombieQueued) {
+          result = {
+            hasActiveScanRun: true,
+            runId: String(run.id ?? ''),
+            event,
+            startedAt: createdRaw || new Date(nowMs).toISOString(),
+          };
+          break;
+        }
+        continue;
+      }
+
+      // `workflow_runs` viene ordenado del más reciente al más antiguo:
+      // si ya encontramos un escaneo reciente completado con éxito, no mirar runs antiguos atascados.
+      if (status === 'completed' && conclusion === 'success') {
+        break;
       }
     }
-    return {
-      hasActiveScanRun: false,
-      runId: '',
-      event: '',
-      startedAt: '',
-    };
+
+    if (nextRunsEtag) {
+      etagCache.runsEtag = nextRunsEtag;
+    }
+    etagCache.lastRunsData = result;
+    return result;
   } catch {
     return null;
   }
@@ -1227,6 +1412,7 @@ export async function triggerForcedAntennasScan(options?: {
   }
 
   setStoredScanDispatchToken(effectiveToken);
+  updateRateLimitFromHeaders(resp);
 
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
@@ -1256,11 +1442,15 @@ export async function triggerForcedAntennasScan(options?: {
   };
 
   optimisticDispatchState = {
+    dispatchedAtMs: nowMs,
     untilMs: nowMs + OPTIMISTIC_DISPATCH_WINDOW_MS,
     baselineScanId:
       etagCache.payload?.scanId ?? cachedQueryPayload?.scanId ?? '',
+    adoptedRunId: '',
     payload: optimisticPayload,
   };
+  etagCache.runsEtag = null;
+  etagCache.lastRunsData = null;
   etagCache.lastActionsCheckMs = 0;
 
   if (options?.queryClient) {
@@ -1331,7 +1521,7 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
     // Continuar hacia respaldo raw/contents
   }
 
-  // 2) Respaldo mediante raw.githubusercontent.com si se agotó cuota o falló git/ref
+  // 2) Respaldo mediante raw.githubusercontent.com (con protección monotónica anti-CDN)
   if (!payload) {
     try {
       const rawParsed = await fetchRawBranchPrimary();
@@ -1345,18 +1535,16 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   }
 
   // 3) Último respaldo mediante GitHub Contents API con ETag (If-None-Match)
-  if (!payload) {
+  if (!payload && canUseGitHubApiNow(1)) {
     try {
-      const headers: Record<string, string> = {
-        Accept: 'application/vnd.github+json',
-      };
+      const extraHeaders: Record<string, string> = {};
       if (etagCache.etag) {
-        headers['If-None-Match'] = etagCache.etag;
+        extraHeaders['If-None-Match'] = etagCache.etag;
       }
-      const resp = await fetch(GITHUB_CONTENTS_STATUS_URL, {
-        headers,
-        cache: 'no-store',
-      });
+      const resp = await fetchGitHubApiRead(
+        GITHUB_CONTENTS_STATUS_URL,
+        extraHeaders,
+      );
 
       if (resp.status === 304 && etagCache.payload) {
         payload = etagCache.payload;
@@ -1368,8 +1556,9 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
           if (nextEtag) {
             etagCache.etag = nextEtag;
           }
-          etagCache.payload = parsed;
-          payload = parsed;
+          const fresher = pickFresherScanPayload(etagCache.payload, parsed);
+          etagCache.payload = fresher;
+          payload = fresher;
         }
       } else {
         payload = etagCache.payload;
@@ -1377,6 +1566,8 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
     } catch {
       payload = etagCache.payload;
     }
+  } else if (!payload) {
+    payload = etagCache.payload;
   }
 
   const now = Date.now();
@@ -1385,50 +1576,40 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   }
 
   const canCheckActions =
-    (optimisticDispatchState !== null && etagCache.rateLimitRemaining > 10) ||
-    now - etagCache.lastActionsCheckMs >= ACTIONS_CHECK_COOLDOWN_MS;
+    optimisticDispatchState !== null
+      ? canUseGitHubApiNow(5) &&
+        now - etagCache.lastActionsCheckMs >=
+          OPTIMISTIC_ACTIONS_CHECK_INTERVAL_MS
+      : canUseGitHubApiNow(5) &&
+        now - etagCache.lastActionsCheckMs >= ACTIONS_CHECK_COOLDOWN_MS;
 
   if (optimisticDispatchState !== null) {
+    // Relevo definitivo SOLO cuando `scan-status.json` ya publica el nuevo scanId en la rama `scan-status`
     if (
       payload &&
-      (payload.state === 'running' || payload.state === 'handoff') &&
+      payload.scanId &&
       payload.scanId !== optimisticDispatchState.baselineScanId
     ) {
-      const updatedMs = Date.parse(payload.updatedAt);
-      const isStale =
-        Number.isFinite(updatedMs) && now - updatedMs > STALE_HEARTBEAT_MS;
-      if (isStale && canCheckActions) {
-        etagCache.lastActionsCheckMs = now;
-        const runCheck = await checkActiveWorkflowRun();
-        if (runCheck && !runCheck.hasActiveScanRun) {
-          etagCache.payload = {
-            ...payload,
-            state: 'stopped',
-          };
-          return {
-            ...optimisticDispatchState.payload,
-            updatedAt: optimisticDispatchState.payload.updatedAt,
-          };
-        }
-        if (
-          runCheck &&
-          runCheck.hasActiveScanRun &&
-          runCheck.runId &&
-          runCheck.runId !== payload.scanId &&
-          runCheck.runId !== optimisticDispatchState.baselineScanId
-        ) {
-          const fallbackTotal =
-            optimisticDispatchState.payload.totalAntennas ||
-            payload.totalAntennas ||
-            62230;
+      if (payload.state === 'running' || payload.state === 'handoff') {
+        const updatedMs = Date.parse(payload.updatedAt);
+        const isStale =
+          Number.isFinite(updatedMs) && now - updatedMs > STALE_HEARTBEAT_MS;
+        if (!isStale) {
           optimisticDispatchState = null;
-          return buildActiveWorkflowScanPayload(runCheck, now, fallbackTotal);
+          return payload;
         }
+      } else if (
+        optimisticDispatchState.adoptedRunId &&
+        payload.scanId === optimisticDispatchState.adoptedRunId &&
+        (payload.state === 'completed' || payload.state === 'stopped')
+      ) {
+        optimisticDispatchState = null;
+        return payload;
       }
-      optimisticDispatchState = null;
-      return payload;
     }
 
+    // Mientras el runner de GitHub Actions arranca (`queued`/`pending`/`in_progress` antes del primer push),
+    // mantener `optimisticDispatchState` vivo sin vaciarlo prematuramente.
     if (canCheckActions) {
       etagCache.lastActionsCheckMs = now;
       const runCheck = await checkActiveWorkflowRun();
@@ -1442,8 +1623,26 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
           optimisticDispatchState.payload.totalAntennas ||
           payload?.totalAntennas ||
           62230;
+        const adoptedPayload = buildActiveWorkflowScanPayload(
+          runCheck,
+          now,
+          fallbackTotal,
+        );
+        optimisticDispatchState = {
+          ...optimisticDispatchState,
+          adoptedRunId: runCheck.runId,
+          untilMs: Math.max(optimisticDispatchState.untilMs, now + 90_000),
+          payload: adoptedPayload,
+        };
+        return adoptedPayload;
+      }
+      if (
+        runCheck &&
+        !runCheck.hasActiveScanRun &&
+        now - optimisticDispatchState.dispatchedAtMs > 35_000
+      ) {
         optimisticDispatchState = null;
-        return buildActiveWorkflowScanPayload(runCheck, now, fallbackTotal);
+        return payload;
       }
     }
 
@@ -1478,7 +1677,8 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   }
 
   // 5) Si el estado aparece inactivo/completado, verificar de forma ligera si acaba de arrancar
-  // un escaneo diario o forzado en los primeros segundos antes del primer push a `scan-status`.
+  // un escaneo diario o forzado en los primeros segundos antes del primer push a `scan-status`,
+  // y protegerlo con `optimisticDispatchState` para no parpadear a "En espera" en el siguiente ciclo.
   if (canCheckActions) {
     etagCache.lastActionsCheckMs = now;
     const runCheck = await checkActiveWorkflowRun();
@@ -1488,11 +1688,19 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
       runCheck.runId &&
       (!payload || payload.scanId !== runCheck.runId)
     ) {
-      return buildActiveWorkflowScanPayload(
+      const synthPayload = buildActiveWorkflowScanPayload(
         runCheck,
         now,
         payload?.totalAntennas || 62230,
       );
+      optimisticDispatchState = {
+        dispatchedAtMs: now,
+        untilMs: now + 90_000,
+        baselineScanId: payload?.scanId ?? '',
+        adoptedRunId: runCheck.runId,
+        payload: synthPayload,
+      };
+      return synthPayload;
     }
   }
 
@@ -1632,13 +1840,17 @@ function useSharedScanStatusQuery() {
     queryFn: fetchLiveScanStatus,
     staleTime: 3_000,
     refetchInterval: (query) => {
+      const hasToken = getStoredScanDispatchToken().length > 0;
       const s = query.state.data?.state;
       if (s === 'running' || s === 'handoff') {
-        return etagCache.rateLimitRemaining <= 20
+        if (hasToken && etagCache.rateLimitRemaining > 30) {
+          return AUTH_ACTIVE_POLL_INTERVAL_MS;
+        }
+        return etagCache.rateLimitRemaining <= 25
           ? CONSERVATIVE_ACTIVE_POLL_INTERVAL_MS
           : ACTIVE_POLL_INTERVAL_MS;
       }
-      return IDLE_POLL_INTERVAL_MS;
+      return hasToken ? AUTH_IDLE_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
     },
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
