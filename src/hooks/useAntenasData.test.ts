@@ -66,10 +66,15 @@ import {
 } from './useNovedadesData';
 import {
   accumulateLiveDeltaChunks,
+  clearStoredScanDispatchToken,
   computeInterpolatedScanMetrics,
   formatScanPercentEs,
+  getStoredScanDispatchToken,
   parseLiveScanDeltaChunk,
   parseScanStatusPayload,
+  resetScanProgressInternalCacheForTests,
+  setStoredScanDispatchToken,
+  triggerForcedAntennasScan,
   type LiveScanMergedDelta,
 } from './useScanProgress';
 
@@ -4199,3 +4204,304 @@ describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pa
     expect(mapSource).toContain("'circle-pitch-scale': 'viewport'");
   });
 });
+
+describe('Control circular discreto en esquina inferior de NovedadesView y triggerForcedAntennasScan', () => {
+  const origLocalStorageDesc = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'localStorage',
+  );
+  const origWindowDesc = Object.getOwnPropertyDescriptor(globalThis, 'window');
+
+  function installMockLocalStorage() {
+    const map = new Map<string, string>();
+    const storageMock: Storage = {
+      get length() {
+        return map.size;
+      },
+      clear() {
+        map.clear();
+      },
+      getItem(key: string) {
+        return map.has(key) ? (map.get(key) ?? null) : null;
+      },
+      key(index: number) {
+        return Array.from(map.keys())[index] ?? null;
+      },
+      removeItem(key: string) {
+        map.delete(key);
+      },
+      setItem(key: string, value: string) {
+        map.set(key, String(value));
+      },
+    };
+
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storageMock,
+      configurable: true,
+      writable: true,
+    });
+
+    if (typeof globalThis.window === 'undefined') {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storageMock },
+        configurable: true,
+        writable: true,
+      });
+    }
+
+    return { map, storageMock };
+  }
+
+  afterEach(() => {
+    clearStoredScanDispatchToken();
+    resetScanProgressInternalCacheForTests();
+    vi.restoreAllMocks();
+
+    if (origLocalStorageDesc) {
+      Object.defineProperty(globalThis, 'localStorage', origLocalStorageDesc);
+    } else {
+      Reflect.deleteProperty(globalThis, 'localStorage');
+    }
+
+    if (origWindowDesc) {
+      Object.defineProperty(globalThis, 'window', origWindowDesc);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
+  it('renderiza #novedades-corner-scan-btn en la esquina inferior derecha sin texto visible ni atributo title', async () => {
+    const sample = createSampleCustomDataset();
+    const sampleNovedades: NovedadesDataset = {
+      updatedAt: '2026-11-16T06:00:00Z',
+      scanId: 'scan-2026-11-16',
+      previousScanAt: '2026-11-15T06:00:00Z',
+      total: 0,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 0,
+      novedades: [],
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], sample);
+    queryClient.setQueryData(['novedades-dataset'], sampleNovedades);
+    queryClient.setQueryData(['scan-status'], null);
+
+    const buildNovRouter = () => {
+      const root = createRootRoute({ component: Outlet });
+      const novR = createRoute({
+        getParentRoute: () => root,
+        path: '/novedades',
+        component: NovedadesView,
+      });
+      return createRouter({
+        routeTree: root.addChildren([novR]),
+        history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+      });
+    };
+
+    const router = buildNovRouter();
+    await router.load();
+
+    const novHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router }),
+        ),
+      ),
+    );
+
+    const paginationIdx = novHtml.indexOf('id="novedades-pagination-bar"');
+    const cornerWrapIdx = novHtml.indexOf('class="novedades-corner-wrap"');
+    const btnIdIdx = novHtml.indexOf('id="novedades-corner-scan-btn"');
+    const mainEndIdx = novHtml.lastIndexOf('</main>');
+
+    expect(paginationIdx).toBeGreaterThan(0);
+    expect(cornerWrapIdx).toBeGreaterThan(paginationIdx);
+    expect(btnIdIdx).toBeGreaterThan(cornerWrapIdx);
+    expect(btnIdIdx).toBeLessThan(mainEndIdx);
+
+    // El popover de token permanece oculto por defecto
+    expect(novHtml).not.toContain('id="novedades-corner-key-popover"');
+
+    const btnStart = novHtml.lastIndexOf('<button', btnIdIdx);
+    const btnEnd = novHtml.indexOf('</button>', btnIdIdx) + '</button>'.length;
+    const btnSegment = novHtml.slice(btnStart, btnEnd);
+
+    expect(btnSegment).toContain('id="novedades-corner-scan-btn"');
+    expect(btnSegment).toContain('class="novedades-corner-scan-btn"');
+    expect(btnSegment).toContain('aria-label="Control"');
+    expect(btnSegment).not.toContain('title=');
+    // Sin ningún texto visible dentro del botón (solo icono SVG)
+    expect(btnSegment.replace(/<[^>]+>/g, '').trim()).toBe('');
+    expect(btnSegment).toContain('<svg');
+
+    // Tampoco existe texto visible en todo el contenedor de esquina inferior
+    const cornerWrapStart = novHtml.lastIndexOf('<div', cornerWrapIdx);
+    const cornerWrapSegment = novHtml.slice(cornerWrapStart, mainEndIdx);
+    expect(cornerWrapSegment.replace(/<[^>]+>/g, '').trim()).toBe('');
+
+    // Cuando hay un escaneo forzado activo, el icono añade clase is-scanning y el monitor muestra "Forzado"
+    const forcedRunning: ScanStatusPayload = {
+      schemaVersion: 2,
+      state: 'running',
+      scanId: 'forced-2026-11-16',
+      trigger: 'workflow_dispatch',
+      recordNovedades: true,
+      part: '1/1',
+      phase: 'censo',
+      startedAt: '2026-11-16T14:30:00Z',
+      updatedAt: '2026-11-16T14:30:02Z',
+      censusBoxesVisited: 12,
+      estimatedCensusBoxes: 239,
+      discoveredAntennas: 0,
+      scannedAntennas: 0,
+      totalAntennas: 62230,
+      percent: 0.02,
+    };
+    queryClient.setQueryData(['scan-status'], forcedRunning);
+
+    const scanningHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router }),
+        ),
+      ),
+    );
+
+    const activeBtnIdIdx = scanningHtml.indexOf(
+      'id="novedades-corner-scan-btn"',
+    );
+    const activeBtnStart = scanningHtml.lastIndexOf('<button', activeBtnIdIdx);
+    const activeBtnEnd =
+      scanningHtml.indexOf('</button>', activeBtnIdIdx) + '</button>'.length;
+    const activeBtnSegment = scanningHtml.slice(activeBtnStart, activeBtnEnd);
+
+    expect(activeBtnSegment).toContain(
+      'class="novedades-corner-scan-btn is-scanning"',
+    );
+    expect(activeBtnSegment).not.toContain('title=');
+    expect(scanningHtml).toContain('>Forzado<');
+
+    // Verificación de las reglas CSS discretas en index.css
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toContain('.novedades-corner-wrap');
+    expect(indexCssSource).toContain('.novedades-corner-scan-btn');
+    expect(indexCssSource).toContain('@keyframes novedadesCornerSpin');
+    expect(indexCssSource).toContain('.novedades-corner-key-popover');
+    expect(indexCssSource).toContain('.novedades-corner-key-input');
+    expect(indexCssSource).toContain('.novedades-corner-key-submit');
+  });
+
+  it('triggerForcedAntennasScan gestiona already_scanning, needs_token, POST workflow_dispatch (204 + estado optimista en QueryClient) y limpieza de token en 401', async () => {
+    const { map: storageMap } = installMockLocalStorage();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    // 1. Si ya hay un escaneo activo (isCurrentlyScanning: true), devuelve already_scanning sin disparar red
+    const alreadyRes = await triggerForcedAntennasScan({
+      isCurrentlyScanning: true,
+    });
+    expect(alreadyRes).toEqual({ status: 'already_scanning' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // 2. Sin token guardado ni suministrado, devuelve needs_token sin disparar red
+    expect(getStoredScanDispatchToken()).toBe('');
+    const needsTokenRes = await triggerForcedAntennasScan();
+    expect(needsTokenRes).toEqual({ status: 'needs_token' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // 3. Con token válido: envía POST a dispatches con Authorization Bearer y { ref: 'main' },
+    //    guarda el token en localStorage, devuelve { status: 'dispatched', httpStatus: 204 }
+    //    y actualiza inmediatamente ['scan-status'] en QueryClient
+    fetchSpy.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const dispatchedRes = await triggerForcedAntennasScan({
+      token: 'ghp_valid_token_abc123',
+      totalAntennas: 62450,
+      queryClient,
+    });
+
+    expect(dispatchedRes).toEqual({ status: 'dispatched', httpStatus: 204 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    const [dispatchUrl, dispatchInit] = fetchSpy.mock.calls[0] ?? [];
+    expect(String(dispatchUrl)).toContain(
+      '/repos/lodix12/WEB-DE-ANTENAS/actions/workflows/update-and-deploy.yml/dispatches',
+    );
+    expect(dispatchInit?.method).toBe('POST');
+    const sentHeaders = new Headers(dispatchInit?.headers);
+    expect(sentHeaders.get('authorization')).toBe(
+      'Bearer ghp_valid_token_abc123',
+    );
+    const sentBody = JSON.parse(String(dispatchInit?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody.ref).toBe('main');
+
+    // Token persistido en localStorage y accesible para siguientes disparos sin reescribirlo
+    expect(getStoredScanDispatchToken()).toBe('ghp_valid_token_abc123');
+    expect(Array.from(storageMap.values())).toContain('ghp_valid_token_abc123');
+
+    const optimisticStatus = queryClient.getQueryData<ScanStatusPayload>([
+      'scan-status',
+    ]);
+    expect(optimisticStatus).toBeDefined();
+    expect(optimisticStatus).toMatchObject({
+      state: 'running',
+      trigger: 'workflow_dispatch',
+      phase: 'censo',
+      recordNovedades: true,
+    });
+    expect(optimisticStatus?.totalAntennas).toBe(62450);
+
+    // Mientras la ventana optimista sigue activa, evita disparar un segundo job duplicado
+    const duplicateGuardRes = await triggerForcedAntennasScan({ queryClient });
+    expect(duplicateGuardRes).toEqual({ status: 'already_scanning' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // 4. Ante HTTP 401 (con estado en reposo), limpia el token almacenado inválido y devuelve { status: 'unauthorized', httpStatus: 401 }
+    resetScanProgressInternalCacheForTests();
+    const idleQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    setStoredScanDispatchToken('ghp_expired_or_invalid_token');
+    expect(getStoredScanDispatchToken()).toBe('ghp_expired_or_invalid_token');
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'Bad credentials' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const unauthRes = await triggerForcedAntennasScan({
+      queryClient: idleQueryClient,
+    });
+    expect(unauthRes).toEqual({ status: 'unauthorized', httpStatus: 401 });
+    expect(getStoredScanDispatchToken()).toBe('');
+    expect(storageMap.size).toBe(0);
+  });
+});
+
+

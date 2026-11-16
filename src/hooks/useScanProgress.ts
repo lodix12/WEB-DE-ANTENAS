@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import {
   OPERATOR_ORDER,
   type AntennaRecord,
@@ -31,6 +35,14 @@ const DEFAULT_LIVE_DELTA_BASE_URL =
 
 const GITHUB_WORKFLOW_RUNS_URL =
   'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/actions/workflows/update-and-deploy.yml/runs?per_page=4';
+
+const GITHUB_WORKFLOW_DISPATCH_URL =
+  'https://api.github.com/repos/lodix12/WEB-DE-ANTENAS/actions/workflows/update-and-deploy.yml/dispatches';
+
+const SCAN_DISPATCH_TOKEN_STORAGE_KEY = 'radiomapa-gh-dispatch-token';
+
+/** Ventana optimista tras un disparo forzado mientras arranca el runner de GitHub Actions */
+const OPTIMISTIC_DISPATCH_WINDOW_MS = 75_000;
 
 /** Intervalo de sondeo en vivo fijado por SHA de commit (~12 min de escaneo completo = < 55 reqs < límite 60 req/h) */
 const ACTIVE_POLL_INTERVAL_MS = 10_000;
@@ -65,6 +77,18 @@ const PERCENT_FORMATTER_ES = new Intl.NumberFormat('es-ES', {
   maximumFractionDigits: 2,
 });
 
+export type ForceScanDispatchStatus =
+  | 'dispatched'
+  | 'already_scanning'
+  | 'needs_token'
+  | 'unauthorized'
+  | 'error';
+
+export interface ForceScanDispatchResult {
+  status: ForceScanDispatchStatus;
+  httpStatus?: number;
+}
+
 interface EtagCache {
   refEtag: string | null;
   commitSha: string | null;
@@ -82,6 +106,89 @@ const etagCache: EtagCache = {
   payload: null,
   lastActionsCheckMs: 0,
 };
+
+interface OptimisticDispatchState {
+  untilMs: number;
+  baselineScanId: string;
+  payload: ScanStatusPayload;
+}
+
+let optimisticDispatchState: OptimisticDispatchState | null = null;
+let memoryFallbackDispatchToken = '';
+
+function normalizeDispatchToken(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^(?:Bearer|token)\s+/i, '')
+    .trim();
+}
+
+export function getStoredScanDispatchToken(): string {
+  if (typeof window === 'undefined') {
+    return memoryFallbackDispatchToken;
+  }
+  try {
+    const storage = window.localStorage;
+    if (!storage || typeof storage.getItem !== 'function') {
+      return memoryFallbackDispatchToken;
+    }
+    const raw = storage.getItem(SCAN_DISPATCH_TOKEN_STORAGE_KEY);
+    return typeof raw === 'string' ? normalizeDispatchToken(raw) : '';
+  } catch {
+    return '';
+  }
+}
+
+export function setStoredScanDispatchToken(token: string): void {
+  const trimmed = normalizeDispatchToken(token);
+  memoryFallbackDispatchToken = trimmed;
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const storage = window.localStorage;
+    if (
+      !storage ||
+      typeof storage.setItem !== 'function' ||
+      typeof storage.removeItem !== 'function'
+    ) {
+      return;
+    }
+    if (trimmed.length > 0) {
+      storage.setItem(SCAN_DISPATCH_TOKEN_STORAGE_KEY, trimmed);
+    } else {
+      storage.removeItem(SCAN_DISPATCH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignorar errores de almacenamiento restringido o cuota excedida
+  }
+}
+
+export function clearStoredScanDispatchToken(): void {
+  memoryFallbackDispatchToken = '';
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    const storage = window.localStorage;
+    if (storage && typeof storage.removeItem === 'function') {
+      storage.removeItem(SCAN_DISPATCH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignorar errores de acceso a localStorage
+  }
+}
+
+export function resetScanProgressInternalCacheForTests(): void {
+  etagCache.refEtag = null;
+  etagCache.commitSha = null;
+  etagCache.rateLimitRemaining = 60;
+  etagCache.etag = null;
+  etagCache.payload = null;
+  etagCache.lastActionsCheckMs = 0;
+  optimisticDispatchState = null;
+  memoryFallbackDispatchToken = '';
+}
 
 interface LiveDeltaScanCache {
   scanId: string;
@@ -991,6 +1098,20 @@ function getCustomOverrideUrl(): string | null {
   return null;
 }
 
+function getCustomDispatchOverrideUrl(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const win = window as unknown as Record<string, unknown>;
+  if (
+    typeof win.__RADIOMAPA_SCAN_DISPATCH_URL__ === 'string' &&
+    win.__RADIOMAPA_SCAN_DISPATCH_URL__.trim()
+  ) {
+    return win.__RADIOMAPA_SCAN_DISPATCH_URL__.trim();
+  }
+  return null;
+}
+
 function getCustomLiveDeltaBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const win = window as unknown as Record<string, unknown>;
@@ -1015,12 +1136,187 @@ function getLiveDeltaBaseUrl(): string {
   return DEFAULT_LIVE_DELTA_BASE_URL;
 }
 
+function buildActiveWorkflowScanPayload(
+  runCheck: ActiveWorkflowRunInfo,
+  nowMs: number,
+  fallbackTotalAntennas: number,
+): ScanStatusPayload {
+  return {
+    schemaVersion: 2,
+    state: 'running',
+    scanId: runCheck.runId,
+    trigger: runCheck.event || 'workflow_dispatch',
+    recordNovedades: true,
+    part: '1/2',
+    phase: 'censo',
+    startedAt: runCheck.startedAt,
+    updatedAt: new Date(nowMs).toISOString(),
+    censusBoxesVisited: 0,
+    estimatedCensusBoxes: 239,
+    discoveredAntennas: 0,
+    scannedAntennas: 0,
+    totalAntennas: fallbackTotalAntennas > 0 ? fallbackTotalAntennas : 62230,
+    percent: 0,
+  };
+}
+
+export async function triggerForcedAntennasScan(options?: {
+  token?: string;
+  totalAntennas?: number;
+  queryClient?: QueryClient;
+  isCurrentlyScanning?: boolean;
+}): Promise<ForceScanDispatchResult> {
+  if (optimisticDispatchState && Date.now() >= optimisticDispatchState.untilMs) {
+    optimisticDispatchState = null;
+  }
+
+  const cachedQueryPayload = options?.queryClient
+    ? (options.queryClient.getQueryData<ScanStatusPayload | null>([
+        'scan-status',
+      ]) ?? null)
+    : null;
+
+  if (
+    options?.isCurrentlyScanning === true ||
+    optimisticDispatchState !== null ||
+    (etagCache.payload !== null &&
+      (etagCache.payload.state === 'running' ||
+        etagCache.payload.state === 'handoff')) ||
+    (cachedQueryPayload !== null &&
+      (cachedQueryPayload.state === 'running' ||
+        cachedQueryPayload.state === 'handoff'))
+  ) {
+    return { status: 'already_scanning' };
+  }
+
+  const effectiveToken = normalizeDispatchToken(
+    options?.token ?? getStoredScanDispatchToken(),
+  );
+  if (!effectiveToken) {
+    return { status: 'needs_token' };
+  }
+
+  const dispatchUrl =
+    getCustomDispatchOverrideUrl() ?? GITHUB_WORKFLOW_DISPATCH_URL;
+
+  let resp: Response;
+  try {
+    resp = await fetch(dispatchUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${effectiveToken}`,
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ ref: 'main' }),
+    });
+  } catch {
+    return { status: 'error' };
+  }
+
+  if (resp.status === 401 || resp.status === 403) {
+    if (!options?.token) {
+      clearStoredScanDispatchToken();
+    }
+    return { status: 'unauthorized', httpStatus: resp.status };
+  }
+
+  if (!resp.ok) {
+    return { status: 'error', httpStatus: resp.status };
+  }
+
+  setStoredScanDispatchToken(effectiveToken);
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const resolvedTotal =
+    options?.totalAntennas && options.totalAntennas > 0
+      ? options.totalAntennas
+      : etagCache.payload?.totalAntennas ||
+        cachedQueryPayload?.totalAntennas ||
+        62230;
+
+  const optimisticPayload: ScanStatusPayload = {
+    schemaVersion: 2,
+    state: 'running',
+    scanId: `forced-${nowMs}`,
+    trigger: 'workflow_dispatch',
+    recordNovedades: true,
+    part: '1/2',
+    phase: 'censo',
+    startedAt: nowIso,
+    updatedAt: nowIso,
+    censusBoxesVisited: 0,
+    estimatedCensusBoxes: 239,
+    discoveredAntennas: 0,
+    scannedAntennas: 0,
+    totalAntennas: resolvedTotal,
+    percent: 0,
+  };
+
+  optimisticDispatchState = {
+    untilMs: nowMs + OPTIMISTIC_DISPATCH_WINDOW_MS,
+    baselineScanId:
+      etagCache.payload?.scanId ?? cachedQueryPayload?.scanId ?? '',
+    payload: optimisticPayload,
+  };
+  etagCache.lastActionsCheckMs = 0;
+
+  if (options?.queryClient) {
+    options.queryClient.setQueryData(['scan-status'], optimisticPayload);
+  }
+
+  return { status: 'dispatched', httpStatus: resp.status };
+}
+
 export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
+  if (optimisticDispatchState && Date.now() >= optimisticDispatchState.untilMs) {
+    optimisticDispatchState = null;
+  }
+
   const customUrl = getCustomOverrideUrl();
   if (customUrl) {
-    const resp = await fetch(customUrl, { cache: 'no-store' });
-    if (!resp.ok) return null;
-    return parseScanStatusPayload(await resp.json());
+    let customPayload: ScanStatusPayload | null = null;
+    try {
+      const resp = await fetch(customUrl, { cache: 'no-store' });
+      if (resp.ok) {
+        customPayload = parseScanStatusPayload(await resp.json());
+        if (customPayload) {
+          etagCache.payload = customPayload;
+        }
+      }
+    } catch (err) {
+      if (
+        !optimisticDispatchState ||
+        Date.now() >= optimisticDispatchState.untilMs
+      ) {
+        optimisticDispatchState = null;
+        throw err;
+      }
+    }
+
+    if (
+      optimisticDispatchState &&
+      Date.now() < optimisticDispatchState.untilMs
+    ) {
+      if (
+        customPayload &&
+        (customPayload.state === 'running' ||
+          customPayload.state === 'handoff') &&
+        customPayload.scanId !== optimisticDispatchState.baselineScanId
+      ) {
+        optimisticDispatchState = null;
+        return customPayload;
+      }
+      return {
+        ...optimisticDispatchState.payload,
+        updatedAt: optimisticDispatchState.payload.updatedAt,
+      };
+    }
+
+    optimisticDispatchState = null;
+    return customPayload;
   }
 
   let payload: ScanStatusPayload | null = null;
@@ -1084,8 +1380,78 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
   }
 
   const now = Date.now();
+  if (optimisticDispatchState && now >= optimisticDispatchState.untilMs) {
+    optimisticDispatchState = null;
+  }
+
   const canCheckActions =
+    (optimisticDispatchState !== null && etagCache.rateLimitRemaining > 10) ||
     now - etagCache.lastActionsCheckMs >= ACTIONS_CHECK_COOLDOWN_MS;
+
+  if (optimisticDispatchState !== null) {
+    if (
+      payload &&
+      (payload.state === 'running' || payload.state === 'handoff') &&
+      payload.scanId !== optimisticDispatchState.baselineScanId
+    ) {
+      const updatedMs = Date.parse(payload.updatedAt);
+      const isStale =
+        Number.isFinite(updatedMs) && now - updatedMs > STALE_HEARTBEAT_MS;
+      if (isStale && canCheckActions) {
+        etagCache.lastActionsCheckMs = now;
+        const runCheck = await checkActiveWorkflowRun();
+        if (runCheck && !runCheck.hasActiveScanRun) {
+          etagCache.payload = {
+            ...payload,
+            state: 'stopped',
+          };
+          return {
+            ...optimisticDispatchState.payload,
+            updatedAt: optimisticDispatchState.payload.updatedAt,
+          };
+        }
+        if (
+          runCheck &&
+          runCheck.hasActiveScanRun &&
+          runCheck.runId &&
+          runCheck.runId !== payload.scanId &&
+          runCheck.runId !== optimisticDispatchState.baselineScanId
+        ) {
+          const fallbackTotal =
+            optimisticDispatchState.payload.totalAntennas ||
+            payload.totalAntennas ||
+            62230;
+          optimisticDispatchState = null;
+          return buildActiveWorkflowScanPayload(runCheck, now, fallbackTotal);
+        }
+      }
+      optimisticDispatchState = null;
+      return payload;
+    }
+
+    if (canCheckActions) {
+      etagCache.lastActionsCheckMs = now;
+      const runCheck = await checkActiveWorkflowRun();
+      if (
+        runCheck &&
+        runCheck.hasActiveScanRun &&
+        runCheck.runId &&
+        runCheck.runId !== optimisticDispatchState.baselineScanId
+      ) {
+        const fallbackTotal =
+          optimisticDispatchState.payload.totalAntennas ||
+          payload?.totalAntennas ||
+          62230;
+        optimisticDispatchState = null;
+        return buildActiveWorkflowScanPayload(runCheck, now, fallbackTotal);
+      }
+    }
+
+    return {
+      ...optimisticDispatchState.payload,
+      updatedAt: optimisticDispatchState.payload.updatedAt,
+    };
+  }
 
   // 4) Si el documento indica "running"/"handoff" pero el latido lleva > 6 min congelado,
   // comprobar si la ejecución de GitHub Actions fue cancelada abruptamente.
@@ -1122,23 +1488,11 @@ export async function fetchLiveScanStatus(): Promise<ScanStatusPayload | null> {
       runCheck.runId &&
       (!payload || payload.scanId !== runCheck.runId)
     ) {
-      return {
-        schemaVersion: 2,
-        state: 'running',
-        scanId: runCheck.runId,
-        trigger: runCheck.event || 'workflow_dispatch',
-        recordNovedades: runCheck.event === 'schedule',
-        part: '1/2',
-        phase: 'censo',
-        startedAt: runCheck.startedAt,
-        updatedAt: new Date(now).toISOString(),
-        censusBoxesVisited: 0,
-        estimatedCensusBoxes: 239,
-        discoveredAntennas: 0,
-        scannedAntennas: 0,
-        totalAntennas: payload?.totalAntennas || 62230,
-        percent: 0,
-      };
+      return buildActiveWorkflowScanPayload(
+        runCheck,
+        now,
+        payload?.totalAntennas || 62230,
+      );
     }
   }
 
@@ -1370,15 +1724,34 @@ export interface UseScanProgressResult extends InterpolatedScanMetrics {
   status: ScanStatusPayload | null;
   isLoadingInitial: boolean;
   formattedPercent: string;
+  forceScan: (tokenOverride?: string) => Promise<ForceScanDispatchResult>;
+  hasDispatchToken: () => boolean;
 }
 
 export function useScanProgress(
   fallbackTotalAntennas = 62230,
 ): UseScanProgressResult {
+  const queryClient = useQueryClient();
   const query = useSharedScanStatusQuery();
   const status = query.data ?? null;
   const isActive =
     status?.state === 'running' || status?.state === 'handoff';
+
+  const hasDispatchToken = useCallback(
+    () => getStoredScanDispatchToken().length > 0,
+    [],
+  );
+
+  const forceScan = useCallback(
+    (tokenOverride?: string) =>
+      triggerForcedAntennasScan({
+        token: tokenOverride,
+        totalAntennas: fallbackTotalAntennas,
+        queryClient,
+        isCurrentlyScanning: isActive,
+      }),
+    [fallbackTotalAntennas, queryClient, isActive],
+  );
 
   const [tickState, setTickState] = useState<{
     nowMs: number;
@@ -1455,6 +1828,15 @@ export function useScanProgress(
       status,
       isLoadingInitial: query.isLoading && status === null,
       formattedPercent: formatScanPercentEs(monotonicPercent),
+      forceScan,
+      hasDispatchToken,
     };
-  }, [status, tickState, fallbackTotalAntennas, query.isLoading]);
+  }, [
+    status,
+    tickState,
+    fallbackTotalAntennas,
+    query.isLoading,
+    forceScan,
+    hasDispatchToken,
+  ]);
 }

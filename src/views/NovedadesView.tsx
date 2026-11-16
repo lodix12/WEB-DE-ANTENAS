@@ -5,9 +5,11 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent,
 } from 'react';
 import { Link } from '@tanstack/react-router';
 import {
+  Check,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -37,7 +39,10 @@ import {
   useNovedadesData,
   type NovedadesPageSize,
 } from '../hooks/useNovedadesData';
-import { useScanProgress } from '../hooks/useScanProgress';
+import {
+  useScanProgress,
+  type ForceScanDispatchResult,
+} from '../hooks/useScanProgress';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
@@ -58,6 +63,17 @@ export function NovedadesView() {
 
   const tableSectionRef = useRef<HTMLElement | null>(null);
   const pageInputRef = useRef<HTMLInputElement | null>(null);
+  const cornerPopoverRef = useRef<HTMLDivElement | null>(null);
+  const cornerKeyInputRef = useRef<HTMLInputElement | null>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
+
+  const [isDispatching, setIsDispatching] = useState(false);
+  const [cornerFeedback, setCornerFeedback] = useState<'ok' | 'err' | null>(
+    null,
+  );
+  const [keyPopoverOpen, setKeyPopoverOpen] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [keyError, setKeyError] = useState(false);
 
   const [tipoFilter, setTipoFilter] = useState<'all' | NovedadTipo>('all');
   const [operatorFilter, setOperatorFilter] = useState<'all' | OperatorKey>(
@@ -84,6 +100,55 @@ export function NovedadesView() {
     document.title =
       'Novedades · Censo de Antenas y Frecuencias Móviles en España';
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!keyPopoverOpen) {
+      return;
+    }
+    const focusFrame = window.requestAnimationFrame(() => {
+      const inputEl =
+        cornerKeyInputRef.current ??
+        (document.getElementById(
+          'novedades-corner-key-input',
+        ) as HTMLInputElement | null);
+      inputEl?.focus();
+    });
+
+    const handleOutsideMouseDown = (event: globalThis.MouseEvent) => {
+      const wrapEl = cornerPopoverRef.current;
+      if (
+        wrapEl &&
+        event.target instanceof Node &&
+        !wrapEl.contains(event.target)
+      ) {
+        setKeyPopoverOpen(false);
+        setKeyError(false);
+      }
+    };
+
+    const handleGlobalKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setKeyPopoverOpen(false);
+        setKeyError(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideMouseDown);
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('mousedown', handleOutsideMouseDown);
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [keyPopoverOpen]);
 
   const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${locationFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
   const requestedPage = pageState.key === filterKey ? pageState.page : 1;
@@ -318,6 +383,82 @@ export function NovedadesView() {
     if (!inputEl || inputEl.disabled) return;
     inputEl.focus();
     inputEl.select();
+  }
+
+  function showCornerFeedback(kind: 'ok' | 'err', durationMs: number) {
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current);
+    }
+    setCornerFeedback(kind);
+    feedbackTimerRef.current = window.setTimeout(() => {
+      setCornerFeedback(null);
+      feedbackTimerRef.current = null;
+    }, durationMs);
+  }
+
+  function scrollScanMonitorIntoView() {
+    document
+      .getElementById('novedades-scan-monitor')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  async function runForcedScanDispatch(tokenOverride?: string) {
+    setIsDispatching(true);
+    let res: ForceScanDispatchResult;
+    try {
+      res = await scanProgress.forceScan(tokenOverride);
+    } catch {
+      res = { status: 'error' };
+    } finally {
+      setIsDispatching(false);
+    }
+
+    if (res.status === 'dispatched' || res.status === 'already_scanning') {
+      setKeyPopoverOpen(false);
+      setKeyError(false);
+      setTokenDraft('');
+      showCornerFeedback('ok', 3500);
+      scrollScanMonitorIntoView();
+      return;
+    }
+
+    if (res.status === 'needs_token' || res.status === 'unauthorized') {
+      setKeyError(res.status === 'unauthorized');
+      setKeyPopoverOpen(true);
+      window.requestAnimationFrame(() => {
+        const inputEl =
+          cornerKeyInputRef.current ??
+          (document.getElementById(
+            'novedades-corner-key-input',
+          ) as HTMLInputElement | null);
+        inputEl?.focus();
+      });
+      return;
+    }
+
+    showCornerFeedback('err', 3000);
+  }
+
+  function handleCornerScanClick(event: MouseEvent<HTMLButtonElement>) {
+    if (event.shiftKey || event.altKey) {
+      setKeyError(false);
+      setKeyPopoverOpen((prev) => !prev);
+      return;
+    }
+    if (scanProgress.isScanning || isDispatching) {
+      scrollScanMonitorIntoView();
+      return;
+    }
+    void runForcedScanDispatch();
+  }
+
+  function handleKeySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = tokenDraft.trim();
+    if (!trimmed || isDispatching) {
+      return;
+    }
+    void runForcedScanDispatch(trimmed);
   }
 
   return (
@@ -1138,6 +1279,59 @@ export function NovedadesView() {
           </div>
         </div>
       </section>
+
+      <div className="novedades-corner-wrap" ref={cornerPopoverRef}>
+        {keyPopoverOpen && (
+          <form
+            className="novedades-corner-key-popover"
+            id="novedades-corner-key-popover"
+            onSubmit={handleKeySubmit}
+          >
+            <input
+              ref={cornerKeyInputRef}
+              id="novedades-corner-key-input"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              className={`novedades-corner-key-input mono${
+                keyError ? ' is-error' : ''
+              }`}
+              placeholder="ghp_…"
+              value={tokenDraft}
+              onChange={(e) => {
+                setTokenDraft(e.target.value);
+                if (keyError) {
+                  setKeyError(false);
+                }
+              }}
+              aria-label="Token"
+            />
+            <button
+              id="novedades-corner-key-submit"
+              type="submit"
+              className="novedades-corner-key-submit"
+              disabled={!tokenDraft.trim() || isDispatching}
+              aria-label="OK"
+            >
+              <Check size={12} aria-hidden="true" />
+            </button>
+          </form>
+        )}
+
+        <button
+          id="novedades-corner-scan-btn"
+          type="button"
+          className={`novedades-corner-scan-btn${
+            isDispatching ? ' is-dispatching' : ''
+          }${scanProgress.isScanning ? ' is-scanning' : ''}${
+            cornerFeedback === 'ok' ? ' is-ok' : ''
+          }${cornerFeedback === 'err' ? ' is-err' : ''}`}
+          aria-label="Control"
+          onClick={handleCornerScanClick}
+        >
+          <RefreshCw size={10} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      </div>
     </main>
   );
 }

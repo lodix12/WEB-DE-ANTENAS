@@ -3129,6 +3129,150 @@ code {
   cursor: not-allowed;
 }
 
+.novedades-corner-wrap {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  margin-top: 6px;
+  padding-top: 2px;
+}
+
+.novedades-corner-scan-btn {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  opacity: 0.32;
+  cursor: pointer;
+  transition:
+    opacity 0.18s ease,
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.12s ease;
+}
+
+.novedades-corner-scan-btn:hover {
+  opacity: 0.65;
+  background: var(--bg-surface-subtle);
+  border-color: var(--border-default);
+}
+
+.novedades-corner-scan-btn:active {
+  transform: scale(0.92);
+}
+
+.novedades-corner-scan-btn:focus-visible {
+  outline: none;
+  opacity: 0.75;
+  border-color: var(--border-strong);
+}
+
+@keyframes novedadesCornerSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.novedades-corner-scan-btn.is-dispatching svg,
+.novedades-corner-scan-btn.is-scanning svg {
+  animation: novedadesCornerSpin 1.1s linear infinite;
+}
+
+.novedades-corner-scan-btn.is-ok {
+  opacity: 0.78;
+  color: var(--status-ok);
+  border-color: var(--status-ok);
+}
+
+.novedades-corner-scan-btn.is-err {
+  opacity: 0.78;
+  color: var(--status-danger);
+  border-color: var(--status-danger);
+}
+
+.novedades-corner-key-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  box-shadow: var(--shadow-md);
+}
+
+.novedades-corner-key-input {
+  width: 156px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 11px;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.novedades-corner-key-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.novedades-corner-key-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.novedades-corner-key-input.is-error {
+  border-color: var(--status-danger);
+  box-shadow: 0 0 0 2px var(--status-danger-bg);
+}
+
+.novedades-corner-key-submit {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface-subtle);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    opacity 0.14s ease;
+}
+
+.novedades-corner-key-submit:hover:not(:disabled) {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+}
+
+.novedades-corner-key-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ==========================================================================
    Diseño Responsivo (Portátil Compacto, Tablet y Móvil)
    ========================================================================== */
