@@ -586,6 +586,7 @@ function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
     typeof item.frecuencia !== 'string' ||
     typeof item.ubicacion !== 'string' ||
     (item.prov !== undefined && typeof item.prov !== 'string') ||
+    (item.scanId !== undefined && typeof item.scanId !== 'string') ||
     typeof item.scannedAt !== 'string' ||
     typeof item.fecha !== 'string'
   ) {
@@ -603,6 +604,9 @@ function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
     frecuencia: item.frecuencia,
     ubicacion: item.ubicacion,
     ...(item.prov !== undefined ? { prov: item.prov } : {}),
+    ...(item.scanId !== undefined && item.scanId.trim()
+      ? { scanId: item.scanId.trim() }
+      : {}),
     scannedAt: item.scannedAt,
     fecha: item.fecha,
   };
@@ -783,7 +787,9 @@ export function accumulateLiveDeltaChunks(
 
     for (let n = 0; n < chunk.novedades.length; n++) {
       const nov = chunk.novedades[n];
-      novedadesMap.set(nov.id, nov);
+      const stampedNov =
+        !nov.scanId && chunk.scanId ? { ...nov, scanId: chunk.scanId } : nov;
+      novedadesMap.set(stampedNov.id, stampedNov);
     }
   }
 

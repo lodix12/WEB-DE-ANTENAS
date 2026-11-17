@@ -113,6 +113,8 @@ export interface NovedadRecord {
   ubicacion: string;
   /** Provincia normalizada */
   prov?: string;
+  /** Identificador del lote/ejecución de escaneo en el que se detectó la novedad */
+  scanId?: string;
   /** Marca temporal ISO 8601 UTC exacta del escaneo */
   scannedAt: string;
   /** Fecha formateada en Dia/Mes/Año y hora exacta (Europe/Madrid): "DD/MM/YYYY HH:MM:SS" */

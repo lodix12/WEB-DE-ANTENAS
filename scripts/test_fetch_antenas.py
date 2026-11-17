@@ -3423,6 +3423,527 @@ class FetchAntenasUnitTests(unittest.TestCase):
             )
             self.assertEqual(res_status_doc["deltaSeq"], 3)
 
+    def test_permanent_novedades_accumulate_across_multiple_scans_without_replacing(
+        self,
+    ) -> None:
+        # Verificar que el modo por defecto en CLI es 'append' (permanente)
+        default_args = fa.parse_args([])
+        self.assertEqual(default_args.novedades_mode, "append")
+
+        class _FakeResp:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> "_FakeResp":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+        mov_base_feat = {
+            "type": "Feature",
+            "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+            "geometry": {"type": "Point", "coordinates": [-3.700000, 40.415000]},
+            "properties": {
+                "Gis_ID": "2800006",
+                "Gis_Latitud": "40.415000",
+                "Gis_Longitud": "-3.700000",
+                "Gis_Codigo": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800006",
+                "Dirección": "CL MAYOR, 1. MADRID, MADRID",
+            },
+        }
+        ant_a_feat = {
+            "type": "Feature",
+            "id": "DS MOBILE NETWORKS, S.L. - 0800777",
+            "geometry": {"type": "Point", "coordinates": [2.170000, 41.385000]},
+            "properties": {
+                "Gis_ID": "0800777",
+                "Gis_Latitud": "41.385000",
+                "Gis_Longitud": "2.170000",
+                "Gis_Codigo": "DS MOBILE NETWORKS, S.L. - 0800777",
+                "Dirección": "PS DE GRÀCIA, 10. BARCELONA, BARCELONA",
+            },
+        }
+        ant_b_feat = {
+            "type": "Feature",
+            "id": "ORANGE ESPAGNE, S.A.U. - 2800888",
+            "geometry": {"type": "Point", "coordinates": [-3.705000, 40.420000]},
+            "properties": {
+                "Gis_ID": "2800888",
+                "Gis_Latitud": "40.420000",
+                "Gis_Longitud": "-3.705000",
+                "Gis_Codigo": "ORANGE ESPAGNE, S.A.U. - 2800888",
+                "Dirección": "CL GRAN VIA, 42. MADRID, MADRID",
+            },
+        }
+
+        def make_urlopen(
+            *,
+            include_ant_a: bool,
+            include_ant_b: bool,
+            mov_has_3500: bool,
+            ant_a_has_700: bool,
+        ):
+            def _urlopen(req: object, timeout: float = 30.0) -> _FakeResp:
+                url = getattr(req, "full_url", str(req))
+                if "infoantenasGeoJSON.do" in url:
+                    if "-3.715000" in url:
+                        madrid_feats = [mov_base_feat]
+                        if include_ant_b:
+                            madrid_feats.append(ant_b_feat)
+                        payload = {
+                            "type": "FeatureCollection",
+                            "features": madrid_feats,
+                        }
+                    else:
+                        bcn_feats = [ant_a_feat] if include_ant_a else []
+                        payload = {"type": "FeatureCollection", "features": bcn_feats}
+                    return _FakeResp(
+                        json.dumps(payload, ensure_ascii=False).encode("iso-8859-1")
+                    )
+
+                if "emplazamiento=2800006" in url:
+                    extra_3500 = (
+                        "<tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2205199</td><td>3460.00 - 3600.00</td></tr>"
+                        if mov_has_3500
+                        else ""
+                    )
+                    html = f"""
+                        <h2>CARACTERISTICAS TÉCNICAS</h2>
+                        <table>
+                            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                            <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2200490</td><td>935.10 - 949.90</td></tr>
+                            {extra_3500}
+                        </table>
+                    """
+                    return _FakeResp(html.encode("iso-8859-1"))
+
+                if "emplazamiento=0800777" in url:
+                    extra_700 = (
+                        "<tr><td>DS MOBILE NETWORKS, S.L.</td><td>D-700</td><td>758.00 - 768.00</td></tr>"
+                        if ant_a_has_700
+                        else ""
+                    )
+                    html_a = f"""
+                        <h2>CARACTERISTICAS TÉCNICAS</h2>
+                        <table>
+                            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                            <tr><td>DS MOBILE NETWORKS, S.L.</td><td>M M -2602235</td><td>1845.10 - 1855.10</td></tr>
+                            {extra_700}
+                        </table>
+                    """
+                    return _FakeResp(html_a.encode("iso-8859-1"))
+
+                html_b = """
+                    <h2>CARACTERISTICAS TÉCNICAS</h2>
+                    <table>
+                        <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                        <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-800</td><td>832.00 - 842.00</td></tr>
+                    </table>
+                """
+                return _FakeResp(html_b.encode("iso-8859-1"))
+
+            return _urlopen
+
+        def make_clock_iso(base_dt: datetime):
+            counter = 0
+
+            def _next_iso(_now_fn: object = None) -> str:
+                nonlocal counter
+                counter += 1
+                return (base_dt + timedelta(seconds=counter)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+
+            return _next_iso
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+
+            # Día 0: Línea base inicial con Movistar 2800006 (900 MHz)
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(
+                        include_ant_a=False,
+                        include_ant_b=False,
+                        mov_has_3500=False,
+                        ant_a_has_700=False,
+                    ),
+                ),
+                mock.patch.object(
+                    fa,
+                    "_utc_now_iso",
+                    side_effect=make_clock_iso(
+                        datetime(2026, 11, 16, 17, 0, 0, tzinfo=timezone.utc)
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc0 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "1",
+                        "--census-workers",
+                        "1",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2026-11-16T17:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--novedades-mode",
+                        "reset",
+                        "--skip-novedades",
+                        "--scan-id",
+                        "baseline-day-0",
+                    ]
+                )
+            self.assertEqual(rc0, 0)
+
+            # Escaneo 1 (scan-day-1, modo por defecto 'append'):
+            # Descubre Antena A (0800777) + su frecuencia (1845.10 - 1855.10 MHz) +
+            # 1 frecuencia nueva en antena existente 2800006 (3460.00 - 3600.00 MHz) -> total == 3
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(
+                        include_ant_a=True,
+                        include_ant_b=False,
+                        mov_has_3500=True,
+                        ant_a_has_700=False,
+                    ),
+                ),
+                mock.patch.object(
+                    fa,
+                    "_utc_now_iso",
+                    side_effect=make_clock_iso(
+                        datetime(2026, 11, 17, 17, 0, 0, tzinfo=timezone.utc)
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc1 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "1",
+                        "--census-workers",
+                        "1",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2026-11-17T17:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--scan-id",
+                        "scan-day-1",
+                    ]
+                )
+            self.assertEqual(rc1, 0)
+            nov_day1 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertFalse(nov_day1["isBaselineScan"])
+            self.assertEqual(nov_day1["scanId"], "scan-day-1")
+            self.assertEqual(nov_day1["total"], 3)
+            self.assertEqual(nov_day1["antenasNuevas"], 1)
+            self.assertEqual(nov_day1["frecuenciasNuevas"], 2)
+            self.assertEqual(
+                [
+                    (n["tipo"], n["codigo"], n["frecuencia"], n.get("scanId"))
+                    for n in nov_day1["novedades"]
+                ],
+                [
+                    ("antena", "0800777", "", "scan-day-1"),
+                    ("frecuencia", "0800777", "1845.10 - 1855.10 MHz", "scan-day-1"),
+                    ("frecuencia", "2800006", "3460.00 - 3600.00 MHz", "scan-day-1"),
+                ],
+            )
+            day1_snapshot = [
+                (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
+                for n in nov_day1["novedades"]
+            ]
+
+            # Escaneo 2 (scan-day-2, modo por defecto 'append'):
+            # Re-escanea todo pero encuentra 0 cambios nuevos -> conserva intactas las 3 novedades
+            # de scan-day-1 con sus fechas/horas originales y sin re-emitir falsamente Antena A
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(
+                        include_ant_a=True,
+                        include_ant_b=False,
+                        mov_has_3500=True,
+                        ant_a_has_700=False,
+                    ),
+                ),
+                mock.patch.object(
+                    fa,
+                    "_utc_now_iso",
+                    side_effect=make_clock_iso(
+                        datetime(2026, 11, 18, 17, 0, 0, tzinfo=timezone.utc)
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc2 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "1",
+                        "--census-workers",
+                        "1",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2026-11-18T17:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--scan-id",
+                        "scan-day-2",
+                    ]
+                )
+            self.assertEqual(rc2, 0)
+            nov_day2 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertFalse(nov_day2["isBaselineScan"])
+            self.assertEqual(nov_day2["scanId"], "scan-day-2")
+            self.assertEqual(nov_day2["total"], 3)
+            self.assertEqual(nov_day2["antenasNuevas"], 1)
+            self.assertEqual(nov_day2["frecuenciasNuevas"], 2)
+            self.assertEqual(
+                [
+                    (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
+                    for n in nov_day2["novedades"]
+                ],
+                day1_snapshot,
+            )
+
+            # Escaneo intermedio con --skip-novedades en modo 'append' (por defecto):
+            # NO debe borrar ni pisar las novedades permanentes ya guardadas en novedades.json
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(
+                        include_ant_a=True,
+                        include_ant_b=False,
+                        mov_has_3500=True,
+                        ant_a_has_700=False,
+                    ),
+                ),
+                mock.patch.object(
+                    fa,
+                    "_utc_now_iso",
+                    side_effect=make_clock_iso(
+                        datetime(2026, 11, 18, 20, 0, 0, tzinfo=timezone.utc)
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc_skip_append = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "1",
+                        "--census-workers",
+                        "1",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2026-11-18T20:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--skip-novedades",
+                        "--scan-id",
+                        "scan-skip-append",
+                    ]
+                )
+            self.assertEqual(rc_skip_append, 0)
+            nov_after_skip = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertFalse(nov_after_skip["isBaselineScan"])
+            self.assertEqual(nov_after_skip["total"], 3)
+            self.assertEqual(
+                [
+                    (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
+                    for n in nov_after_skip["novedades"]
+                ],
+                day1_snapshot,
+            )
+
+            # Escaneo 3 (scan-day-3, modo por defecto 'append'):
+            # Descubre Antena B (2800888) + su frecuencia (832.00 - 842.00 MHz) +
+            # 1 frecuencia nueva (758.00 - 768.00 MHz) en 0800777 (que ya era antena existente).
+            # Resultado: total == 6, bloque agrupado de Escaneo 3 arriba seguido del bloque
+            # agrupado intacto de Escaneo 1 debajo (sin mezclar la ampliación de 0800777 en el bloque antiguo).
+            with (
+                mock.patch(
+                    "urllib.request.urlopen",
+                    side_effect=make_urlopen(
+                        include_ant_a=True,
+                        include_ant_b=True,
+                        mov_has_3500=True,
+                        ant_a_has_700=True,
+                    ),
+                ),
+                mock.patch.object(
+                    fa,
+                    "_utc_now_iso",
+                    side_effect=make_clock_iso(
+                        datetime(2026, 11, 19, 17, 0, 0, tzinfo=timezone.utc)
+                    ),
+                ),
+                mock.patch("time.sleep", return_value=None),
+            ):
+                rc3 = fa.main(
+                    [
+                        "--region",
+                        "sample",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--delay",
+                        "0.0",
+                        "--workers",
+                        "1",
+                        "--census-workers",
+                        "1",
+                        "--fetch-bands",
+                        "--rescan-since",
+                        "2026-11-19T17:00:00Z",
+                        "--novedades-output",
+                        str(nov_path),
+                        "--scan-id",
+                        "scan-day-3",
+                    ]
+                )
+            self.assertEqual(rc3, 0)
+            nov_day3 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertFalse(nov_day3["isBaselineScan"])
+            self.assertEqual(nov_day3["scanId"], "scan-day-3")
+            self.assertEqual(nov_day3["total"], 6)
+            self.assertEqual(nov_day3["antenasNuevas"], 2)
+            self.assertEqual(nov_day3["frecuenciasNuevas"], 4)
+            self.assertEqual(
+                [
+                    (n["tipo"], n["codigo"], n["frecuencia"], n.get("scanId"))
+                    for n in nov_day3["novedades"]
+                ],
+                [
+                    # Lote Escaneo 3 arriba (Antena B -> Freq B -> Freq en antena existente)
+                    ("antena", "2800888", "", "scan-day-3"),
+                    ("frecuencia", "2800888", "832.00 - 842.00 MHz", "scan-day-3"),
+                    ("frecuencia", "0800777", "758.00 - 768.00 MHz", "scan-day-3"),
+                    # Lote Escaneo 1 preservado íntegro debajo (Antena A -> Freq A -> Freq existente)
+                    ("antena", "0800777", "", "scan-day-1"),
+                    ("frecuencia", "0800777", "1845.10 - 1855.10 MHz", "scan-day-1"),
+                    ("frecuencia", "2800006", "3460.00 - 3600.00 MHz", "scan-day-1"),
+                ],
+            )
+            self.assertEqual(
+                [
+                    (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
+                    for n in nov_day3["novedades"][3:]
+                ],
+                day1_snapshot,
+            )
+
+            # Fusión sin pérdidas entre archivos (merge_novedades_files / --merge-novedades-from)
+            # simulando rebase concurrente en GitHub Actions
+            remote_nov_path = tmp / "remote_main_novedades.json"
+            backup_nov_path = tmp / "backup_scan_novedades.json"
+            backup_nov_path.write_text(
+                json.dumps(nov_day3, ensure_ascii=False), encoding="utf-8"
+            )
+            concurrent_remote_doc = fa.build_novedades_dataset(
+                [
+                    *nov_day1["novedades"],
+                    {
+                        "id": "freq:CONCURRENT-41:M9:2620.00 - 2640.00",
+                        "tipo": "frecuencia",
+                        "op": "movistar",
+                        "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                        "codigo": "4100999",
+                        "antennaId": "CONCURRENT-41",
+                        "codigoBanda": "M9",
+                        "frecuencia": "2620.00 - 2640.00 MHz",
+                        "ubicacion": "SEVILLA",
+                        "prov": "SEVILLA",
+                        "scannedAt": "2026-11-18T18:30:00Z",
+                        "fecha": "18/11/2026 19:30:00",
+                    },
+                ],
+                scan_id="scan-day-2-concurrent",
+                previous_scan_at="2026-11-17T17:05:00Z",
+                updated_at="2026-11-18T18:35:00Z",
+                is_baseline_scan=False,
+            )
+            fa.write_novedades_dataset(concurrent_remote_doc, remote_nov_path)
+
+            rc_merge = fa.main(
+                [
+                    "--merge-novedades-from",
+                    str(backup_nov_path),
+                    "--novedades-output",
+                    str(remote_nov_path),
+                ]
+            )
+            self.assertEqual(rc_merge, 0)
+            merged_doc = json.loads(remote_nov_path.read_text(encoding="utf-8"))
+            self.assertEqual(merged_doc["scanId"], "scan-day-3")
+            self.assertFalse(merged_doc["isBaselineScan"])
+            self.assertEqual(merged_doc["total"], 7)
+            self.assertEqual(merged_doc["antenasNuevas"], 2)
+            self.assertEqual(merged_doc["frecuenciasNuevas"], 5)
+            self.assertEqual(
+                [
+                    (n["tipo"], n["codigo"], n.get("scanId"))
+                    for n in merged_doc["novedades"]
+                ],
+                [
+                    ("antena", "2800888", "scan-day-3"),
+                    ("frecuencia", "2800888", "scan-day-3"),
+                    ("frecuencia", "0800777", "scan-day-3"),
+                    ("frecuencia", "4100999", "scan-day-2-concurrent"),
+                    ("antena", "0800777", "scan-day-1"),
+                    ("frecuencia", "0800777", "scan-day-1"),
+                    ("frecuencia", "2800006", "scan-day-1"),
+                ],
+            )
+            self.assertEqual(
+                [
+                    (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
+                    for n in merged_doc["novedades"][4:]
+                ],
+                day1_snapshot,
+            )
+
 
 class ScheduleGateUnitTests(unittest.TestCase):
     def test_winter_cet_skips_before_18h_and_triggers_at_1803_or_late_catchup(

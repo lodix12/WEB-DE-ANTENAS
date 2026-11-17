@@ -152,7 +152,7 @@ jobs:
             --max-band-seconds 18000 \
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
-            --novedades-mode reset \
+            --novedades-mode append \
             --scan-id "$SCAN_ID" \
             --status-output /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
@@ -184,7 +184,9 @@ jobs:
             fi
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
             if [ -f /tmp/scan-commit-backup/novedades.json ]; then
-              cp -f /tmp/scan-commit-backup/novedades.json public/data/novedades.json
+              python3 scripts/fetch_antenas.py \
+                --merge-novedades-from /tmp/scan-commit-backup/novedades.json \
+                --novedades-output public/data/novedades.json
             fi
             git add public/data/antenas.json public/data/novedades.json
             if git diff --cached --quiet; then
@@ -342,7 +344,9 @@ jobs:
             fi
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
             if [ -f /tmp/scan-commit-backup/novedades.json ]; then
-              cp -f /tmp/scan-commit-backup/novedades.json public/data/novedades.json
+              python3 scripts/fetch_antenas.py \
+                --merge-novedades-from /tmp/scan-commit-backup/novedades.json \
+                --novedades-output public/data/novedades.json
             fi
             git add public/data/antenas.json public/data/novedades.json
             if git diff --cached --quiet; then

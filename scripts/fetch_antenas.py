@@ -2616,26 +2616,30 @@ def _novedad_sort_key(item: dict[str, Any]) -> tuple[float, str, str, str]:
     )
 
 
-def sort_novedades_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Deduplica novedades por `id` y las ordena de forma agrupada:
-    1) Cada antena nueva (`tipo == "antena"`), seguida inmediatamente de todas sus
-       frecuencias asociadas (`tipo == "frecuencia"`) ordenadas por MHz.
-    2) A continuación, todas las frecuencias nuevas detectadas en antenas ya existentes,
-       agrupadas por antena y ordenadas por MHz dentro de cada antena.
-    """
-    deduped_by_id: dict[str, dict[str, Any]] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        nov_id = str(item.get("id") or "").strip()
-        if not nov_id:
-            continue
-        deduped_by_id[nov_id] = dict(item)
+_NOVEDAD_FECHA_DAY_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{4})\b")
+_NOVEDAD_ISO_DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
+
+def _novedad_batch_key(item: dict[str, Any]) -> str:
+    scan_id = str(item.get("scanId") or "").strip()
+    if scan_id:
+        return f"scan:{scan_id}"
+    fecha = str(item.get("fecha") or "").strip()
+    m_fecha = _NOVEDAD_FECHA_DAY_RE.match(fecha)
+    if m_fecha:
+        dd, mm, yyyy = m_fecha.group(1), m_fecha.group(2), m_fecha.group(3)
+        return f"day:{yyyy}-{mm}-{dd}"
+    scanned_at = str(item.get("scannedAt") or "").strip()
+    m_iso = _NOVEDAD_ISO_DAY_RE.match(scanned_at)
+    if m_iso:
+        return f"day:{m_iso.group(1)}"
+    return "day:unknown"
+
+
+def _sort_single_novedades_batch(batch_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     antena_items: list[dict[str, Any]] = []
     freq_items: list[dict[str, Any]] = []
-    for item in deduped_by_id.values():
+    for item in batch_items:
         if item.get("tipo") == "antena":
             antena_items.append(item)
         else:
@@ -2697,6 +2701,59 @@ def sort_novedades_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sorted_existing_groups.sort(key=lambda entry: entry[0])
     for _, group_sorted in sorted_existing_groups:
         ordered.extend(group_sorted)
+
+    return ordered
+
+
+def sort_novedades_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Deduplica novedades por `id` preservando registros históricos originales y las ordena
+    por lote de escaneo (lote más reciente primero). Dentro de cada lote:
+    1) Cada antena nueva (`tipo == "antena"`), seguida inmediatamente de todas sus
+       frecuencias asociadas (`tipo == "frecuencia"`) de ese mismo lote ordenadas por MHz.
+    2) A continuación, todas las frecuencias nuevas detectadas en antenas ya existentes
+       en ese lote, agrupadas por antena y ordenadas por MHz dentro de cada antena.
+    """
+    deduped_by_id: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nov_id = str(item.get("id") or "").strip()
+        if not nov_id:
+            continue
+        candidate = dict(item)
+        existing = deduped_by_id.get(nov_id)
+        if existing is None:
+            deduped_by_id[nov_id] = candidate
+            continue
+
+        existing_batch = _novedad_batch_key(existing)
+        candidate_batch = _novedad_batch_key(candidate)
+        if existing_batch == candidate_batch:
+            deduped_by_id[nov_id] = candidate
+        else:
+            existing_ts = _novedad_timestamp(existing)
+            candidate_ts = _novedad_timestamp(candidate)
+            if existing_ts > 0.0 and candidate_ts > 0.0 and candidate_ts < existing_ts:
+                deduped_by_id[nov_id] = candidate
+
+    batches: dict[str, list[dict[str, Any]]] = {}
+    for item in deduped_by_id.values():
+        bkey = _novedad_batch_key(item)
+        batches.setdefault(bkey, []).append(item)
+
+    sorted_batches = sorted(
+        batches.items(),
+        key=lambda entry: (
+            max((_novedad_timestamp(x) for x in entry[1]), default=0.0),
+            entry[0],
+        ),
+        reverse=True,
+    )
+
+    ordered: list[dict[str, Any]] = []
+    for _, batch_items in sorted_batches:
+        ordered.extend(_sort_single_novedades_batch(batch_items))
 
     return ordered
 
@@ -2773,6 +2830,108 @@ def write_novedades_dataset(
     tmp_path.write_bytes(encoded)
     os.replace(tmp_path, output_path)
     return len(encoded)
+
+
+def _extract_stamped_items_from_doc(doc: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(doc, dict):
+        return []
+    raw_items = [
+        dict(item)
+        for item in (doc.get("novedades") or [])
+        if isinstance(item, dict)
+    ]
+    if doc.get("isBaselineScan") and not raw_items:
+        return []
+    doc_scan_id = str(doc.get("scanId") or "").strip()
+    can_stamp = bool(doc_scan_id and not doc_scan_id.startswith("baseline"))
+    for item in raw_items:
+        if can_stamp and not str(item.get("scanId") or "").strip():
+            item["scanId"] = doc_scan_id
+    return raw_items
+
+
+def _doc_updated_timestamp(doc: dict[str, Any] | None) -> float:
+    if not isinstance(doc, dict):
+        return 0.0
+    raw = str(doc.get("updatedAt") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return _parse_utc_datetime(raw).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def merge_novedades_datasets(
+    base_doc: dict[str, Any] | None,
+    incoming_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Fusiona sin pérdidas dos documentos `NovedadesDataset` (`base_doc` e `incoming_doc`),
+    conservando permanentemente todas las novedades históricas y las nuevas agrupadas por escaneo.
+    """
+    if base_doc is None and incoming_doc is None:
+        return build_novedades_dataset([], is_baseline_scan=False)
+
+    base_items = _extract_stamped_items_from_doc(base_doc)
+    incoming_items = _extract_stamped_items_from_doc(incoming_doc)
+    combined_items = [*base_items, *incoming_items]
+
+    base_ts = _doc_updated_timestamp(base_doc)
+    inc_ts = _doc_updated_timestamp(incoming_doc)
+    if incoming_doc is not None and (base_doc is None or inc_ts >= base_ts):
+        newest_doc = incoming_doc
+        older_doc = base_doc
+    else:
+        assert base_doc is not None
+        newest_doc = base_doc
+        older_doc = incoming_doc
+
+    scan_id = (
+        str(newest_doc.get("scanId") or "").strip()
+        or str((older_doc or {}).get("scanId") or "").strip()
+    )
+    updated_at_raw = str(newest_doc.get("updatedAt") or "").strip() or str(
+        (older_doc or {}).get("updatedAt") or ""
+    ).strip()
+    updated_at = updated_at_raw or None
+    if "previousScanAt" in newest_doc:
+        previous_scan_at = newest_doc.get("previousScanAt")
+    elif older_doc is not None and "previousScanAt" in older_doc:
+        previous_scan_at = older_doc.get("previousScanAt")
+    else:
+        previous_scan_at = None
+
+    is_baseline = bool(
+        not combined_items
+        and incoming_doc is not None
+        and incoming_doc.get("isBaselineScan")
+        and (base_doc is None or base_doc.get("isBaselineScan"))
+    )
+
+    return build_novedades_dataset(
+        combined_items,
+        scan_id=scan_id,
+        previous_scan_at=previous_scan_at,
+        updated_at=updated_at,
+        is_baseline_scan=is_baseline,
+    )
+
+
+def merge_novedades_files(target_path: Path, incoming_path: Path) -> None:
+    """Fusiona de forma atómica y sin pérdidas `incoming_path` sobre `target_path`."""
+    incoming_doc = load_novedades_dataset(incoming_path)
+    if incoming_doc is None:
+        return
+    if (
+        target_path.exists()
+        and incoming_path.exists()
+        and target_path.read_bytes() == incoming_path.read_bytes()
+    ):
+        return
+    base_doc = load_novedades_dataset(target_path)
+    merged_doc = merge_novedades_datasets(base_doc, incoming_doc)
+    write_novedades_dataset(merged_doc, target_path)
 
 
 _LIVE_CHUNK_RE = re.compile(r"^live-chunk-(\d+)\.json$")
@@ -3032,8 +3191,11 @@ class LiveDeltaStreamWriter:
         nov_id = str(nov.get("id") or "").strip()
         if not nov_id:
             return
+        nov_copy = dict(nov)
+        if self.scan_id and not str(nov_copy.get("scanId") or "").strip():
+            nov_copy["scanId"] = self.scan_id
         self._seen_novedad_ids.add(nov_id)
-        self._tail_novedades[nov_id] = dict(nov)
+        self._tail_novedades[nov_id] = nov_copy
         self._dirty = True
         if self._tail_item_count() >= self.chunk_capacity:
             self._seal_current_tail_as_chunk()
@@ -4326,9 +4488,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--novedades-mode",
-        choices=("reset", "append"),
-        default="reset",
-        help="Modo de escritura de novedades: 'reset' inicia lote limpio; 'append' acumula novedades del mismo escaneo.",
+        choices=("append", "reset"),
+        default="append",
+        help="Modo de escritura de novedades: 'append' (por defecto) conserva permanentemente el historial de novedades previas y añade las nuevas sin sustituirlas; 'reset' reinicia el archivo desde cero.",
+    )
+    parser.add_argument(
+        "--merge-novedades-from",
+        default=None,
+        help="Fusiona de forma atómica y sin pérdidas el archivo NovedadesDataset indicado sobre --novedades-output y finaliza.",
     )
     parser.add_argument(
         "--skip-novedades",
@@ -4471,7 +4638,7 @@ def _prepare_novedades_writer(
     set[str],
 ]:
     """
-    Configura la persistencia atómica de `novedades.json` para modos `'reset'` y `'append'`
+    Configura la persistencia atómica de `novedades.json` para modos `'append'` y `'reset'`
     (incluyendo `--skip-novedades`) y devuelve `(checkpoint_writer_fn, existing_new_antenna_ids)`.
     """
     if not novedades_output:
@@ -4491,41 +4658,89 @@ def _prepare_novedades_writer(
             write_novedades_dataset(baseline_doc, nov_path)
         return None, set()
 
-    base_items: list[dict[str, Any]] = []
+    historical_items: list[dict[str, Any]] = []
+    current_scan_prior_items: list[dict[str, Any]] = []
     effective_prev_scan_at = previous_scan_at
 
     if novedades_mode == "append":
         existing_doc = load_novedades_dataset(nov_path)
         if existing_doc is not None:
-            same_scan = bool(
-                effective_scan_id and existing_doc.get("scanId") == effective_scan_id
+            raw_existing = [
+                dict(item)
+                for item in (existing_doc.get("novedades") or [])
+                if isinstance(item, dict)
+            ]
+            existing_items = (
+                raw_existing
+                if (not existing_doc.get("isBaselineScan") or raw_existing)
+                else []
             )
-            non_baseline = not bool(existing_doc.get("isBaselineScan"))
-            if same_scan or non_baseline:
-                base_items.extend(
-                    item
-                    for item in (existing_doc.get("novedades") or [])
-                    if isinstance(item, dict)
-                )
-                if not effective_scan_id and isinstance(existing_doc.get("scanId"), str):
-                    effective_scan_id = existing_doc["scanId"]
-                if "previousScanAt" in existing_doc:
-                    effective_prev_scan_at = existing_doc.get("previousScanAt")
+            doc_scan_id = str(existing_doc.get("scanId") or "").strip()
+            same_scan_doc = bool(
+                (effective_scan_id and doc_scan_id == effective_scan_id)
+                or (not effective_scan_id and not existing_doc.get("isBaselineScan"))
+            )
+            if not effective_scan_id and doc_scan_id and same_scan_doc:
+                effective_scan_id = doc_scan_id
 
-    if initial_novedades:
-        base_items.extend(initial_novedades)
+            if same_scan_doc and "previousScanAt" in existing_doc:
+                effective_prev_scan_at = existing_doc.get("previousScanAt")
+            elif effective_prev_scan_at is None:
+                prev_updated = existing_doc.get("updatedAt")
+                if isinstance(prev_updated, str) and prev_updated.strip():
+                    effective_prev_scan_at = prev_updated
 
+            can_stamp_doc_scan = bool(
+                doc_scan_id
+                and doc_scan_id != effective_scan_id
+                and not doc_scan_id.startswith("baseline")
+            )
+            for item in existing_items:
+                item_scan_id = str(item.get("scanId") or "").strip()
+                if (effective_scan_id and item_scan_id == effective_scan_id) or (
+                    same_scan_doc and not item_scan_id
+                ):
+                    current_scan_prior_items.append(item)
+                else:
+                    if not item_scan_id and can_stamp_doc_scan:
+                        item["scanId"] = doc_scan_id
+                    historical_items.append(item)
+
+    def _stamp_current(raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stamped: list[dict[str, Any]] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            copy_item = dict(item)
+            if effective_scan_id and not str(copy_item.get("scanId") or "").strip():
+                copy_item["scanId"] = effective_scan_id
+            stamped.append(copy_item)
+        return stamped
+
+    seeded_source_items = [*current_scan_prior_items, *(initial_novedades or [])]
     seeded_new_ant_ids = {
         str(item["antennaId"])
-        for item in base_items
+        for item in seeded_source_items
         if isinstance(item, dict)
         and item.get("tipo") == "antena"
         and item.get("antennaId")
     }
+    historical_ids = {
+        str(item.get("id") or "").strip()
+        for item in historical_items
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
 
     def _write_current(discovered: list[dict[str, Any]]) -> None:
+        stamped_current = [
+            item
+            for item in _stamp_current(
+                [*current_scan_prior_items, *(initial_novedades or []), *discovered]
+            )
+            if str(item.get("id") or "").strip() not in historical_ids
+        ]
         nov_doc = build_novedades_dataset(
-            [*base_items, *discovered],
+            [*historical_items, *stamped_current],
             scan_id=effective_scan_id,
             previous_scan_at=effective_prev_scan_at,
             is_baseline_scan=False,
@@ -4543,6 +4758,16 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
     args = parse_args(argv)
+    if args.merge_novedades_from:
+        if not args.novedades_output:
+            logging.error(
+                "Se requiere --novedades-output junto con --merge-novedades-from."
+            )
+            return 1
+        merge_novedades_files(
+            Path(args.novedades_output), Path(args.merge_novedades_from)
+        )
+        return 0
     output_path = Path(args.output)
     status_path = Path(args.status_output) if args.status_output else None
     scan_started_iso = args.rescan_since or _utc_now_iso()
@@ -4814,11 +5039,24 @@ def main(argv: list[str] | None = None) -> int:
 
     size_bytes = write_compact_dataset(dataset, output_path)
 
+    full_crawl_scan_id = str(args.scan_id or "").strip()
+    if not full_crawl_scan_id and not args.skip_novedades:
+        full_crawl_scan_id = f"scan-{_normalize_iso_utc(dataset['updatedAt'])}"
+        if args.novedades_output:
+            prev_nov_doc = load_novedades_dataset(args.novedades_output)
+            if (
+                prev_nov_doc is not None
+                and str(prev_nov_doc.get("scanId") or "").strip() == full_crawl_scan_id
+            ):
+                full_crawl_scan_id = (
+                    f"{full_crawl_scan_id}-{int(time.time() * 1000) % 100000}"
+                )
+
     nov_writer, seeded_new_ant_ids = _prepare_novedades_writer(
         novedades_output=args.novedades_output,
         novedades_mode=args.novedades_mode,
         skip_novedades=args.skip_novedades,
-        scan_id=args.scan_id,
+        scan_id=full_crawl_scan_id,
         previous_scan_at=previous_scan_at,
         initial_novedades=[] if args.skip_novedades else detected_ant_novedades,
     )

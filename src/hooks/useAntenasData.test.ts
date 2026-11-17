@@ -64,6 +64,7 @@ import {
   filterNovedades,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
+  getNovedadScanBatchKey,
   getOperatorRowBackground,
   importNovedadesJsonDataset,
   isValidNovedadesPageSize,
@@ -2998,13 +2999,14 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
     expect(mergedDaily.scanId).toBe('daily-2026-11-15');
     expect(mergedDaily.previousScanAt).toBe('2026-11-14T18:20:00Z');
     expect(mergedDaily.isBaselineScan).toBe(false);
-    expect(mergedDaily.antenasNuevas).toBe(1);
+    expect(mergedDaily.antenasNuevas).toBe(2);
     expect(mergedDaily.frecuenciasNuevas).toBe(2);
-    expect(mergedDaily.total).toBe(3);
+    expect(mergedDaily.total).toBe(4);
     expect(mergedDaily.novedades.map((n) => n.id)).toEqual([
       'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
       'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -1100800::801.00 - 811.00 MHz',
       'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
+      'antena::ORANGE ESPAGNE, S.A.U. - 2800002',
     ]);
 
     // Escaneo forzado de línea base (recordNovedades === false): deja NovedadesDataset intacto (misma referencia)
@@ -5661,4 +5663,545 @@ describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 30 m)'
   });
 });
 
+describe('Listado permanente y acumulativo de Novedades entre múltiples escaneos', () => {
+  it('conserva el 100 % de las novedades históricas cuando arranca un nuevo escaneo con 0 novedades nuevas (deltaSeq > 0, novedades: [])', () => {
+    const scan1Dataset: NovedadesDataset = {
+      updatedAt: '2026-11-15T18:20:00Z',
+      scanId: 'daily-2026-11-15',
+      previousScanAt: '2026-11-14T18:20:00Z',
+      isBaselineScan: false,
+      total: 3,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 2,
+      novedades: [
+        {
+          id: 'antena::DIGI-SCAN1-2809100',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809100',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scanId: 'daily-2026-11-15',
+          scannedAt: '2026-11-15T18:05:10Z',
+          fecha: '15/11/2026 19:05:10',
+        },
+        {
+          id: 'freq::DIGI-SCAN1-2809100::1800',
+          tipo: 'frecuencia',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809100',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+          codigoBanda: 'DG-1800',
+          frecuencia: '1805.00 - 1825.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scanId: 'daily-2026-11-15',
+          scannedAt: '2026-11-15T18:05:11Z',
+          fecha: '15/11/2026 19:05:11',
+        },
+        {
+          id: 'freq::MOV-SCAN1-2800001::3500',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scanId: 'daily-2026-11-15',
+          scannedAt: '2026-11-15T18:09:00Z',
+          fecha: '15/11/2026 19:09:00',
+        },
+      ],
+    };
 
+    const emptyScan2Chunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'daily-2026-11-16',
+      seq: 3,
+      chunkIndex: 0,
+      isTail: true,
+      updatedAt: '2026-11-16T18:02:00Z',
+      recordNovedades: true,
+      previousScanAt: '2026-11-15T18:20:00Z',
+      newAntennas: [],
+      bandPatches: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          gid: '2800001',
+          bandas: ['3500 MHz'],
+          frecuencias: ['3460.00 - 3600.00'],
+          concesiones: [{ ref: 'M M -2205199', freq: '3460.00 - 3600.00' }],
+          bandsScannedAt: '2026-11-16T18:01:58Z',
+        },
+      ],
+      novedades: [],
+    };
+
+    const emptyScan2Delta = accumulateLiveDeltaChunks(
+      [emptyScan2Chunk],
+      'daily-2026-11-16',
+    );
+    expect(emptyScan2Delta.deltaSeq).toBe(3);
+    expect(emptyScan2Delta.novedades).toEqual([]);
+
+    const merged = mergeLiveDeltaIntoNovedadesDataset(
+      scan1Dataset,
+      emptyScan2Delta,
+    );
+
+    expect(merged.scanId).toBe('daily-2026-11-16');
+    expect(merged.total).toBe(3);
+    expect(merged.antenasNuevas).toBe(1);
+    expect(merged.frecuenciasNuevas).toBe(2);
+    expect(merged.novedades.map((n) => n.id)).toEqual([
+      'antena::DIGI-SCAN1-2809100',
+      'freq::DIGI-SCAN1-2809100::1800',
+      'freq::MOV-SCAN1-2800001::3500',
+    ]);
+  });
+
+  it('acumula Scan 1 -> Scan 2 -> Scan 3 manteniendo cada lote agrupado en orden cronológico inverso y sin enterrar frecuencias nuevas debajo de antenas antiguas', async () => {
+    // Validación de getNovedadScanBatchKey y scanId opcional en parseadores
+    expect(
+      getNovedadScanBatchKey({
+        scanId: 'daily-2026-11-15',
+        fecha: '15/11/2026 19:05:10',
+        scannedAt: '2026-11-15T18:05:10Z',
+      }),
+    ).toBe('scan:daily-2026-11-15');
+    expect(
+      getNovedadScanBatchKey({
+        fecha: '15/11/2026 19:05:10',
+        scannedAt: '2026-11-15T18:05:10Z',
+      }),
+    ).toBe('day:2026-11-15');
+    expect(
+      getNovedadScanBatchKey({
+        fecha: '',
+        scannedAt: '2026-11-15T18:05:10Z',
+      }),
+    ).toBe('day:2026-11-15');
+    expect(
+      getNovedadScanBatchKey({
+        fecha: '',
+        scannedAt: '',
+      }),
+    ).toBe('day:unknown');
+
+    expect(
+      parseLiveScanDeltaChunk({
+        schemaVersion: 2,
+        scanId: 'scan-bad-item',
+        seq: 1,
+        chunkIndex: 0,
+        isTail: true,
+        updatedAt: '2026-11-15T18:00:00Z',
+        recordNovedades: true,
+        previousScanAt: null,
+        newAntennas: [],
+        bandPatches: [],
+        novedades: [
+          {
+            id: 'antena::BAD',
+            tipo: 'antena',
+            op: 'digi',
+            opRaw: 'DIGI',
+            codigo: '28001',
+            antennaId: 'DIGI - 28001',
+            codigoBanda: '',
+            frecuencia: '',
+            ubicacion: 'MADRID',
+            scanId: 999,
+            scannedAt: '2026-11-15T18:00:00Z',
+            fecha: '15/11/2026 19:00:00',
+          },
+        ],
+      }),
+    ).toBeNull();
+
+    // Scan 1 (15/11/2026): 1 antena nueva DIGI (2809100) + su frecuencia 1800 MHz + 1 frecuencia existente Vodafone
+    const scan1Dataset: NovedadesDataset = parseCustomNovedadesJson({
+      updatedAt: '2026-11-15T18:20:00Z',
+      scanId: 'scan-1',
+      previousScanAt: '2026-11-14T18:20:00Z',
+      isBaselineScan: false,
+      total: 3,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 2,
+      novedades: [
+        {
+          id: 'freq::VOD-EXIST-0800100::800',
+          tipo: 'frecuencia',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '0800100',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800100',
+          codigoBanda: 'VF-800',
+          frecuencia: '791.00 - 801.00 MHz',
+          ubicacion: 'BARCELONA',
+          prov: 'BARCELONA',
+          scanId: 'scan-1',
+          scannedAt: '2026-11-15T18:08:00Z',
+          fecha: '15/11/2026 19:08:00',
+        },
+        {
+          id: 'antena::DIGI-SCAN1-2809100',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809100',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scanId: 'scan-1',
+          scannedAt: '2026-11-15T18:04:00Z',
+          fecha: '15/11/2026 19:04:00',
+        },
+        {
+          id: 'freq::DIGI-SCAN1-2809100::1800',
+          tipo: 'frecuencia',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809100',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+          codigoBanda: 'DG-1800',
+          frecuencia: '1805.00 - 1825.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scanId: 'scan-1',
+          scannedAt: '2026-11-15T18:04:02Z',
+          fecha: '15/11/2026 19:04:02',
+        },
+      ],
+    });
+
+    // Scan 2 (16/11/2026): 1 antena nueva Orange + sus 2 frecuencias (2600 y 700) + 1 frecuencia existente Movistar
+    // También incluye un ID duplicado histórico ('antena::DIGI-SCAN1-2809100') para verificar que conserva la fecha de Scan 1
+    const scan2Delta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'scan-2',
+          seq: 2,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-16T18:10:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-15T18:20:00Z',
+          newAntennas: [],
+          bandPatches: [],
+          novedades: [
+            {
+              id: 'freq::MOV-EXIST-2800001::900',
+              tipo: 'frecuencia',
+              op: 'movistar',
+              opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+              codigo: '2800001',
+              antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+              codigoBanda: 'M-900',
+              frecuencia: '935.10 - 949.90 MHz',
+              ubicacion: 'MADRID',
+              prov: 'MADRID',
+              scannedAt: '2026-11-16T18:09:00Z',
+              fecha: '16/11/2026 19:09:00',
+            },
+            {
+              id: 'freq::ORA-SCAN2-4600500::2600',
+              tipo: 'frecuencia',
+              op: 'orange',
+              opRaw: 'ORANGE ESPAGNE, S.A.U.',
+              codigo: '4600500',
+              antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600500',
+              codigoBanda: 'OR-2600',
+              frecuencia: '2620.00 - 2640.00 MHz',
+              ubicacion: 'VALENCIA',
+              prov: 'VALENCIA',
+              scannedAt: '2026-11-16T18:05:03Z',
+              fecha: '16/11/2026 19:05:03',
+            },
+            {
+              id: 'antena::ORA-SCAN2-4600500',
+              tipo: 'antena',
+              op: 'orange',
+              opRaw: 'ORANGE ESPAGNE, S.A.U.',
+              codigo: '4600500',
+              antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600500',
+              codigoBanda: '',
+              frecuencia: '',
+              ubicacion: 'VALENCIA',
+              prov: 'VALENCIA',
+              scannedAt: '2026-11-16T18:05:00Z',
+              fecha: '16/11/2026 19:05:00',
+            },
+            {
+              id: 'freq::ORA-SCAN2-4600500::700',
+              tipo: 'frecuencia',
+              op: 'orange',
+              opRaw: 'ORANGE ESPAGNE, S.A.U.',
+              codigo: '4600500',
+              antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600500',
+              codigoBanda: 'OR-700',
+              frecuencia: '768.00 - 778.00 MHz',
+              ubicacion: 'VALENCIA',
+              prov: 'VALENCIA',
+              scannedAt: '2026-11-16T18:05:02Z',
+              fecha: '16/11/2026 19:05:02',
+            },
+            {
+              id: 'antena::DIGI-SCAN1-2809100',
+              tipo: 'antena',
+              op: 'digi',
+              opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+              codigo: '2809100',
+              antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+              codigoBanda: '',
+              frecuencia: '',
+              ubicacion: 'MADRID',
+              prov: 'MADRID',
+              scannedAt: '2026-11-16T18:06:00Z',
+              fecha: '16/11/2026 19:06:00',
+            },
+          ],
+        },
+      ],
+      'scan-2',
+    );
+
+    const afterScan2 = mergeLiveDeltaIntoNovedadesDataset(
+      scan1Dataset,
+      scan2Delta,
+    );
+
+    expect(afterScan2.total).toBe(7);
+    expect(afterScan2.antenasNuevas).toBe(2);
+    expect(afterScan2.frecuenciasNuevas).toBe(5);
+    expect(afterScan2.novedades.map((r) => r.id)).toEqual([
+      // Lote Scan 2 arriba (Antena nueva Orange + 700 + 2600 -> Frecuencia existente Movistar)
+      'antena::ORA-SCAN2-4600500',
+      'freq::ORA-SCAN2-4600500::700',
+      'freq::ORA-SCAN2-4600500::2600',
+      'freq::MOV-EXIST-2800001::900',
+      // Lote Scan 1 íntegro justo debajo (con su fecha original del 15/11/2026 intacta)
+      'antena::DIGI-SCAN1-2809100',
+      'freq::DIGI-SCAN1-2809100::1800',
+      'freq::VOD-EXIST-0800100::800',
+    ]);
+    expect(
+      afterScan2.novedades.find((r) => r.id === 'antena::DIGI-SCAN1-2809100')
+        ?.fecha,
+    ).toBe('15/11/2026 19:04:00');
+
+    // Scan 3 (17/11/2026): SOLO descubre frecuencias nuevas en antenas ya existentes (0 antenas nuevas),
+    // incluyendo una nueva banda 3500 MHz sobre DIGI 2809100 (que había sido Antena nueva en Scan 1).
+    // Debe situarse ARRIBA DEL TODO en el lote Scan 3 (nunca enterrada bajo antenas antiguas ni arrastrada a Scan 1).
+    const scan3Delta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'scan-3',
+          seq: 1,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-17T18:07:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-16T18:10:00Z',
+          newAntennas: [],
+          bandPatches: [],
+          novedades: [
+            {
+              id: 'freq::DIGI-SCAN1-2809100::3500-LATER',
+              tipo: 'frecuencia',
+              op: 'digi',
+              opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+              codigo: '2809100',
+              antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809100',
+              codigoBanda: 'DG-3500-S3',
+              frecuencia: '3400.00 - 3420.00 MHz',
+              ubicacion: 'MADRID',
+              prov: 'MADRID',
+              scannedAt: '2026-11-17T18:06:30Z',
+              fecha: '17/11/2026 19:06:30',
+            },
+          ],
+        },
+      ],
+      'scan-3',
+    );
+
+    const afterScan3 = mergeLiveDeltaIntoNovedadesDataset(
+      afterScan2,
+      scan3Delta,
+    );
+
+    expect(afterScan3.total).toBe(8);
+    expect(afterScan3.antenasNuevas).toBe(2);
+    expect(afterScan3.frecuenciasNuevas).toBe(6);
+    expect(afterScan3.novedades.map((r) => r.id)).toEqual([
+      // Scan 3 arriba del todo (página 1, fila 1) aunque tenga 0 antenas nuevas
+      'freq::DIGI-SCAN1-2809100::3500-LATER',
+      // Debajo Scan 2
+      'antena::ORA-SCAN2-4600500',
+      'freq::ORA-SCAN2-4600500::700',
+      'freq::ORA-SCAN2-4600500::2600',
+      'freq::MOV-EXIST-2800001::900',
+      // Debajo Scan 1
+      'antena::DIGI-SCAN1-2809100',
+      'freq::DIGI-SCAN1-2809100::1800',
+      'freq::VOD-EXIST-0800100::800',
+    ]);
+
+    // Verificación SSR en NovedadesView: .is-associated-freq se acota al mismo lote de escaneo
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['novedades-dataset'], afterScan3);
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      component: () => createElement('div', null, 'Mapa'),
+    });
+    const testNov = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await testRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: testRouter }),
+      ),
+    );
+
+    const rowMatches = Array.from(
+      html.matchAll(
+        /<tr\b[^>]*class="([^"]*novedades-row[^"]*)"[^>]*>([\s\S]*?)<\/tr>/g,
+      ),
+    );
+    expect(rowMatches).toHaveLength(8);
+    // Fila 0 (Scan 3, DG-3500-S3 sobre antena 2809100 creada en Scan 1): NO es .is-associated-freq en Scan 3
+    expect(rowMatches[0]?.[2]).toContain('DG-3500-S3');
+    expect(rowMatches[0]?.[1]).toBe('novedades-row');
+    // Filas 2 y 3 (Scan 2, asociadas a Antena nueva ORA 4600500): SÍ tienen .is-associated-freq
+    expect(rowMatches[2]?.[2]).toContain('OR-700');
+    expect(rowMatches[2]?.[1]).toContain('is-associated-freq');
+    expect(rowMatches[3]?.[2]).toContain('OR-2600');
+    expect(rowMatches[3]?.[1]).toContain('is-associated-freq');
+    // Fila 6 (Scan 1, asociada originalmente a Antena nueva DIGI 2809100): SÍ conserva .is-associated-freq
+    expect(rowMatches[6]?.[2]).toContain('DG-1800');
+    expect(rowMatches[6]?.[1]).toContain('is-associated-freq');
+  });
+
+  it('mantiene lotes separados en dos escaneos forzados el mismo día natural (forced-2 encima de forced-1)', () => {
+    const forced1Dataset: NovedadesDataset = {
+      updatedAt: '2026-11-16T10:15:00Z',
+      scanId: 'forced-1',
+      previousScanAt: '2026-11-15T18:20:00Z',
+      isBaselineScan: false,
+      total: 2,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 1,
+      novedades: [
+        {
+          id: 'antena::FORCED1-DIGI-2801111',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2801111',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2801111',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          // Incluso sin scanId explícito en la fila base, forced-1 se sella al fusionar forced-2
+          scannedAt: '2026-11-16T10:10:00Z',
+          fecha: '16/11/2026 11:10:00',
+        },
+        {
+          id: 'freq::FORCED1-MOV-2800001::800',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M-800-F1',
+          frecuencia: '801.00 - 811.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T10:12:00Z',
+          fecha: '16/11/2026 11:12:00',
+        },
+      ],
+    };
+
+    // Segundo escaneo forzado el MISMO día 16/11/2026 por la tarde con solo una frecuencia nueva en antena existente
+    const forced2Delta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'forced-2',
+          seq: 2,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-16T15:30:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-16T10:15:00Z',
+          newAntennas: [],
+          bandPatches: [],
+          novedades: [
+            {
+              id: 'freq::FORCED2-ORA-2800002::3500',
+              tipo: 'frecuencia',
+              op: 'orange',
+              opRaw: 'ORANGE ESPAGNE, S.A.U.',
+              codigo: '2800002',
+              antennaId: 'ORANGE ESPAGNE, S.A.U. - 2800002',
+              codigoBanda: 'OR-3500-F2',
+              frecuencia: '3600.00 - 3710.00 MHz',
+              ubicacion: 'ALCALÁ DE HENARES',
+              prov: 'MADRID',
+              scannedAt: '2026-11-16T15:28:00Z',
+              fecha: '16/11/2026 16:28:00',
+            },
+          ],
+        },
+      ],
+      'forced-2',
+    );
+
+    const mergedSameDay = mergeLiveDeltaIntoNovedadesDataset(
+      forced1Dataset,
+      forced2Delta,
+    );
+
+    expect(mergedSameDay.scanId).toBe('forced-2');
+    expect(mergedSameDay.total).toBe(3);
+    expect(mergedSameDay.novedades.map((n) => n.id)).toEqual([
+      // forced-2 arriba del todo aunque sea frecuencia de antena existente y mismo día 16/11/2026
+      'freq::FORCED2-ORA-2800002::3500',
+      // forced-1 conservado debajo en su propio bloque
+      'antena::FORCED1-DIGI-2801111',
+      'freq::FORCED1-MOV-2800001::800',
+    ]);
+  });
+});

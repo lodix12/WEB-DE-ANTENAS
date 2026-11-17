@@ -141,6 +141,7 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
   }
 
   const novedadesList = raw.novedades;
+  const validatedNovedades: NovedadRecord[] = new Array(novedadesList.length);
   for (let i = 0; i < novedadesList.length; i++) {
     const item: unknown = novedadesList[i];
     if (!isPlainRecord(item)) {
@@ -153,33 +154,60 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
         `Entidad GeoJSON detectada en novedades[${i}]: RadioMapa exige registros compactos del JSON propio y no admite GeoJSON.`,
       );
     }
-    if (
-      typeof item.id !== 'string' ||
-      typeof item.tipo !== 'string' ||
-      !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
-      typeof item.op !== 'string' ||
-      !VALID_OPERATORS.has(item.op) ||
-      typeof item.opRaw !== 'string' ||
-      typeof item.codigo !== 'string' ||
-      typeof item.antennaId !== 'string' ||
-      typeof item.codigoBanda !== 'string' ||
-      typeof item.frecuencia !== 'string' ||
-      typeof item.ubicacion !== 'string' ||
-      (item.prov !== undefined && typeof item.prov !== 'string') ||
-      typeof item.scannedAt !== 'string' ||
-      typeof item.fecha !== 'string'
-    ) {
+    const validated = validateNovedadRecord(item);
+    if (!validated) {
       throw new Error(
         `Registro incompleto en novedades[${i}]: debe cumplir el esquema NovedadRecord { id, tipo, op, opRaw, codigo, antennaId, codigoBanda, frecuencia, ubicacion, scannedAt, fecha }.`,
       );
     }
+    validatedNovedades[i] = validated;
   }
 
   return {
     ...(raw as unknown as NovedadesDataset),
-    novedades: orderNovedadesGroupedByNewAntenna(
-      (raw as { novedades: NovedadRecord[] }).novedades,
-    ),
+    novedades: orderNovedadesGroupedByNewAntenna(validatedNovedades),
+  };
+}
+
+function validateNovedadRecord(
+  item: Record<string, unknown>,
+): NovedadRecord | null {
+  if (
+    typeof item.id !== 'string' ||
+    typeof item.tipo !== 'string' ||
+    !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
+    typeof item.op !== 'string' ||
+    !VALID_OPERATORS.has(item.op) ||
+    typeof item.opRaw !== 'string' ||
+    typeof item.codigo !== 'string' ||
+    typeof item.antennaId !== 'string' ||
+    typeof item.codigoBanda !== 'string' ||
+    typeof item.frecuencia !== 'string' ||
+    typeof item.ubicacion !== 'string' ||
+    (item.prov !== undefined && typeof item.prov !== 'string') ||
+    (item.scanId !== undefined && typeof item.scanId !== 'string') ||
+    typeof item.scannedAt !== 'string' ||
+    typeof item.fecha !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    tipo: item.tipo as NovedadTipo,
+    op: item.op as OperatorKey,
+    opRaw: item.opRaw,
+    codigo: item.codigo,
+    antennaId: item.antennaId,
+    codigoBanda: item.codigoBanda,
+    frecuencia: item.frecuencia,
+    ubicacion: item.ubicacion,
+    ...(item.prov !== undefined ? { prov: item.prov } : {}),
+    ...(typeof item.scanId === 'string' && item.scanId.trim()
+      ? { scanId: item.scanId.trim() }
+      : {}),
+    scannedAt: item.scannedAt,
+    fecha: item.fecha,
   };
 }
 
@@ -595,6 +623,27 @@ export function getNovedadAntennaGroupKey(
   return row.antennaId.trim() || `${row.op}::${row.codigo.trim()}`;
 }
 
+/**
+ * Devuelve la clave estable del lote de escaneo al que pertenece una novedad
+ * (`scan:<scanId>` cuando existe `scanId`, o `day:YYYY-MM-DD` como respaldo por día).
+ */
+export function getNovedadScanBatchKey(
+  row: Pick<NovedadRecord, 'scanId' | 'fecha' | 'scannedAt'>,
+): string {
+  if (row.scanId && row.scanId.trim().length > 0) {
+    return `scan:${row.scanId.trim()}`;
+  }
+  const fechaMatch = row.fecha.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (fechaMatch) {
+    return `day:${fechaMatch[3]}-${fechaMatch[2]}-${fechaMatch[1]}`;
+  }
+  const isoMatch = row.scannedAt.trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) {
+    return `day:${isoMatch[1]}`;
+  }
+  return 'day:unknown';
+}
+
 function safeScanTimestampMs(scannedAt: string): number {
   const ms = Date.parse(scannedAt);
   return Number.isFinite(ms) ? ms : 0;
@@ -644,22 +693,14 @@ function compareFrequencyRows(a: NovedadRecord, b: NovedadRecord): number {
   return a.id.localeCompare(b.id, 'es');
 }
 
-/**
- * Ordena las novedades agrupando cada antena nueva inmediatamente seguida por todas
- * las frecuencias asociadas a esa antena del operador, y situando después todas las
- * frecuencias nuevas pertenecientes a antenas ya existentes.
- */
-export function orderNovedadesGroupedByNewAntenna(
-  rows: readonly NovedadRecord[],
+function orderSingleBatchNovedades(
+  batchRows: readonly NovedadRecord[],
 ): NovedadRecord[] {
-  const seenIds = new Set<string>();
   const newAntennas: NovedadRecord[] = [];
   const frequencies: NovedadRecord[] = [];
 
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (seenIds.has(row.id)) continue;
-    seenIds.add(row.id);
+  for (let i = 0; i < batchRows.length; i++) {
+    const row = batchRows[i];
     if (row.tipo === 'antena') {
       newAntennas.push(row);
     } else {
@@ -707,7 +748,7 @@ export function orderNovedadesGroupedByNewAntenna(
 
   const ordered: NovedadRecord[] = [];
 
-  // Bloque 1: cada antena nueva seguida inmediatamente por sus frecuencias asociadas
+  // Bloque 1 del lote: cada antena nueva seguida inmediatamente por sus frecuencias asociadas en este lote
   for (let i = 0; i < newAntennas.length; i++) {
     const ant = newAntennas[i];
     ordered.push(ant);
@@ -722,7 +763,7 @@ export function orderNovedadesGroupedByNewAntenna(
     }
   }
 
-  // Bloque 2: frecuencias nuevas de antenas ya existentes agrupadas por antena
+  // Bloque 2 del lote: frecuencias nuevas de antenas ya existentes en este lote agrupadas por antena
   const existingGroups: {
     groupKey: string;
     maxScannedAtMs: number;
@@ -732,8 +773,8 @@ export function orderNovedadesGroupedByNewAntenna(
   }[] = [];
 
   for (const [groupKey, items] of existingAntFreqsByKey.entries()) {
-    let maxScannedAtMs = 0;
-    for (let i = 0; i < items.length; i++) {
+    let maxScannedAtMs = safeScanTimestampMs(items[0].scannedAt);
+    for (let i = 1; i < items.length; i++) {
       const ms = safeScanTimestampMs(items[i].scannedAt);
       if (ms > maxScannedAtMs) {
         maxScannedAtMs = ms;
@@ -769,15 +810,143 @@ export function orderNovedadesGroupedByNewAntenna(
   return ordered;
 }
 
+/**
+ * Ordena las novedades por lote de escaneo (del escaneo más reciente en la parte superior
+ * al más antiguo debajo de forma permanente) y, dentro de cada lote de escaneo, agrupa cada
+ * antena nueva inmediatamente seguida por sus frecuencias asociadas y después las frecuencias
+ * nuevas pertenecientes a antenas ya existentes en ese lote.
+ */
+export function orderNovedadesGroupedByNewAntenna(
+  rows: readonly NovedadRecord[],
+): NovedadRecord[] {
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const dedupedById = new Map<string, NovedadRecord>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const existing = dedupedById.get(row.id);
+    if (!existing) {
+      dedupedById.set(row.id, row);
+      continue;
+    }
+    const existingBatch = getNovedadScanBatchKey(existing);
+    const rowBatch = getNovedadScanBatchKey(row);
+    if (existingBatch !== rowBatch) {
+      const existingMs = safeScanTimestampMs(existing.scannedAt);
+      const rowMs = safeScanTimestampMs(row.scannedAt);
+      if (existingMs > 0 && rowMs > 0 && rowMs < existingMs) {
+        dedupedById.set(row.id, row);
+      }
+    }
+  }
+
+  const batchesMap = new Map<string, NovedadRecord[]>();
+  for (const row of dedupedById.values()) {
+    const batchKey = getNovedadScanBatchKey(row);
+    const list = batchesMap.get(batchKey);
+    if (list) {
+      list.push(row);
+    } else {
+      batchesMap.set(batchKey, [row]);
+    }
+  }
+
+  if (batchesMap.size === 1) {
+    const singleBatch = batchesMap.values().next().value;
+    return singleBatch ? orderSingleBatchNovedades(singleBatch) : [];
+  }
+
+  const batchEntries: {
+    batchKey: string;
+    maxScannedAtMs: number;
+    rows: NovedadRecord[];
+  }[] = [];
+
+  for (const [batchKey, batchRows] of batchesMap.entries()) {
+    let maxScannedAtMs = safeScanTimestampMs(batchRows[0].scannedAt);
+    for (let i = 1; i < batchRows.length; i++) {
+      const ms = safeScanTimestampMs(batchRows[i].scannedAt);
+      if (ms > maxScannedAtMs) {
+        maxScannedAtMs = ms;
+      }
+    }
+    batchEntries.push({ batchKey, maxScannedAtMs, rows: batchRows });
+  }
+
+  batchEntries.sort((a, b) => {
+    const msDiff = b.maxScannedAtMs - a.maxScannedAtMs;
+    if (msDiff !== 0) return msDiff;
+    if (a.batchKey !== b.batchKey) {
+      return b.batchKey.localeCompare(a.batchKey, 'es');
+    }
+    return 0;
+  });
+
+  const ordered: NovedadRecord[] = [];
+  for (let i = 0; i < batchEntries.length; i++) {
+    const orderedBatch = orderSingleBatchNovedades(batchEntries[i].rows);
+    for (let j = 0; j < orderedBatch.length; j++) {
+      ordered.push(orderedBatch[j]);
+    }
+  }
+
+  return ordered;
+}
+
 function deduplicateAndSortNovedades(
   rows: readonly NovedadRecord[],
 ): NovedadRecord[] {
   return orderNovedadesGroupedByNewAntenna(rows);
 }
 
+function stampHistoricalBaseRows(
+  baseDataset: NovedadesDataset,
+): NovedadRecord[] {
+  const baseScanId = baseDataset.scanId.trim();
+  const canStampBaseScanId =
+    baseScanId.length > 0 && baseScanId !== 'baseline-init';
+  if (!canStampBaseScanId || baseDataset.novedades.length === 0) {
+    return baseDataset.novedades;
+  }
+
+  const unstampedDayKeys = new Set<string>();
+  for (let i = 0; i < baseDataset.novedades.length; i++) {
+    const r = baseDataset.novedades[i];
+    if (!r.scanId || !r.scanId.trim()) {
+      unstampedDayKeys.add(getNovedadScanBatchKey(r));
+    }
+  }
+
+  if (unstampedDayKeys.size === 0) {
+    return baseDataset.novedades;
+  }
+
+  const updatedDayDmy = extractScanDayDmy(baseDataset.updatedAt);
+  const updatedDayMatch = updatedDayDmy.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  const targetDayKey = updatedDayMatch
+    ? `day:${updatedDayMatch[3]}-${updatedDayMatch[2]}-${updatedDayMatch[1]}`
+    : '';
+
+  return baseDataset.novedades.map((r) => {
+    if (r.scanId && r.scanId.trim()) {
+      return r;
+    }
+    if (
+      unstampedDayKeys.size === 1 ||
+      (targetDayKey && getNovedadScanBatchKey(r) === targetDayKey)
+    ) {
+      return { ...r, scanId: baseScanId };
+    }
+    return r;
+  });
+}
+
 /**
  * Fusiona en tiempo real las novedades detectadas durante un escaneo activo (`recordNovedades === true`)
- * sobre el dataset estático de `data/novedades.json`.
+ * sobre el dataset estático de `data/novedades.json`, conservando siempre de forma permanente
+ * todas las novedades históricas registradas en escaneos anteriores y añadiendo encima las nuevas.
  */
 export function mergeLiveDeltaIntoNovedadesDataset(
   baseDataset: NovedadesDataset,
@@ -790,7 +959,12 @@ export function mergeLiveDeltaIntoNovedadesDataset(
   if (delta.completedDatasetUpdatedAt) {
     const baseMs = Date.parse(baseDataset.updatedAt);
     const doneMs = Date.parse(delta.completedDatasetUpdatedAt);
-    if (Number.isFinite(baseMs) && Number.isFinite(doneMs) && baseMs >= doneMs) {
+    if (
+      Number.isFinite(baseMs) &&
+      Number.isFinite(doneMs) &&
+      baseMs >= doneMs &&
+      (!baseDataset.isBaselineScan || delta.novedades.length === 0)
+    ) {
       return baseDataset;
     }
   }
@@ -799,22 +973,81 @@ export function mergeLiveDeltaIntoNovedadesDataset(
   let scanId: string;
   let previousScanAt: string | null;
   let updatedAt: string;
+  const deltaScanId = delta.scanId.trim();
 
   if (baseDataset.scanId !== delta.scanId) {
     if (delta.deltaSeq <= 0) {
       return baseDataset;
     }
-    mergedNovedades = deduplicateAndSortNovedades(delta.novedades);
+    const historicalRows = stampHistoricalBaseRows(baseDataset);
+    const historicalIds = new Set<string>();
+    for (let i = 0; i < historicalRows.length; i++) {
+      historicalIds.add(historicalRows[i].id);
+    }
+    const incomingNewRows: NovedadRecord[] = [];
+    for (let i = 0; i < delta.novedades.length; i++) {
+      const row = delta.novedades[i];
+      if (historicalIds.has(row.id)) continue;
+      incomingNewRows.push(
+        !row.scanId && deltaScanId ? { ...row, scanId: deltaScanId } : row,
+      );
+    }
+    mergedNovedades = deduplicateAndSortNovedades([
+      ...incomingNewRows,
+      ...historicalRows,
+    ]);
     scanId = delta.scanId;
     previousScanAt = delta.previousScanAt ?? (baseDataset.updatedAt || null);
-    updatedAt = delta.updatedAt || baseDataset.updatedAt;
+    updatedAt = pickLatestNovedadesIso(
+      baseDataset.updatedAt,
+      delta.updatedAt,
+    );
   } else {
     if (delta.novedades.length === 0) {
       return baseDataset;
     }
+    const prevCutoffMs = delta.previousScanAt
+      ? safeScanTimestampMs(delta.previousScanAt)
+      : 0;
+    const historicalBaseRows: NovedadRecord[] = [];
+    const sameScanBaseRows: NovedadRecord[] = [];
+    const historicalIds = new Set<string>();
+
+    for (let i = 0; i < baseDataset.novedades.length; i++) {
+      const r = baseDataset.novedades[i];
+      const rowScanId = r.scanId?.trim() ?? '';
+      const isOlderScanById =
+        rowScanId.length > 0 && rowScanId !== deltaScanId;
+      const rowMs = safeScanTimestampMs(r.scannedAt);
+      const isOlderScanByTime =
+        rowScanId.length === 0 &&
+        prevCutoffMs > 0 &&
+        rowMs > 0 &&
+        rowMs <= prevCutoffMs;
+
+      if (isOlderScanById || isOlderScanByTime) {
+        historicalBaseRows.push(r);
+        historicalIds.add(r.id);
+      } else {
+        sameScanBaseRows.push(
+          !rowScanId && deltaScanId ? { ...r, scanId: deltaScanId } : r,
+        );
+      }
+    }
+
+    const incomingSameScanRows: NovedadRecord[] = [];
+    for (let i = 0; i < delta.novedades.length; i++) {
+      const row = delta.novedades[i];
+      if (historicalIds.has(row.id)) continue;
+      incomingSameScanRows.push(
+        !row.scanId && deltaScanId ? { ...row, scanId: deltaScanId } : row,
+      );
+    }
+
     mergedNovedades = deduplicateAndSortNovedades([
-      ...delta.novedades,
-      ...baseDataset.novedades,
+      ...incomingSameScanRows,
+      ...sameScanBaseRows,
+      ...historicalBaseRows,
     ]);
     scanId = baseDataset.scanId;
     previousScanAt = baseDataset.previousScanAt;

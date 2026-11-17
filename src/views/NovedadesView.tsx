@@ -34,6 +34,7 @@ import {
   filterNovedades,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
+  getNovedadScanBatchKey,
   getOperatorRowBackground,
   isValidNovedadesPageSize,
   orderNovedadesGroupedByNewAntenna,
@@ -210,31 +211,31 @@ export function NovedadesView() {
     return [];
   }, [dataset, derived]);
 
-  const availableScanDates = useMemo(() => {
-    const dates = new Set<string>();
-    if (dataset) {
-      for (let i = 0; i < dataset.novedades.length; i++) {
-        const row = dataset.novedades[i];
-        const day = extractScanDayDmy(row.scannedAt, row.fecha);
-        if (day && day !== '—') {
-          dates.add(day);
-        }
-      }
-    }
-    return Array.from(dates);
-  }, [dataset]);
-
   const orderedNovedades = useMemo(
     () => (dataset ? orderNovedadesGroupedByNewAntenna(dataset.novedades) : []),
     [dataset],
   );
+
+  const availableScanDates = useMemo(() => {
+    const dates = new Set<string>();
+    for (let i = 0; i < orderedNovedades.length; i++) {
+      const row = orderedNovedades[i];
+      const day = extractScanDayDmy(row.scannedAt, row.fecha);
+      if (day && day !== '—') {
+        dates.add(day);
+      }
+    }
+    return Array.from(dates);
+  }, [orderedNovedades]);
 
   const newAntennaKeys = useMemo(() => {
     const keys = new Set<string>();
     for (let i = 0; i < orderedNovedades.length; i++) {
       const r = orderedNovedades[i];
       if (r.tipo === 'antena') {
-        keys.add(getNovedadAntennaGroupKey(r));
+        keys.add(
+          `${getNovedadScanBatchKey(r)}@@${getNovedadAntennaGroupKey(r)}`,
+        );
       }
     }
     return keys;
@@ -489,8 +490,9 @@ export function NovedadesView() {
         </span>
         <h1 className="page-h1">Novedades de Antenas y Frecuencias</h1>
         <p className="page-lead">
-          Cambios detectados respecto al escaneo diario anterior (programado
-          todos los días a las 18:00 h).
+          Registro permanente y acumulativo de nuevas antenas y concesiones de
+          frecuencia detectadas en cada escaneo (programado todos los días a las
+          18:00 h).
         </p>
       </header>
 
@@ -620,7 +622,7 @@ export function NovedadesView() {
         aria-labelledby="novedades-section-h2"
       >
         <h2 id="novedades-section-h2" className="sr-only">
-          Tabla de antenas y frecuencias nuevas respecto al escaneo anterior
+          Tabla histórica acumulativa de antenas y frecuencias nuevas detectadas
         </h2>
 
         <div
@@ -927,7 +929,9 @@ export function NovedadesView() {
                   const isFrecuencia = row.tipo === 'frecuencia';
                   const isAssociatedNewAntFreq =
                     isFrecuencia &&
-                    newAntennaKeys.has(getNovedadAntennaGroupKey(row));
+                    newAntennaKeys.has(
+                      `${getNovedadScanBatchKey(row)}@@${getNovedadAntennaGroupKey(row)}`,
+                    );
                   const formattedFecha = formatScanDateTimeDmyHms(
                     row.scannedAt,
                     row.fecha,
@@ -1086,8 +1090,8 @@ export function NovedadesView() {
                         </div>
                         <p className="novedades-empty-title">
                           {dataset.isBaselineScan
-                            ? '0 novedades respecto al escaneo anterior (línea base activa)'
-                            : '0 antenas o frecuencias nuevas respecto al escaneo anterior'}
+                            ? '0 novedades registradas todavía (línea base activa)'
+                            : '0 antenas o frecuencias nuevas registradas todavía'}
                         </p>
                         <p className="novedades-empty-desc">
                           {dataset.isBaselineScan ? (
@@ -1096,17 +1100,18 @@ export function NovedadesView() {
                               <span className="mono">{lastScanFormatted}</span>)
                               sirve de referencia inicial y no contabiliza
                               novedades. Las nuevas antenas y concesiones de
-                              frecuencia aparecerán en esta tabla tras el
-                              próximo escaneo automático diario de las{' '}
-                              <strong>18:00 h</strong>.
+                              frecuencia se irán añadiendo de forma permanente a
+                              esta tabla tras cada escaneo diario de las{' '}
+                              <strong>18:00 h</strong> o forzado.
                             </>
                           ) : (
                             <>
-                              No se han registrado altas de nuevas antenas ni
-                              nuevas concesiones de frecuencia en el último
+                              Aún no se han registrado altas de nuevas antenas ni
+                              nuevas concesiones de frecuencia hasta el último
                               escaneo del{' '}
                               <span className="mono">{lastScanFormatted}</span>.
-                              El próximo escaneo automático se ejecutará a las{' '}
+                              Las novedades que se detecten quedarán guardadas de
+                              forma permanente tras cada escaneo automático de las{' '}
                               <strong>18:00 h</strong>.
                             </>
                           )}
