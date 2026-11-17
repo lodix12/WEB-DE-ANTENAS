@@ -58,10 +58,12 @@ export interface DerivedAntenasStructures {
   totalUniqueMunicipalities: number;
   /** Conteo total por operador */
   operatorCounts: Record<OperatorKey, number>;
-  /** Bandas comerciales MHz disponibles ordenadas numéricamente con conteo de estaciones */
+  /** Bandas RF canónicas disponibles ordenadas de N28 a N258 con conteo de estaciones */
   availableBands: BandOption[];
   /** Número de antenas del dataset con el array bandas ya poblado */
   bandsPopulatedCount: number;
+  /** Máscara de 11 bits de bandas RF activas alineada con dataset.antenas */
+  bandCodeMasks: Uint16Array;
   /** Centroide medio aproximado por provincia para navegación rápida */
   provinceCentroids: Map<string, { lat: number; lon: number }>;
   /** Búsqueda O(1) por id o Gis_ID (incluyendo mergedGids fusionados) */
@@ -1740,45 +1742,94 @@ export function fuseVodafoneAntennasInDataset(
   };
 }
 
-const BIT_N258 = 1 << 0;
-const BIT_N78 = 1 << 1;
-const BIT_B7 = 1 << 2;
-const BIT_B38 = 1 << 3;
-const BIT_B1 = 1 << 4;
-const BIT_B3 = 1 << 5;
-const BIT_G9 = 1 << 6;
-const BIT_B20 = 1 << 7;
-const BIT_N28 = 1 << 8;
-const BIT_SAW_2600_RANGE = 1 << 9;
+export const ALL_RF_BAND_CODES = [
+  'N28',
+  'N28+',
+  'B20',
+  'G9',
+  'B3',
+  'B1',
+  'B38',
+  'B7',
+  'B7+',
+  'N78',
+  'N258',
+] as const;
+
+export type RfBandCode = (typeof ALL_RF_BAND_CODES)[number];
+
+export function bandCodeToDomId(band: string): string {
+  return `filter-band-${band
+    .trim()
+    .toLowerCase()
+    .replace(/\+/g, '-plus')
+    .replace(/\s+/g, '-')}`;
+}
+
+const BIT_N28 = 1 << 0;
+const BIT_N28_PLUS = 1 << 1;
+const BIT_B20 = 1 << 2;
+const BIT_G9 = 1 << 3;
+const BIT_B3 = 1 << 4;
+const BIT_B1 = 1 << 5;
+const BIT_B38 = 1 << 6;
+const BIT_B7 = 1 << 7;
+const BIT_B7_PLUS = 1 << 8;
+const BIT_N78 = 1 << 9;
+const BIT_N258 = 1 << 10;
+const BIT_SAW_2600_RANGE = 1 << 11;
+const BIT_SAW_700_RANGE = 1 << 12;
+const BIT_EXPLICIT_N28_CODE = 1 << 13;
+const RF_BAND_BITS_MASK = 0x7ff;
+const RF_BAND_CACHE_SIZE = 1 << ALL_RF_BAND_CODES.length;
 
 const BAND_CODE_ENTRIES: ReadonlyArray<readonly [bit: number, code: string]> = [
   [BIT_N258, 'n258'],
   [BIT_N78, 'n78'],
+  [BIT_B7_PLUS, 'b7+'],
   [BIT_B7, 'b7'],
   [BIT_B38, 'b38'],
   [BIT_B1, 'b1'],
   [BIT_B3, 'b3'],
   [BIT_G9, 'g9'],
   [BIT_B20, 'b20'],
+  [BIT_N28_PLUS, 'n28+'],
   [BIT_N28, 'n28'],
 ];
 
-const BAND_MASK_TEXT_CACHE = new Array<string | undefined>(512);
+const BAND_MASK_TEXT_CACHE = new Array<string | undefined>(RF_BAND_CACHE_SIZE);
 BAND_MASK_TEXT_CACHE[0] = '';
+
+const BAND_MASK_CODES_CACHE = new Array<readonly RfBandCode[] | undefined>(
+  RF_BAND_CACHE_SIZE,
+);
+BAND_MASK_CODES_CACHE[0] = [];
 
 const FREQ_NUM_TOKEN_RE = /\d+(?:[.,]\d+)?/g;
 const GHZ_UNIT_RE = /ghz/i;
-const DIRECT_BAND_CODE_BITS: Readonly<Record<string, number>> = {
-  n258: BIT_N258,
-  n78: BIT_N78,
-  b7: BIT_B7,
-  b38: BIT_B38,
-  b1: BIT_B1,
-  b3: BIT_B3,
-  g9: BIT_G9,
-  b20: BIT_B20,
-  n28: BIT_N28,
-};
+const DIRECT_BAND_CODE_BITS = new Map<string, number>([
+  ['n258', BIT_N258],
+  ['n78', BIT_N78],
+  ['b7+', BIT_B7_PLUS],
+  ['b7', BIT_B7],
+  ['b38', BIT_B38],
+  ['b1', BIT_B1],
+  ['b3', BIT_B3],
+  ['g9', BIT_G9],
+  ['b20', BIT_B20],
+  ['n28+', BIT_N28_PLUS],
+  ['n28', BIT_N28 | BIT_EXPLICIT_N28_CODE],
+]);
+
+function lookupDirectBandCodeBits(trimmed: string): number | undefined {
+  const lower = trimmed.toLowerCase();
+  const direct = DIRECT_BAND_CODE_BITS.get(lower);
+  if (direct !== undefined) return direct;
+  if (lower.includes('+')) {
+    return DIRECT_BAND_CODE_BITS.get(lower.replace(/\s*\+\s*/g, '+'));
+  }
+  return undefined;
+}
 
 function parseDecimalToken(token: string): number {
   return token.includes(',') ? Number(token.replace(',', '.')) : Number(token);
@@ -1787,7 +1838,7 @@ function parseDecimalToken(token: string): number {
 function classifyFrequencyRangeBits(raw: string): number {
   const trimmed = raw.trim();
   if (!trimmed) return 0;
-  const directBit = DIRECT_BAND_CODE_BITS[trimmed.toLowerCase()];
+  const directBit = lookupDirectBandCodeBits(trimmed);
   if (directBit !== undefined) {
     return directBit;
   }
@@ -1814,15 +1865,24 @@ function classifyFrequencyRangeBits(raw: string): number {
     return BIT_N78;
   }
   if (lo >= 2490 && hi <= 2700) {
-    if (m2 !== null && lo >= 2570 && hi <= 2620) {
-      return BIT_B38 | BIT_SAW_2600_RANGE;
+    if (
+      m2 !== null &&
+      lo >= 2679.5 &&
+      lo <= 2680.5 &&
+      hi >= 2689.5 &&
+      hi <= 2690.5
+    ) {
+      return BIT_B7_PLUS | BIT_SAW_2600_RANGE;
     }
-    if (m2 === null && lo > 2570 && hi < 2620 && lo !== 2600) {
+    if (
+      (m2 !== null && lo >= 2570 && hi <= 2620) ||
+      (m2 === null && lo > 2570 && hi < 2620 && lo !== 2600)
+    ) {
       return BIT_B38 | BIT_SAW_2600_RANGE;
     }
     return BIT_B7 | BIT_SAW_2600_RANGE;
   }
-  if (lo >= 1920 && hi <= 2170) {
+  if (lo >= 1900 && hi <= 2170) {
     return BIT_B1;
   }
   if (lo >= 1710 && hi <= 1880) {
@@ -1834,8 +1894,17 @@ function classifyFrequencyRangeBits(raw: string): number {
   if (lo >= 791 && hi <= 862) {
     return BIT_B20;
   }
-  if (lo >= 703 && hi <= 788) {
-    return BIT_N28;
+  if (lo >= 698 && hi <= 788) {
+    if (
+      m2 !== null &&
+      lo >= 757.5 &&
+      lo <= 758.5 &&
+      hi >= 787.5 &&
+      hi <= 788.5
+    ) {
+      return BIT_N28_PLUS | BIT_SAW_700_RANGE;
+    }
+    return BIT_N28 | BIT_SAW_700_RANGE;
   }
   return 0;
 }
@@ -1843,18 +1912,24 @@ function classifyFrequencyRangeBits(raw: string): number {
 function classifyCommercialBandLabelBits(
   rawLabel: string,
   saw2600Range: boolean,
+  saw700Range: boolean,
 ): number {
   const trimmed = rawLabel.trim();
   if (!trimmed) return 0;
-  const directBit = DIRECT_BAND_CODE_BITS[trimmed.toLowerCase()];
+  const directBit = lookupDirectBandCodeBits(trimmed);
   if (directBit !== undefined) {
     return directBit;
   }
 
   FREQ_NUM_TOKEN_RE.lastIndex = 0;
-  const m = FREQ_NUM_TOKEN_RE.exec(trimmed);
-  if (!m) return 0;
-  let val = parseDecimalToken(m[0]);
+  const m1 = FREQ_NUM_TOKEN_RE.exec(trimmed);
+  if (!m1) return 0;
+  const m2 = FREQ_NUM_TOKEN_RE.exec(trimmed);
+  if (m2 !== null) {
+    return classifyFrequencyRangeBits(trimmed);
+  }
+
+  let val = parseDecimalToken(m1[0]);
   if (!Number.isFinite(val)) return 0;
   if (GHZ_UNIT_RE.test(trimmed) && val < 1000) {
     val *= 1000;
@@ -1867,9 +1942,12 @@ function classifyCommercialBandLabelBits(
     return BIT_N78;
   }
   if (val >= 2490 && val <= 2700) {
+    if (val > 2570 && val < 2620 && val !== 2600) {
+      return BIT_B38;
+    }
     return saw2600Range ? 0 : BIT_B7;
   }
-  if (val >= 1920 && val <= 2170) {
+  if (val >= 1900 && val <= 2170) {
     return BIT_B1;
   }
   if (val >= 1710 && val <= 1880) {
@@ -1881,20 +1959,22 @@ function classifyCommercialBandLabelBits(
   if (val >= 791 && val <= 862) {
     return BIT_B20;
   }
-  if (val >= 703 && val <= 788) {
-    return BIT_N28;
+  if (val >= 698 && val <= 788) {
+    return saw700Range ? 0 : BIT_N28;
   }
   return 0;
 }
 
-function deriveAntennaBandCodesText(ant: AntennaRecord): string {
+export function computeAntennaRfBandMask(
+  ant: Pick<AntennaRecord, 'bandas' | 'frecuencias' | 'concesiones'>,
+): number {
   const { frecuencias, concesiones, bandas } = ant;
   if (
     (!frecuencias || frecuencias.length === 0) &&
     (!concesiones || concesiones.length === 0) &&
     (!bandas || bandas.length === 0)
   ) {
-    return '';
+    return 0;
   }
 
   let mask = 0;
@@ -1908,15 +1988,57 @@ function deriveAntennaBandCodesText(ant: AntennaRecord): string {
       mask |= classifyFrequencyRangeBits(concesiones[i].freq);
     }
   }
+  if (
+    (mask & BIT_N28_PLUS) !== 0 &&
+    (mask & BIT_EXPLICIT_N28_CODE) === 0
+  ) {
+    mask &= ~BIT_N28;
+  }
   if (bandas) {
     const saw2600Range = (mask & BIT_SAW_2600_RANGE) !== 0;
+    const saw700Range = (mask & BIT_SAW_700_RANGE) !== 0;
     for (let i = 0; i < bandas.length; i++) {
-      mask |= classifyCommercialBandLabelBits(bandas[i], saw2600Range);
+      mask |= classifyCommercialBandLabelBits(
+        bandas[i],
+        saw2600Range,
+        saw700Range,
+      );
+    }
+    if (
+      (mask & BIT_N28_PLUS) !== 0 &&
+      (mask & BIT_EXPLICIT_N28_CODE) === 0
+    ) {
+      mask &= ~BIT_N28;
     }
   }
 
-  const codeMask = mask & 0x1ff;
-  const cached = BAND_MASK_TEXT_CACHE[codeMask];
+  return mask & RF_BAND_BITS_MASK;
+}
+
+export function resolveAntennaRfBandCodes(
+  ant: Pick<AntennaRecord, 'bandas' | 'frecuencias' | 'concesiones'>,
+): RfBandCode[] {
+  const codeMask = computeAntennaRfBandMask(ant);
+  if (codeMask === 0) {
+    return [];
+  }
+  let cached = BAND_MASK_CODES_CACHE[codeMask];
+  if (cached === undefined) {
+    const codes: RfBandCode[] = [];
+    for (let b = 0; b < ALL_RF_BAND_CODES.length; b++) {
+      if ((codeMask & (1 << b)) !== 0) {
+        codes.push(ALL_RF_BAND_CODES[b]);
+      }
+    }
+    cached = codes;
+    BAND_MASK_CODES_CACHE[codeMask] = cached;
+  }
+  return cached.slice();
+}
+
+function formatRfBandMaskText(codeMask: number): string {
+  const masked = codeMask & RF_BAND_BITS_MASK;
+  const cached = BAND_MASK_TEXT_CACHE[masked];
   if (cached !== undefined) {
     return cached;
   }
@@ -1924,12 +2046,12 @@ function deriveAntennaBandCodesText(ant: AntennaRecord): string {
   const parts: string[] = [];
   for (let i = 0; i < BAND_CODE_ENTRIES.length; i++) {
     const [bit, code] = BAND_CODE_ENTRIES[i];
-    if ((codeMask & bit) !== 0) {
+    if ((masked & bit) !== 0) {
       parts.push(code);
     }
   }
   const joined = parts.join(' ');
-  BAND_MASK_TEXT_CACHE[codeMask] = joined;
+  BAND_MASK_TEXT_CACHE[masked] = joined;
   return joined;
 }
 
@@ -1975,7 +2097,9 @@ export function buildDerivedAntenasStructures(
     string,
     { sumLat: number; sumLon: number; count: number; byOp: Partial<Record<OperatorKey, number>> }
   >();
-  const bandCountsMap = new Map<string, number>();
+  const bandCodeMasks = new Uint16Array(antenas.length);
+  const bandBitCounts = new Uint32Array(ALL_RF_BAND_CODES.length);
+  let anyBandMaskNonZero = false;
   let bandsPopulatedCount = 0;
   const byId = new Map<string, AntennaRecord>();
   const byGid = new Map<string, AntennaRecord>();
@@ -1996,9 +2120,17 @@ export function buildDerivedAntenasStructures(
 
     if (normalizedAntBands !== undefined) {
       bandsPopulatedCount += 1;
-      for (let b = 0; b < normalizedAntBands.length; b++) {
-        const bandLabel = normalizedAntBands[b];
-        bandCountsMap.set(bandLabel, (bandCountsMap.get(bandLabel) ?? 0) + 1);
+    }
+
+    const antMask = computeAntennaRfBandMask(ant);
+    bandCodeMasks[i] = antMask;
+    if (antMask !== 0) {
+      anyBandMaskNonZero = true;
+      let bits = antMask;
+      while (bits !== 0) {
+        const bitIndex = 31 - Math.clz32(bits & -bits);
+        bandBitCounts[bitIndex] += 1;
+        bits &= bits - 1;
       }
     }
 
@@ -2028,10 +2160,10 @@ export function buildDerivedAntenasStructures(
       ant.mergedGids && ant.mergedGids.length > 0
         ? ant.mergedGids.join(' ')
         : '';
-    const bandCodesText = deriveAntennaBandCodesText(ant);
+    const bandCodesText = formatRfBandMaskText(antMask);
     const antBandsArr = normalizedAntBands ?? [];
     const has26GhzBand = antBandsArr.includes('26 GHz');
-    const hasN258Code = /\bn258\b/.test(bandCodesText);
+    const hasN258Code = (antMask & BIT_N258) !== 0;
     const bandsText = has26GhzBand
       ? `${antBandsArr.join(' ')} 26ghz`
       : hasN258Code
@@ -2060,9 +2192,13 @@ export function buildDerivedAntenasStructures(
     }
   }
 
-  const availableBands: BandOption[] = Array.from(bandCountsMap.entries())
-    .map(([band, count]) => ({ band, count }))
-    .sort((a, b) => compareBandLabels(a.band, b.band));
+  const availableBands: BandOption[] =
+    bandsPopulatedCount > 0 || anyBandMaskNonZero
+      ? ALL_RF_BAND_CODES.map((code, idx) => ({
+          band: code,
+          count: bandBitCounts[idx],
+        }))
+      : [];
 
   // Usar dataset.provinces si viene poblado, o construir desde provAccum como respaldo
   const rawProvinces: ProvinceSummary[] =
@@ -2164,6 +2300,7 @@ export function buildDerivedAntenasStructures(
     operatorCounts,
     availableBands,
     bandsPopulatedCount,
+    bandCodeMasks,
     provinceCentroids,
     byId,
     byGid,
@@ -2584,79 +2721,70 @@ export function useAntenasData() {
   };
 }
 
-function buildNormalizedBandsSet(bands: readonly string[]): Set<string> {
-  const set = new Set<string>();
+const BIT_UNMATCHABLE_BAND = 1 << 14;
+
+function buildSelectedRfBandsMask(bands: readonly string[]): number {
+  let mask = 0;
   for (let i = 0; i < bands.length; i++) {
-    const normalized = normalizeCommercialBandLabel(bands[i]);
-    if (normalized) {
-      set.add(normalized);
-    }
+    const trimmed = bands[i].trim();
+    if (!trimmed) continue;
+    const bit = classifyFrequencyRangeBits(trimmed) & RF_BAND_BITS_MASK;
+    mask |= bit !== 0 ? bit : BIT_UNMATCHABLE_BAND;
   }
-  return set;
+  return mask;
 }
 
-function matchesNormalizedBandsSet(
-  antBands: readonly string[] | undefined,
-  selectedSet: ReadonlySet<string>,
+function matchesRfBandMask(
+  antMask: number,
+  selectedMask: number,
   exclusiveBands: boolean,
 ): boolean {
-  if (selectedSet.size === 0) {
+  if (selectedMask === 0) {
     return true;
   }
-  if (!antBands || antBands.length === 0) {
+  if (antMask === 0) {
     return false;
   }
-  if (!exclusiveBands) {
-    for (let i = 0; i < antBands.length; i++) {
-      const b = normalizeCommercialBandLabel(antBands[i]);
-      if (b && selectedSet.has(b)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  if (antBands.length < selectedSet.size) {
-    return false;
-  }
-
-  if (selectedSet.size === 1) {
-    let matchedSingle = false;
-    for (let i = 0; i < antBands.length; i++) {
-      const b = normalizeCommercialBandLabel(antBands[i]);
-      if (!b) continue;
-      if (!selectedSet.has(b)) {
-        return false;
-      }
-      matchedSingle = true;
-    }
-    return matchedSingle;
-  }
-
-  const seen = new Set<string>();
-  for (let i = 0; i < antBands.length; i++) {
-    const b = normalizeCommercialBandLabel(antBands[i]);
-    if (!b) continue;
-    if (!selectedSet.has(b)) {
-      return false;
-    }
-    seen.add(b);
-  }
-  return seen.size === selectedSet.size;
+  return exclusiveBands
+    ? antMask === selectedMask
+    : (antMask & selectedMask) !== 0;
 }
 
+export type AntennaBandsFilterTarget =
+  | readonly string[]
+  | Pick<AntennaRecord, 'bandas' | 'frecuencias' | 'concesiones'>
+  | undefined;
+
 /**
- * Evalúa si las bandas de una antena cumplen el filtro multifrecuencia:
+ * Evalúa si las bandas RF de una antena cumplen el filtro multibanda:
  * - Modo por defecto (`exclusiveBands = false`): unión (OR), basta con tener al menos 1 de las bandas seleccionadas.
  * - Modo `"Exclusivamente"` (`exclusiveBands = true`): coincidencia exacta de conjunto ("ni más ni menos").
  */
 export function matchesAntennaBandsFilter(
-  antBands: readonly string[] | undefined,
+  antOrBands: AntennaBandsFilterTarget,
   selectedBands: readonly string[],
   exclusiveBands: boolean,
 ): boolean {
-  const selectedSet = buildNormalizedBandsSet(selectedBands);
-  return matchesNormalizedBandsSet(antBands, selectedSet, exclusiveBands);
+  const selectedMask = buildSelectedRfBandsMask(selectedBands);
+  if (selectedMask === 0) {
+    return true;
+  }
+  if (antOrBands === undefined) {
+    return false;
+  }
+  if (Array.isArray(antOrBands)) {
+    if (antOrBands.length === 0) {
+      return false;
+    }
+    const antMask = computeAntennaRfBandMask({ bandas: antOrBands });
+    return matchesRfBandMask(antMask, selectedMask, exclusiveBands);
+  }
+  const target = antOrBands as Pick<
+    AntennaRecord,
+    'bandas' | 'frecuencias' | 'concesiones'
+  >;
+  const antMask = computeAntennaRfBandMask(target);
+  return matchesRfBandMask(antMask, selectedMask, exclusiveBands);
 }
 
 export interface AntenasFilterInput {
@@ -2676,7 +2804,8 @@ interface SearchMatcher {
   exactWord: boolean;
 }
 
-const RF_BAND_CODE_TOKEN_RE = /^(n258|n78|n28|b38|b20|b7|b3|b1|g9)$/;
+const RF_BAND_CODE_TOKEN_RE =
+  /^(n258|n78|b7\+|b7|b38|b1|b3|g9|b20|n28\+|n28)$/;
 
 function buildSearchMatchers(normalizedQuery: string): SearchMatcher[] {
   if (!normalizedQuery) return [];
@@ -2743,7 +2872,7 @@ export function filterAntenas({
       : selectedBand && selectedBand.trim()
         ? [selectedBand.trim()]
         : [];
-  const selectedBandsSet = buildNormalizedBandsSet(rawBands);
+  const selectedBandsMask = buildSelectedRfBandsMask(rawBands);
 
   // Si el usuario escribe coordenadas válidas ("40.4168, -3.7038"), no filtramos el texto literal
   // para que pueda ver las antenas alrededor de ese punto en el mapa.
@@ -2756,11 +2885,16 @@ export function filterAntenas({
     !targetComunidad &&
     !selectedProvince &&
     !selectedMunicipality &&
-    selectedBandsSet.size === 0 &&
+    selectedBandsMask === 0 &&
     matchers.length === 0
   ) {
     return antenas;
   }
+
+  const bandCodeMasks =
+    derived.bandCodeMasks && derived.bandCodeMasks.length === antenas.length
+      ? derived.bandCodeMasks
+      : null;
 
   const result: AntennaRecord[] = [];
   for (let i = 0; i < antenas.length; i++) {
@@ -2774,11 +2908,14 @@ export function filterAntenas({
       continue;
     }
     if (selectedMunicipality && ant.mun !== selectedMunicipality) continue;
-    if (
-      selectedBandsSet.size > 0 &&
-      !matchesNormalizedBandsSet(ant.bandas, selectedBandsSet, exclusiveBands)
-    ) {
-      continue;
+    if (selectedBandsMask !== 0) {
+      const antMask =
+        bandCodeMasks !== null
+          ? bandCodeMasks[i]
+          : computeAntennaRfBandMask(ant);
+      if (!matchesRfBandMask(antMask, selectedBandsMask, exclusiveBands)) {
+        continue;
+      }
     }
 
     if (matchers.length > 0) {

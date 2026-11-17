@@ -37,6 +37,12 @@ import {
   parseCoordinateInput,
 } from '../utils/export';
 import {
+  ALL_BAND_CODES_ASC,
+  BAND_SEPARATOR_DOT_COLOR,
+  extractAntennaBandCodes,
+  renderBandCardSprite,
+} from '../utils/bandCard';
+import {
   MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   groupColocatedAntennasForMap,
 } from '../utils/geo';
@@ -45,8 +51,11 @@ import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
 import { WorkspaceProvider } from './WorkspaceProvider';
 import {
+  ALL_RF_BAND_CODES,
+  bandCodeToDomId,
   buildDerivedAntenasStructures,
   compareFrequencyRanges,
+  computeAntennaRfBandMask,
   filterAntenas,
   fuseVodafoneAntennasInDataset,
   fuseXferaIntoOrangeInDataset,
@@ -60,6 +69,7 @@ import {
   normalizeCommercialBandLabel,
   normalizeOperatorKeyInput,
   parseCustomAntenasJson,
+  resolveAntennaRfBandCodes,
   useFilteredAntenas,
 } from './useAntenasData';
 import {
@@ -720,13 +730,19 @@ describe('bandas y frecuencias (MHz): validación, unión Vodafone < 35 m, filtr
     // 3 de las 4 antenas resultantes tienen Array.isArray(ant.bandas) (incluyendo [])
     expect(derived.bandsPopulatedCount).toBe(3);
 
-    // availableBands ordenado estrictamente por valor numérico en MHz
+    // availableBands expone las 11 categorías canónicas de banda RF ordenadas ascendentemente
     expect(derived.availableBands).toEqual([
-      { band: '700 MHz', count: 1 },
-      { band: '800 MHz', count: 1 },
-      { band: '900 MHz', count: 1 },
-      { band: '2100 MHz', count: 1 },
-      { band: '3500 MHz', count: 2 },
+      { band: 'N28', count: 1 },
+      { band: 'N28+', count: 0 },
+      { band: 'B20', count: 1 },
+      { band: 'G9', count: 1 },
+      { band: 'B3', count: 0 },
+      { band: 'B1', count: 1 },
+      { band: 'B38', count: 0 },
+      { band: 'B7', count: 0 },
+      { band: 'B7+', count: 0 },
+      { band: 'N78', count: 2 },
+      { band: 'N258', count: 0 },
     ]);
 
     // Búsqueda textual instantánea por banda o rango exacto en MHz
@@ -2336,7 +2352,7 @@ describe('Filtro multifrecuencia ilimitado y casilla "Exclusivamente"', () => {
         onComunidadChange: () => {},
         selectedProvince: '',
         onProvinceChange: () => {},
-        selectedBands: ['800 MHz', '1800 MHz', '3500 MHz'],
+        selectedBands: ['B20', 'B3', 'N78'],
         onToggleBand: () => {},
         onClearBands: () => {},
         exclusiveBands: true,
@@ -2351,9 +2367,10 @@ describe('Filtro multifrecuencia ilimitado y casilla "Exclusivamente"', () => {
       }),
     );
 
-    expect(html).toContain('id="filter-band-800-mhz"');
-    expect(html).toContain('id="filter-band-1800-mhz"');
-    expect(html).toContain('id="filter-band-3500-mhz"');
+    expect(html).toContain('id="filter-band-b20"');
+    expect(html).toContain('id="filter-band-b3"');
+    expect(html).toContain('id="filter-band-n78"');
+    expect(html).toContain('>Bandas · 3<');
     expect(html.match(/class="band-filter-pill is-active"/g)).toHaveLength(3);
     expect(html).toContain('id="bands-select-all-btn"');
     expect(html).toContain('id="filter-bands-exclusive-checkbox"');
@@ -2851,13 +2868,11 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
 
     // availableBands y filterAntenas reconocen de inmediato las nuevas bandas en vivo
     expect(derived.availableBands.map((b) => b.band)).toEqual([
-      '700 MHz',
-      '800 MHz',
-      '1800 MHz',
-      '2100 MHz',
-      '2600 MHz',
-      '3500 MHz',
+      ...ALL_RF_BAND_CODES,
     ]);
+    expect(
+      derived.availableBands.filter((b) => b.count > 0).map((b) => b.band),
+    ).toEqual(['N28', 'B20', 'B3', 'B1', 'B7', 'N78']);
 
     expect(
       filterAntenas({
@@ -2866,7 +2881,7 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
         selectedComunidad: '',
         selectedProvince: '',
         activeOperators: [...OPERATOR_ORDER],
-        selectedBands: ['2600 MHz'],
+        selectedBands: ['B7'],
         exclusiveBands: false,
       }).map((a) => a.gid),
     ).toEqual(['2800001']);
@@ -3178,8 +3193,10 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
         ),
       ),
     );
-    // El mapa muestra ya 4 estaciones (3 base + 1 DIGI en vivo) y expone la píldora de 2600 MHz
-    expect(mapHtml).toContain('id="filter-band-2600-mhz"');
+    // El mapa muestra ya 4 estaciones (3 base + 1 DIGI en vivo) y expone las píldoras de banda RF (B7, B38, B7+)
+    expect(mapHtml).toContain('id="filter-band-b7"');
+    expect(mapHtml).toContain('id="filter-band-b38"');
+    expect(mapHtml).toContain('id="filter-band-b7-plus"');
     expect(mapHtml).toContain('>4<');
 
     const novRouter = createRouter({
@@ -3389,16 +3406,19 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     expect(search('B20')).toEqual(['GALR0453B1']);
     expect(search('N28')).toEqual(['B10023']);
 
-    // Unifica '26 MHz' y '26 GHz' en una única etiqueta comercial '26 GHz' después de '3500 MHz'
+    // Separa B38 (2) de B7 (3) y unifica '26 MHz' y '26 GHz' en 'N258' (2) dentro de las 11 bandas RF
     expect(derived.availableBands).toEqual([
-      { band: '700 MHz', count: 1 },
-      { band: '800 MHz', count: 1 },
-      { band: '900 MHz', count: 1 },
-      { band: '1800 MHz', count: 1 },
-      { band: '2100 MHz', count: 1 },
-      { band: '2600 MHz', count: 4 },
-      { band: '3500 MHz', count: 2 },
-      { band: '26 GHz', count: 2 },
+      { band: 'N28', count: 1 },
+      { band: 'N28+', count: 0 },
+      { band: 'B20', count: 1 },
+      { band: 'G9', count: 1 },
+      { band: 'B3', count: 1 },
+      { band: 'B1', count: 1 },
+      { band: 'B38', count: 2 },
+      { band: 'B7', count: 3 },
+      { band: 'B7+', count: 0 },
+      { band: 'N78', count: 2 },
+      { band: 'N258', count: 2 },
     ]);
     expect(
       matchesAntennaBandsFilter(['2600 MHz'], ['2600 MHz'], true),
@@ -3656,10 +3676,17 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
 
     const derived = buildDerivedAntenasStructures(withLiveDelta);
     expect(derived.availableBands).toEqual([
-      { band: '700 MHz', count: 1 },
-      { band: '2600 MHz', count: 1 },
-      { band: '3500 MHz', count: 1 },
-      { band: '26 GHz', count: 4 },
+      { band: 'N28', count: 1 },
+      { band: 'N28+', count: 0 },
+      { band: 'B20', count: 0 },
+      { band: 'G9', count: 0 },
+      { band: 'B3', count: 0 },
+      { band: 'B1', count: 0 },
+      { band: 'B38', count: 0 },
+      { band: 'B7', count: 1 },
+      { band: 'B7+', count: 0 },
+      { band: 'N78', count: 1 },
+      { band: 'N258', count: 4 },
     ]);
     expect(
       derived.dataset.antenas.find((a) => a.gid === 'MMW004')?.bandas,
@@ -3940,7 +3967,7 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     };
     const derived = buildDerivedAntenasStructures(datasetWithMmw);
 
-    // FilterPanel muestra "Frecuencias" y aria-label "Filtrar por bandas de frecuencia" + chip 26 GHz
+    // FilterPanel muestra "Bandas" y aria-label "Filtrar por bandas" + píldora N258
     const filterHtml = renderToStaticMarkup(
       createElement(FilterPanel, {
         derived,
@@ -3969,10 +3996,10 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
         onFlyTo: () => {},
       }),
     );
-    expect(filterHtml).toContain('aria-label="Filtrar por bandas de frecuencia"');
-    expect(filterHtml).toContain('>Frecuencias<');
+    expect(filterHtml).toContain('aria-label="Filtrar por bandas"');
+    expect(filterHtml).toContain('>Bandas<');
     expect(filterHtml).not.toContain('Frecuencias (MHz)');
-    expect(filterHtml).toContain('id="filter-band-26-ghz"');
+    expect(filterHtml).toContain('id="filter-band-n258"');
 
     // StationDetailDrawer muestra "Bandas y Frecuencias Asignadas", chip único "26 GHz", rangos en GHz y bloque en MHz
     const drawerHtml = renderToStaticMarkup(
@@ -3993,7 +4020,7 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     expect(drawerHtml).toMatch(/1\.?000 MHz/);
     expect(drawerHtml).toContain('400 MHz');
 
-    // EstadisticasView muestra "Cobertura y Desglose por Banda de Frecuencia", "(700 MHz a 26 GHz)" y el rol mmWave n258
+    // EstadisticasView muestra "Cobertura y Desglose por Bandas", "(N28 a N258)" y el rol mmWave N258
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -4021,13 +4048,13 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
         ),
       ),
     );
-    expect(statsHtml).toContain('Cobertura y Desglose por Banda de Frecuencia');
+    expect(statsHtml).toContain('Cobertura y Desglose por Bandas');
     expect(statsHtml).not.toContain(
       'Cobertura y Desglose por Banda de Frecuencia (MHz)',
     );
-    expect(statsHtml).toContain('(700 MHz a 26 GHz)');
+    expect(statsHtml).toContain('(N28 a N258)');
     expect(statsHtml).toContain(
-      '5G NR mmWave (n258 · 26 GHz) · Ultra-alta capacidad milimétrica',
+      '26 GHz TDD mmWave (n258 · 26 GHz) · 5G NR milimétrico · Ultra-alta capacidad',
     );
   });
 });
@@ -7573,5 +7600,426 @@ describe('Mapa — Controles flotantes inferiores, Filtros a la derecha de Secci
     );
   });
 });
+
+describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38, B7, B7+, N78, N258) y mini separador en carteles del mapa', () => {
+  function createFull11BandsFixture(): AntenasDataset {
+    const base = createSampleCustomDataset();
+    return {
+      ...base,
+      total: 8,
+      antenas: [
+        // 1. N28 normal (10 MHz: 778.00 - 788.00) + B20 + G9 + B3
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - BAND01',
+          gid: 'BAND01',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.41,
+          lon: -3.7,
+          dir: 'GRAN VIA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '800 MHz', '900 MHz', '1800 MHz'],
+          frecuencias: [
+            '778.00 - 788.00',
+            '801.00 - 811.00',
+            '935.10 - 949.90',
+            '1805.00 - 1825.00',
+          ],
+        },
+        // 2. N28+ bloque completo de 30 MHz ("758.00 -788.00" sin espacio tras guion) -> SOLO N28+, NUNCA N28
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - BAND02',
+          gid: 'BAND02',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.42,
+          lon: -3.71,
+          dir: 'ALCALA 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz'],
+          frecuencias: ['758.00 -788.00'],
+        },
+        // 3. N28+ bloque completo ("758.00 - 788.00") + sub-rango 758-768 + B1 -> N28+ absorbe el sub-rango 700 MHz
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - BAND03',
+          gid: 'BAND03',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.43,
+          lon: -3.72,
+          dir: 'CASTELLANA 20',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '2100 MHz'],
+          frecuencias: [
+            '758.00 - 768.00',
+            '758.00 - 788.00',
+            '2110.00 - 2130.00',
+          ],
+        },
+        // 4. Solo B7+ ("2680.00 - 2690.00") aunque bandas diga '2600 MHz' -> SOLO B7+, NUNCA B7 ni B38
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - BAND04',
+          gid: 'BAND04',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.44,
+          lon: -3.73,
+          dir: 'GOYA 30',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: ['2680.00 - 2690.00'],
+        },
+        // 5. Dual B7 ("2640.00 - 2660.00") + B7+ ("2680.00 - 2690.00") + N78 -> B7 + B7+ + N78
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - BAND05',
+          gid: 'BAND05',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.45,
+          lon: -3.74,
+          dir: 'SERRANO 40',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz', '3500 MHz'],
+          frecuencias: [
+            '2640.00 - 2660.00',
+            '2680.00 - 2690.00',
+            '3600.00 - 3710.00',
+          ],
+        },
+        // 6. Solo B7 normal ("2620.00 - 2640.00") -> SOLO B7, NUNCA B7+ ni B38
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - BAND06',
+          gid: 'BAND06',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.46,
+          lon: -3.75,
+          dir: 'PRINCESA 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: ['2620.00 - 2640.00'],
+        },
+        // 7. Solo B38 TDD ("2595.00 - 2615.00") -> SOLO B38, NUNCA B7 ni B7+
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - BAND07',
+          gid: 'BAND07',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 40.47,
+          lon: -3.76,
+          dir: 'ATOCHA 60',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2600 MHz'],
+          frecuencias: ['2595.00 - 2615.00'],
+        },
+        // 8. N258 mmWave ("25.70 - 26.70") + B3 ("1845.00 - 1865.00")
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - BAND08',
+          gid: 'BAND08',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.48,
+          lon: -3.77,
+          dir: 'CASTELLANA 200',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['1800 MHz', '26 GHz'],
+          frecuencias: ['1845.00 - 1865.00', '25.70 - 26.70'],
+        },
+      ],
+    };
+  }
+
+  it('separa estrictamente B7+ (2680.00 - 2690.00) de B7 y B38, y N28+ (758.00 - 788.00) de N28 en filtros, búsqueda y carteles', () => {
+    expect(ALL_RF_BAND_CODES).toEqual([
+      'N28',
+      'N28+',
+      'B20',
+      'G9',
+      'B3',
+      'B1',
+      'B38',
+      'B7',
+      'B7+',
+      'N78',
+      'N258',
+    ]);
+    expect(ALL_BAND_CODES_ASC).toEqual(ALL_RF_BAND_CODES);
+    expect(bandCodeToDomId('B3')).toBe('filter-band-b3');
+    expect(bandCodeToDomId('B38')).toBe('filter-band-b38');
+    expect(bandCodeToDomId('B7+')).toBe('filter-band-b7-plus');
+    expect(bandCodeToDomId('N28+')).toBe('filter-band-n28-plus');
+
+    const derived = buildDerivedAntenasStructures(createFull11BandsFixture());
+    expect(derived.availableBands).toEqual([
+      { band: 'N28', count: 1 },
+      { band: 'N28+', count: 2 },
+      { band: 'B20', count: 1 },
+      { band: 'G9', count: 1 },
+      { band: 'B3', count: 2 },
+      { band: 'B1', count: 1 },
+      { band: 'B38', count: 1 },
+      { band: 'B7', count: 2 },
+      { band: 'B7+', count: 2 },
+      { band: 'N78', count: 1 },
+      { band: 'N258', count: 1 },
+    ]);
+
+    // Consistencia total entre resolveAntennaRfBandCodes (ascendente) y extractAntennaBandCodes (descendente)
+    for (const ant of derived.dataset.antenas) {
+      const asc = resolveAntennaRfBandCodes(ant);
+      const desc = extractAntennaBandCodes(ant);
+      expect([...desc].reverse()).toEqual(asc);
+      expect(computeAntennaRfBandMask(ant)).toBeGreaterThan(0);
+    }
+
+    const byBand = (bands: string[], exclusive = false) =>
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: bands,
+        exclusiveBands: exclusive,
+      }).map((a) => a.gid);
+
+    // Filtros de banda individuales y modo "Exclusivamente"
+    expect(byBand(['N28'])).toEqual(['BAND01']);
+    expect(byBand(['N28+'])).toEqual(['BAND02', 'BAND03']);
+    expect(byBand(['N28+'], true)).toEqual(['BAND02']);
+    expect(byBand(['N28+', 'B1'], true)).toEqual(['BAND03']);
+    expect(byBand(['B7+'])).toEqual(['BAND04', 'BAND05']);
+    expect(byBand(['B7+'], true)).toEqual(['BAND04']);
+    expect(byBand(['B7'])).toEqual(['BAND05', 'BAND06']);
+    expect(byBand(['B7'], true)).toEqual(['BAND06']);
+    expect(byBand(['B7', 'B7+', 'N78'], true)).toEqual(['BAND05']);
+    expect(byBand(['B38'])).toEqual(['BAND07']);
+    expect(byBand(['B38'], true)).toEqual(['BAND07']);
+    expect(byBand(['B3'])).toEqual(['BAND01', 'BAND08']);
+    expect(byBand(['N258'])).toEqual(['BAND08']);
+
+    // Búsqueda textual exacta por B7+, N28+, B38 y B3 sin colisiones
+    const byQuery = (q: string) =>
+      filterAntenas({
+        derived,
+        searchQuery: q,
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid);
+
+    expect(byQuery('B7+')).toEqual(['BAND04', 'BAND05']);
+    expect(byQuery('b7+')).toEqual(['BAND04', 'BAND05']);
+    expect(byQuery('B7')).toEqual(['BAND05', 'BAND06']);
+    expect(byQuery('N28+')).toEqual(['BAND02', 'BAND03']);
+    expect(byQuery('n28+')).toEqual(['BAND02', 'BAND03']);
+    expect(byQuery('N28')).toEqual(['BAND01']);
+    expect(byQuery('B38')).toEqual(['BAND07']);
+    expect(byQuery('B3')).toEqual(['BAND01', 'BAND08']);
+  });
+
+  it('renderiza Bandas (y no Frecuencias) con las 11 categorías en FilterPanel y EstadisticasView', async () => {
+    const dataset = createFull11BandsFixture();
+    const derived = buildDerivedAntenasStructures(dataset);
+
+    const filterHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: ['B3', 'B7+', 'N28+'],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: true,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: true,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+
+    expect(filterHtml).toContain('aria-label="Filtrar por bandas"');
+    expect(filterHtml).toContain('>Bandas · 3<');
+    expect(filterHtml).not.toContain('>Frecuencias');
+    for (const code of ALL_RF_BAND_CODES) {
+      expect(filterHtml).toContain(`id="${bandCodeToDomId(code)}"`);
+      expect(filterHtml).toContain(`>${code}<`);
+    }
+    expect(filterHtml).not.toContain('>1800 MHz<');
+    expect(filterHtml).not.toContain('>2600 MHz<');
+    expect(filterHtml).toContain(
+      'Solo antenas con exactamente las bandas marcadas (ni más ni menos)',
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], dataset);
+    const statsRoot = createRootRoute({ component: Outlet });
+    const statsRoute = createRoute({
+      getParentRoute: () => statsRoot,
+      path: '/estadisticas',
+      component: EstadisticasView,
+    });
+    const statsRouter = createRouter({
+      routeTree: statsRoot.addChildren([statsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    });
+    await statsRouter.load();
+
+    const statsHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: statsRouter }),
+        ),
+      ),
+    );
+
+    expect(statsHtml).toContain('Cobertura y Desglose por Bandas');
+    expect(statsHtml).toContain('(N28 a N258)');
+    for (const code of ALL_RF_BAND_CODES) {
+      expect(statsHtml).toContain(`>${code}<`);
+      expect(statsHtml).toContain(`Reparto por operador en ${code}`);
+    }
+    expect(statsHtml).toContain('2680–2690 MHz');
+    expect(statsHtml).toContain('758–788 MHz · 30 MHz');
+  });
+
+  it('verifica en public/data/antenas.json real la partición exacta de N28/N28+ y B7/B7+/B38 y el mini separador en carteles del mapa', async () => {
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const rawDataset = JSON.parse(
+      readFileSync(
+        new URL('../../public/data/antenas.json', import.meta.url),
+        'utf-8',
+      ),
+    ) as unknown;
+    const dataset = parseCustomAntenasJson(rawDataset);
+    const derived = buildDerivedAntenasStructures(dataset);
+
+    expect(derived.availableBands.map((b) => b.band)).toEqual([
+      ...ALL_RF_BAND_CODES,
+    ]);
+    const countsByBand = Object.fromEntries(
+      derived.availableBands.map((b) => [b.band, b.count]),
+    );
+    expect(countsByBand['N28']).toBeGreaterThan(30000);
+    expect(countsByBand['N28+']).toBeGreaterThan(1000);
+    expect(countsByBand['B38']).toBeGreaterThan(50);
+    expect(countsByBand['B7']).toBeGreaterThan(10000);
+    expect(countsByBand['B7+']).toBeGreaterThan(500);
+    expect(countsByBand['N258']).toBeGreaterThan(0);
+
+    // Ninguna estación del censo real tiene N28 y N28+ simultáneamente (partición disjunta exacta de 700 MHz)
+    for (let i = 0; i < derived.dataset.antenas.length; i++) {
+      const mask = derived.bandCodeMasks[i];
+      expect((mask & 0b11) === 0b11).toBe(false);
+    }
+
+    // Mini separador discreto (#1E293B) entre bandas adyacentes en los carteles del mapa
+    const fillOps: Array<{ text?: string; isDot?: boolean; fillStyle: string }> =
+      [];
+    const fakeCtx = {
+      font: '',
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      shadowColor: '',
+      shadowBlur: 0,
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+      textAlign: 'left',
+      textBaseline: 'middle',
+      save: () => {},
+      restore: () => {},
+      beginPath: () => {},
+      closePath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      quadraticCurveTo: () => {},
+      arc: () => {
+        fillOps.push({ isDot: true, fillStyle: '' });
+      },
+      fill: function (this: { fillStyle: string }) {
+        const last = fillOps[fillOps.length - 1];
+        if (last && last.isDot && !last.fillStyle) {
+          last.fillStyle = this.fillStyle;
+        }
+      },
+      stroke: () => {},
+      measureText: (txt: string) => ({ width: txt.length * 12 }),
+      fillText: function (this: { fillStyle: string }, txt: string) {
+        fillOps.push({ text: txt, fillStyle: this.fillStyle });
+      },
+      getImageData: (_x: number, _y: number, w: number, h: number) => ({
+        width: w,
+        height: h,
+        data: new Uint8ClampedArray(w * h * 4),
+      }),
+    };
+
+    const prevDoc = (globalThis as { document?: unknown }).document;
+    (globalThis as { document?: unknown }).document = {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => fakeCtx,
+      }),
+    };
+    try {
+      renderBandCardSprite([
+        { op: 'orange', color: '#FF7900', text: 'N78 B7+ B7 N28+' },
+        { op: 'digi', color: '#0055A4', text: 'B3' },
+      ]);
+    } finally {
+      if (prevDoc === undefined) {
+        delete (globalThis as { document?: unknown }).document;
+      } else {
+        (globalThis as { document?: unknown }).document = prevDoc;
+      }
+    }
+
+    const drawnTokens = fillOps.filter((op) => op.text !== undefined);
+    const drawnDots = fillOps.filter((op) => op.isDot);
+    expect(drawnTokens.map((t) => t.text)).toEqual([
+      'N78',
+      'B7+',
+      'B7',
+      'N28+',
+      'B3',
+    ]);
+    // 4 bandas en la fila de Orange -> 3 puntos separadores; 1 banda en la fila de DIGI -> 0 puntos separadores
+    expect(drawnDots).toHaveLength(3);
+    for (const dot of drawnDots) {
+      expect(dot.fillStyle).toBe(BAND_SEPARATOR_DOT_COLOR);
+    }
+  });
+});
+
 
 

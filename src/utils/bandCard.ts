@@ -6,15 +6,31 @@ import {
 } from '../types/antena';
 import type { MapSiteEntry } from './geo';
 
+export const ALL_BAND_CODES_ASC = [
+  'N28',
+  'N28+',
+  'B20',
+  'G9',
+  'B3',
+  'B1',
+  'B38',
+  'B7',
+  'B7+',
+  'N78',
+  'N258',
+] as const;
+
 export type BandCode =
   | 'N258'
   | 'N78'
+  | 'B7+'
   | 'B7'
   | 'B38'
   | 'B1'
   | 'B3'
   | 'G9'
   | 'B20'
+  | 'N28+'
   | 'N28';
 
 export type AntennaBandSource = Partial<
@@ -29,6 +45,9 @@ export interface BandCardRow {
 
 export const BAND_CARD_KEY_PREFIX = 'bandcard:';
 export const BAND_CARD_PIXEL_RATIO = 2;
+export const BAND_SEPARATOR_DOT_COLOR = '#1E293B';
+export const BAND_SEPARATOR_DOT_RADIUS = 2.2;
+export const BAND_SEPARATOR_GAP_PX = 14;
 
 const BAND_CARD_FONT =
   '700 21px "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif';
@@ -41,23 +60,29 @@ const SHADOW_PAD_TOP = 4;
 const SHADOW_PAD_BOTTOM = 10;
 const FALLBACK_CHAR_WIDTH = 12.2;
 
-const DIRECT_BAND_CODE_RE = /^(N258|N78|B7|B38|B1|B3|G9|B20|N28)$/i;
+const DIRECT_BAND_CODE_RE =
+  /^(N258|N78|B7\+|B7|B38|B1|B3|G9|B20|N28\+|N28)$/i;
 const FREQ_RANGE_RE =
   /^\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*$/i;
 const SINGLE_FREQ_RE = /^\s*(\d+(?:[.,]\d+)?)\s*(mhz|ghz)?\s*$/i;
 const GENERIC_2600_BUCKET_RE =
   /^\s*(?:2600(?:\.0+)?(?:\s*mhz)?|2[.,]6(?:\d*)?\s*ghz)\s*$/i;
+const GENERIC_700_BUCKET_RE = /^\s*700(?:\.0+)?(?:\s*mhz)?\s*$/i;
+const LITERAL_N28_RE = /^n28$/i;
+const LITERAL_N28_PLUS_RE = /^n28\+$/i;
 const TRAILING_MHZ_RE = /\s*mhz$/i;
 
 const BAND_CODE_SORT_MHZ: Record<BandCode, number> = {
   N258: 26000,
   N78: 3500,
+  'B7+': 2685,
   B7: 2650,
   B38: 2595,
   B1: 2100,
   B3: 1800,
   G9: 900,
   B20: 800,
+  'N28+': 773,
   N28: 700,
 };
 
@@ -138,9 +163,21 @@ export function classifyFrequencyRangeToBandCode(raw: string): BandCode | null {
     return 'N78';
   }
 
-  // 2600 MHz family (2490..2700 MHz): TDD B38 strictly within [2570, 2620] inclusive vs FDD B7
+  // 2600 MHz family (2490..2700 MHz): upper 2680..2690 block B7+, TDD B38 within [2570, 2620], else FDD B7
   if (loMhz >= 2490 && hiMhz <= 2700) {
-    if (isRange && loMhz >= 2570 && hiMhz <= 2620) {
+    if (
+      isRange &&
+      loMhz >= 2679.5 &&
+      loMhz <= 2680.5 &&
+      hiMhz >= 2689.5 &&
+      hiMhz <= 2690.5
+    ) {
+      return 'B7+';
+    }
+    if (
+      (isRange && loMhz >= 2570 && hiMhz <= 2620) ||
+      (!isRange && loMhz > 2570 && hiMhz < 2620 && loMhz !== 2600)
+    ) {
       return 'B38';
     }
     return 'B7';
@@ -166,30 +203,55 @@ export function classifyFrequencyRangeToBandCode(raw: string): BandCode | null {
     return 'B20';
   }
 
-  // 700 MHz (703..788 MHz + nominal 700 MHz)
-  if (loMhz >= 698 && hiMhz <= 788) {
+  // 700 MHz (703..788 MHz + nominal 700 MHz; 30 MHz 758..788 MHz block -> N28+)
+  if (loMhz >= 698 && hiMhz <= 788.5) {
+    if (
+      isRange &&
+      loMhz >= 757.5 &&
+      loMhz <= 758.5 &&
+      hiMhz >= 787.5 &&
+      hiMhz <= 788.5
+    ) {
+      return 'N28+';
+    }
     return 'N28';
   }
 
   return null;
 }
 
-function getBandTokenSortWeightMhz(token: string): number {
-  if (token in BAND_CODE_SORT_MHZ) {
+function getBandTokenSortWeightMhz(
+  token: string,
+  unknownFallback: number,
+): number {
+  if (Object.hasOwn(BAND_CODE_SORT_MHZ, token)) {
     return BAND_CODE_SORT_MHZ[token as BandCode];
   }
-  const span = parseFrequencySpanMhz(token);
+  const classified = classifyFrequencyRangeToBandCode(token);
+  if (classified) {
+    return BAND_CODE_SORT_MHZ[classified];
+  }
+  const span = parseFrequencySpanMhz(token.trim());
   if (span) {
     return (span.loMhz + span.hiMhz) / 2;
   }
-  return Number.NEGATIVE_INFINITY;
+  return unknownFallback;
 }
 
 function compareBandTokensDescending(a: string, b: string): number {
-  const weightA = getBandTokenSortWeightMhz(a);
-  const weightB = getBandTokenSortWeightMhz(b);
+  const weightA = getBandTokenSortWeightMhz(a, Number.NEGATIVE_INFINITY);
+  const weightB = getBandTokenSortWeightMhz(b, Number.NEGATIVE_INFINITY);
   if (weightA !== weightB) {
     return weightB - weightA;
+  }
+  return a.localeCompare(b);
+}
+
+export function compareBandCodesAscending(a: string, b: string): number {
+  const weightA = getBandTokenSortWeightMhz(a, Number.POSITIVE_INFINITY);
+  const weightB = getBandTokenSortWeightMhz(b, Number.POSITIVE_INFINITY);
+  if (weightA !== weightB) {
+    return weightA - weightB;
   }
   return a.localeCompare(b);
 }
@@ -292,6 +354,9 @@ export function extractAntennaBandCodes(
 
   const tokens = new Set<string>();
   let resolved2600FromFreqs = false;
+  let resolved700FromFreqs = false;
+  let hasN28PlusFromFreqs = false;
+  let hasExplicitLiteralN28InBandas = false;
 
   if (frecuencias) {
     for (let i = 0; i < frecuencias.length; i++) {
@@ -300,8 +365,13 @@ export function extractAntennaBandCodes(
       const code = classifyFrequencyRangeToBandCode(rawFreq);
       if (code) {
         tokens.add(code);
-        if (code === 'B7' || code === 'B38') {
+        if (code === 'B7' || code === 'B7+' || code === 'B38') {
           resolved2600FromFreqs = true;
+        } else if (code === 'N28' || code === 'N28+') {
+          resolved700FromFreqs = true;
+          if (code === 'N28+') {
+            hasN28PlusFromFreqs = true;
+          }
         }
       }
     }
@@ -314,8 +384,13 @@ export function extractAntennaBandCodes(
       const code = classifyFrequencyRangeToBandCode(rawFreq);
       if (code) {
         tokens.add(code);
-        if (code === 'B7' || code === 'B38') {
+        if (code === 'B7' || code === 'B7+' || code === 'B38') {
           resolved2600FromFreqs = true;
+        } else if (code === 'N28' || code === 'N28+') {
+          resolved700FromFreqs = true;
+          if (code === 'N28+') {
+            hasN28PlusFromFreqs = true;
+          }
         }
       }
     }
@@ -331,12 +406,26 @@ export function extractAntennaBandCodes(
       if (resolved2600FromFreqs && GENERIC_2600_BUCKET_RE.test(trimmed)) {
         continue;
       }
+      if (resolved700FromFreqs && GENERIC_700_BUCKET_RE.test(trimmed)) {
+        continue;
+      }
+
+      if (LITERAL_N28_RE.test(trimmed)) {
+        hasExplicitLiteralN28InBandas = true;
+      }
 
       const token = formatCompactBandToken(trimmed);
       if (token) {
         tokens.add(token);
+        if (token === 'N28+' && !LITERAL_N28_PLUS_RE.test(trimmed)) {
+          hasN28PlusFromFreqs = true;
+        }
       }
     }
+  }
+
+  if (hasN28PlusFromFreqs && !hasExplicitLiteralN28InBandas) {
+    tokens.delete('N28');
   }
 
   if (tokens.size === 0) {
@@ -423,6 +512,44 @@ export function parseSiteBandCardKey(key: string): BandCardRow[] {
   return rows;
 }
 
+interface MeasuredBandCardRow {
+  row: BandCardRow;
+  tokens: string[];
+  tokenWidths: number[];
+  rowTotalWidth: number;
+}
+
+function measureTokenWidth(
+  ctx: CanvasRenderingContext2D | null,
+  token: string,
+): number {
+  const measured = ctx ? (ctx.measureText(token)?.width ?? 0) : 0;
+  return Number.isFinite(measured) && measured > 0
+    ? Math.ceil(measured)
+    : Math.ceil(token.length * FALLBACK_CHAR_WIDTH);
+}
+
+function drawSeparatorDot(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  ctx.beginPath();
+  if (typeof ctx.arc === 'function') {
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  } else {
+    ctx.moveTo(cx + radius, cy);
+    ctx.quadraticCurveTo(cx + radius, cy + radius, cx, cy + radius);
+    ctx.quadraticCurveTo(cx - radius, cy + radius, cx - radius, cy);
+    ctx.quadraticCurveTo(cx - radius, cy - radius, cx, cy - radius);
+    ctx.quadraticCurveTo(cx + radius, cy - radius, cx + radius, cy);
+  }
+  ctx.closePath();
+  ctx.fillStyle = BAND_SEPARATOR_DOT_COLOR;
+  ctx.fill();
+}
+
 export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
   const canvas =
     typeof document !== 'undefined' ? document.createElement('canvas') : null;
@@ -432,17 +559,31 @@ export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
     ctx.font = BAND_CARD_FONT;
   }
 
+  const measuredRows: MeasuredBandCardRow[] = [];
   let maxTextWidth = 0;
+
   for (let i = 0; i < rows.length; i++) {
-    const text = rows[i].text;
-    const measuredWidth = ctx ? (ctx.measureText(text)?.width ?? 0) : 0;
-    const rowWidth =
-      Number.isFinite(measuredWidth) && measuredWidth > 0
-        ? Math.ceil(measuredWidth)
-        : Math.ceil(text.length * FALLBACK_CHAR_WIDTH);
-    if (rowWidth > maxTextWidth) {
-      maxTextWidth = rowWidth;
+    const row = rows[i];
+    const tokens = row.text.trim().split(/\s+/).filter(Boolean);
+    const tokenWidths: number[] = [];
+    let tokensWidthSum = 0;
+    for (let t = 0; t < tokens.length; t++) {
+      const w = measureTokenWidth(ctx, tokens[t]);
+      tokenWidths.push(w);
+      tokensWidthSum += w;
     }
+    const rowTotalWidth =
+      tokensWidthSum + Math.max(0, tokens.length - 1) * BAND_SEPARATOR_GAP_PX;
+    const roundedRowWidth = Math.ceil(rowTotalWidth);
+    if (roundedRowWidth > maxTextWidth) {
+      maxTextWidth = roundedRowWidth;
+    }
+    measuredRows.push({
+      row,
+      tokens,
+      tokenWidths,
+      rowTotalWidth,
+    });
   }
 
   const boxX = SHADOW_PAD_X;
@@ -477,15 +618,26 @@ export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
   ctx.stroke();
 
   ctx.font = BAND_CARD_FONT;
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
   const centerX = boxX + boxW / 2;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  for (let i = 0; i < measuredRows.length; i++) {
+    const { row, tokens, tokenWidths, rowTotalWidth } = measuredRows[i];
+    let cursorX = centerX - rowTotalWidth / 2;
     const rowY = boxY + PAD_Y + i * LINE_HEIGHT + LINE_HEIGHT / 2;
-    ctx.fillStyle = row.color;
-    ctx.fillText(row.text, centerX, rowY);
+
+    for (let t = 0; t < tokens.length; t++) {
+      ctx.fillStyle = row.color;
+      ctx.fillText(tokens[t], cursorX, rowY);
+      cursorX += tokenWidths[t];
+
+      if (t < tokens.length - 1) {
+        const dotX = cursorX + BAND_SEPARATOR_GAP_PX / 2;
+        drawSeparatorDot(ctx, dotX, rowY, BAND_SEPARATOR_DOT_RADIUS);
+        cursorX += BAND_SEPARATOR_GAP_PX;
+      }
+    }
   }
 
   return ctx.getImageData(0, 0, canvasWidth, canvasHeight);

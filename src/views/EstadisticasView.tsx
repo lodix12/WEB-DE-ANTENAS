@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink, MapPin, Search, X } from 'lucide-react';
 import {
-  normalizeAntennaBandsList,
+  resolveAntennaRfBandCodes,
   useAntenasData,
 } from '../hooks/useAntenasData';
 import { useWorkspace } from '../hooks/useWorkspace';
@@ -36,31 +36,32 @@ function formatDuration(seconds: number): string {
 
 function describeBandRole(band: string): string {
   const normalized = band.trim().toUpperCase();
-  if (normalized.startsWith('26 GHZ') || normalized === '26GHZ') {
-    return '5G NR mmWave (n258 · 26 GHz) · Ultra-alta capacidad milimétrica';
+  switch (normalized) {
+    case 'N28':
+      return '700 MHz FDD (10 MHz) · 5G NR / 4G LTE · Cobertura interior y rural de largo alcance';
+    case 'N28+':
+      return '700 MHz FDD (758–788 MHz · 30 MHz) · Bloque completo N28 de alta capacidad';
+    case 'B20':
+      return '800 MHz FDD · 4G LTE · Cobertura base nacional y penetración en edificios';
+    case 'G9':
+      return '900 MHz FDD (B8 / n8) · 2G / 3G / 4G / 5G DSS · Voz y cobertura extendida';
+    case 'B3':
+      return '1800 MHz FDD (n3) · 4G LTE / 5G DSS · Capacidad media urbana y suburbana';
+    case 'B1':
+      return '2100 MHz FDD (n1) · 4G LTE / 5G DSS · Capacidad multi-portadora';
+    case 'B38':
+      return '2600 MHz TDD (2570–2620 MHz) · 4G LTE TDD · Capacidad dedicada en zonas densas';
+    case 'B7':
+      return '2600 MHz FDD · 4G LTE+ · Alta densidad de tráfico urbano';
+    case 'B7+':
+      return '2600 MHz FDD superior (2680–2690 MHz · 10 MHz) · Portadora adicional de capacidad';
+    case 'N78':
+      return '3500 MHz TDD C-Band (3,4–3,8 GHz) · 5G NR · Ultra-capacidad y baja latencia';
+    case 'N258':
+      return '26 GHz TDD mmWave (n258 · 26 GHz) · 5G NR milimétrico · Ultra-alta capacidad';
+    default:
+      return 'Concesión radioeléctrica declarada en ficha oficial MINETUR';
   }
-  if (normalized.startsWith('700')) {
-    return '5G NR (n28) / LTE B28 · Cobertura interior y rural de largo alcance';
-  }
-  if (normalized.startsWith('800')) {
-    return '4G LTE (B20) · Cobertura base nacional y penetración en edificios';
-  }
-  if (normalized.startsWith('900')) {
-    return '2G / 3G / 4G / 5G DSS (B8/n8) · Voz y cobertura extendida';
-  }
-  if (normalized.startsWith('1800')) {
-    return '4G LTE / 5G DSS (B3/n3) · Capacidad media urbana y suburbana';
-  }
-  if (normalized.startsWith('2100')) {
-    return '4G LTE / 5G DSS (B1/n1) · Capacidad multi-portadora';
-  }
-  if (normalized.startsWith('2600')) {
-    return '4G LTE+ (B7 / B38) · Alta densidad de tráfico urbano';
-  }
-  if (normalized.startsWith('3500')) {
-    return '5G NR C-Band (n78 · 3,4–3,8 GHz) · Ultra-capacidad y baja latencia';
-  }
-  return 'Concesión radioeléctrica declarada en ficha oficial MINETUR';
 }
 
 export function EstadisticasView() {
@@ -137,10 +138,9 @@ export function EstadisticasView() {
     const { antenas } = derived.dataset;
     for (let i = 0; i < antenas.length; i++) {
       const ant = antenas[i];
-      if (!ant.bandas || ant.bandas.length === 0) continue;
-      const normalizedAntBands = normalizeAntennaBandsList(ant.bandas);
-      for (let b = 0; b < normalizedAntBands.length; b++) {
-        const counts = opMapByBand.get(normalizedAntBands[b]);
+      const antBandCodes = resolveAntennaRfBandCodes(ant);
+      for (let b = 0; b < antBandCodes.length; b++) {
+        const counts = opMapByBand.get(antBandCodes[b]);
         if (counts) {
           counts[ant.op] = (counts[ant.op] ?? 0) + 1;
         }
@@ -410,12 +410,12 @@ export function EstadisticasView() {
         <div className="section-block-header">
           <div>
             <h2 id="stats-bands-h2" className="section-h2">
-              Cobertura y Desglose por Banda de Frecuencia
+              Cobertura y Desglose por Bandas
             </h2>
             <p className="section-desc">
               Sincronización incremental desde{' '}
-              <code>detalleEstacion.do</code> (MINETUR) y presencia por banda
-              comercial asignada (700 MHz a 26 GHz).
+              <code>detalleEstacion.do</code> (MINETUR) y presencia nacional por
+              banda radioeléctrica activa (N28 a N258).
             </p>
           </div>
 
@@ -429,11 +429,11 @@ export function EstadisticasView() {
         <div className="spectrum-sync-strip">
           <div className="spectrum-sync-meta">
             <span>
-              <strong>Progreso de sincronización de frecuencias:</strong>{' '}
+              <strong>Progreso de sincronización de bandas:</strong>{' '}
               <span className="mono">
                 {derived.bandsPopulatedCount.toLocaleString('es-ES')}
               </span>{' '}
-              estaciones con ficha de espectro inspeccionada
+              estaciones con ficha de bandas inspeccionada
               {dataset.total > derived.bandsPopulatedCount ? (
                 <>
                   {' '}
@@ -551,8 +551,8 @@ export function EstadisticasView() {
               <code>detalleEstacion.do?emplazamiento=&lt;Gis_ID&gt;</code> en el
               Geoportal MINETUR. En cuanto haya estaciones sincronizadas, aquí
               se mostrará el desglose nacional entre{' '}
-              <span className="mono">700 MHz</span> y{' '}
-              <span className="mono">26 GHz</span>.
+              <span className="mono">N28</span> y{' '}
+              <span className="mono">N258</span>.
             </div>
           )}
         </div>

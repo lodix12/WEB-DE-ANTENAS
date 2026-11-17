@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OPERATOR_META, type AntennaRecord } from '../types/antena';
 import {
+  ALL_BAND_CODES_ASC,
   BAND_CARD_KEY_PREFIX,
   BAND_CARD_PIXEL_RATIO,
+  BAND_SEPARATOR_DOT_COLOR,
+  BAND_SEPARATOR_DOT_RADIUS,
+  BAND_SEPARATOR_GAP_PX,
   buildSiteBandCardKey,
   buildSiteBandCardRows,
   classifyFrequencyRangeToBandCode,
   clearBandCardSpriteCache,
+  compareBandCodesAscending,
   extractAntennaBandCodes,
   formatAntennaBandsCompact,
   formatCompactBandToken,
@@ -42,14 +47,24 @@ interface FillTextCapture {
   shadowBlur: number;
 }
 
+interface ArcCapture {
+  x: number;
+  y: number;
+  radius: number;
+  startAngle: number;
+  endAngle: number;
+}
+
 function createMockCanvasEnvironment(options?: {
   measureWidthPerChar?: number;
   nullContext?: boolean;
+  withoutArc?: boolean;
 }) {
   const measureWidthPerChar = options?.measureWidthPerChar ?? 11.5;
   const fills: FillCapture[] = [];
   const strokes: StrokeCapture[] = [];
   const fillTexts: FillTextCapture[] = [];
+  const arcs: ArcCapture[] = [];
   const pathOps: string[] = [];
 
   let canvasWidth = 0;
@@ -84,7 +99,7 @@ function createMockCanvasEnvironment(options?: {
   let state: CtxState = defaultState();
   const stack: CtxState[] = [];
 
-  const mockCtx = {
+  const mockCtx: Record<string, unknown> = {
     get font() {
       return state.font;
     },
@@ -210,6 +225,21 @@ function createMockCanvasEnvironment(options?: {
     })),
   };
 
+  if (!options?.withoutArc) {
+    mockCtx.arc = vi.fn(
+      (
+        x: number,
+        y: number,
+        radius: number,
+        startAngle: number,
+        endAngle: number,
+      ) => {
+        pathOps.push('arc');
+        arcs.push({ x, y, radius, startAngle, endAngle });
+      },
+    );
+  }
+
   const createElement = vi.fn((tagName: string) => {
     if (tagName !== 'canvas') {
       throw new Error(`Unexpected tag: ${tagName}`);
@@ -246,6 +276,7 @@ function createMockCanvasEnvironment(options?: {
     fills,
     strokes,
     fillTexts,
+    arcs,
     pathOps,
     getCanvasSize: () => ({ width: canvasWidth, height: canvasHeight }),
   };
@@ -272,11 +303,18 @@ afterEach(() => {
 
 describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
   it('maps every standard RF band label and frequency range to its canonical band code', () => {
-    // N28 (700 MHz / 703..788 MHz)
+    // N28 (700 MHz / 703..788 MHz sub-blocks) & N28+ (full 30 MHz 758..788 MHz block)
     expect(classifyFrequencyRangeToBandCode('700 MHz')).toBe('N28');
     expect(classifyFrequencyRangeToBandCode('703.00 - 733.00')).toBe('N28');
-    expect(classifyFrequencyRangeToBandCode('758.00 - 788.00')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('758.00 - 768.00')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('768.00 - 778.00')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('778.00 - 788.00')).toBe('N28');
+    expect(classifyFrequencyRangeToBandCode('758.00 - 788.00')).toBe('N28+');
+    expect(classifyFrequencyRangeToBandCode('758.00 -788.00')).toBe('N28+');
+    expect(classifyFrequencyRangeToBandCode('758-788')).toBe('N28+');
+    expect(classifyFrequencyRangeToBandCode('758 - 788 MHz')).toBe('N28+');
     expect(formatCompactBandToken('700 MHz')).toBe('N28');
+    expect(formatCompactBandToken('758.00 -788.00')).toBe('N28+');
 
     // B20 (800 MHz / 791..862 MHz)
     expect(classifyFrequencyRangeToBandCode('800 MHz')).toBe('B20');
@@ -302,12 +340,16 @@ describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
     expect(classifyFrequencyRangeToBandCode('2110.00 - 2130.00')).toBe('B1');
     expect(formatCompactBandToken('  2100 MHz  ')).toBe('B1');
 
-    // B7 (2600 MHz FDD)
+    // B7 (2600 MHz FDD) & B7+ (2680.00 - 2690.00 upper 10 MHz block)
     expect(classifyFrequencyRangeToBandCode('2600 MHz')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2620.00 - 2640.00')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2660.00 - 2680.00')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2500.00 - 2570.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2680.00 - 2690.00')).toBe('B7+');
+    expect(classifyFrequencyRangeToBandCode('2680-2690')).toBe('B7+');
+    expect(classifyFrequencyRangeToBandCode('2680 - 2690 MHz')).toBe('B7+');
     expect(formatCompactBandToken('2600 MHz')).toBe('B7');
+    expect(formatCompactBandToken('2680.00 - 2690.00')).toBe('B7+');
 
     // N78 (3500 MHz / 3300..3900 MHz)
     expect(classifyFrequencyRangeToBandCode('3500 MHz')).toBe('N78');
@@ -330,18 +372,23 @@ describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
     expect(formatCompactBandToken('26 GHz')).toBe('N258');
   });
 
-  it('enforces exact [2570, 2620] MHz inclusive boundaries for TDD B38 vs FDD B7', () => {
+  it('enforces exact boundaries for TDD B38 ([2570, 2620] MHz), upper FDD B7+ (2680..2690 MHz), and standard FDD B7', () => {
     // Inside [2570, 2620] inclusive -> B38
     expect(classifyFrequencyRangeToBandCode('2570.00 - 2620.00')).toBe('B38');
     expect(classifyFrequencyRangeToBandCode('2575.00 - 2585.00')).toBe('B38');
     expect(classifyFrequencyRangeToBandCode('2575.00 - 2595.00')).toBe('B38');
     expect(classifyFrequencyRangeToBandCode('2595.00 - 2605.00')).toBe('B38');
     expect(classifyFrequencyRangeToBandCode('2605.00 - 2615.00')).toBe('B38');
+    expect(classifyFrequencyRangeToBandCode('2595 MHz')).toBe('B38');
 
-    // Touching 2620 or 2570 but extending outside [2570, 2620] -> B7
+    // Dedicated upper 10 MHz DL block 2680.00 - 2690.00 -> B7+
+    expect(classifyFrequencyRangeToBandCode('2680.00 - 2690.00')).toBe('B7+');
+
+    // Touching 2620 or 2570 or wider 2600 FDD blocks -> B7
     expect(classifyFrequencyRangeToBandCode('2620.00 - 2640.00')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2640.00 - 2660.00')).toBe('B7');
-    expect(classifyFrequencyRangeToBandCode('2680.00 - 2690.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2660.00 - 2680.00')).toBe('B7');
+    expect(classifyFrequencyRangeToBandCode('2660.00 - 2690.00')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2550.00 - 2570.00')).toBe('B7');
     expect(classifyFrequencyRangeToBandCode('2500.00 - 2570.00')).toBe('B7');
 
@@ -352,12 +399,14 @@ describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
   it('normalizes already-formatted band codes case-insensitively and handles unknown/empty strings', () => {
     expect(formatCompactBandToken('n258')).toBe('N258');
     expect(formatCompactBandToken('n78')).toBe('N78');
+    expect(formatCompactBandToken('b7+')).toBe('B7+');
     expect(formatCompactBandToken('b7')).toBe('B7');
     expect(formatCompactBandToken('b38')).toBe('B38');
     expect(formatCompactBandToken('b1')).toBe('B1');
     expect(formatCompactBandToken('b3')).toBe('B3');
     expect(formatCompactBandToken('g9')).toBe('G9');
     expect(formatCompactBandToken('b20')).toBe('B20');
+    expect(formatCompactBandToken('n28+')).toBe('N28+');
     expect(formatCompactBandToken('n28')).toBe('N28');
 
     // Unknown future frequency keeps compact MHz-stripped token
@@ -371,12 +420,12 @@ describe('classifyFrequencyRangeToBandCode & formatCompactBandToken', () => {
   });
 });
 
-describe('extractAntennaBandCodes & formatAntennaBandsCompact', () => {
-  it('sorts all 9 canonical band codes strictly descending: N258 N78 B7 B38 B1 B3 G9 B20 N28', () => {
+describe('extractAntennaBandCodes, formatAntennaBandsCompact & compareBandCodesAscending', () => {
+  it('sorts all 11 canonical band codes strictly descending and ascending', () => {
     expect(
       formatAntennaBandsCompact(
         [
-          '700 MHz',
+          'N28',
           '800 MHz',
           '900 MHz',
           '1800 MHz',
@@ -385,9 +434,61 @@ describe('extractAntennaBandCodes & formatAntennaBandsCompact', () => {
           '3500 MHz',
           '26 MHz',
         ],
-        ['2575.00 - 2595.00', '2660.00 - 2680.00'],
+        [
+          '758.00 - 788.00',
+          '2575.00 - 2595.00',
+          '2660.00 - 2680.00',
+          '2680.00 - 2690.00',
+        ],
       ),
-    ).toBe('N258 N78 B7 B38 B1 B3 G9 B20 N28');
+    ).toBe('N258 N78 B7+ B7 B38 B1 B3 G9 B20 N28+ N28');
+
+    expect(ALL_BAND_CODES_ASC).toEqual([
+      'N28',
+      'N28+',
+      'B20',
+      'G9',
+      'B3',
+      'B1',
+      'B38',
+      'B7',
+      'B7+',
+      'N78',
+      'N258',
+    ]);
+
+    const shuffled = [
+      'N78',
+      'OTRA',
+      'B7+',
+      'N28+',
+      'B3',
+      'N258',
+      'N28',
+      '1500',
+      'B38',
+      'G9',
+      'B7',
+      'ALFA',
+      'B20',
+      'B1',
+    ];
+    expect([...shuffled].sort(compareBandCodesAscending)).toEqual([
+      'N28',
+      'N28+',
+      'B20',
+      'G9',
+      '1500',
+      'B3',
+      'B1',
+      'B38',
+      'B7',
+      'B7+',
+      'N78',
+      'N258',
+      'ALFA',
+      'OTRA',
+    ]);
   });
 
   it('matches real-world Spanish stations (standard 7-band FDD, Vodafone #57833 Getafe, Movistar #3300033 Oviedo)', () => {
@@ -473,7 +574,30 @@ describe('extractAntennaBandCodes & formatAntennaBandsCompact', () => {
     ).toBe('N258 N78 B7 B1 B3 G9 B20 N28');
   });
 
-  it('separates B38-only, B7-only, dual B7+B38, and synthetic 2600 MHz fallback stations accurately', () => {
+  it('separates B7+-only, B38-only, B7-only, dual B7+ & B7, dual B7+B38, and synthetic 2600 MHz fallback stations accurately', () => {
+    // B7+-only station via frecuencias -> ONLY B7+ (must NOT add false B7 from generic "2600 MHz")
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['2600 MHz'],
+        frecuencias: ['2680.00 - 2690.00'],
+      }),
+    ).toEqual(['B7+']);
+
+    // B7+-only station via concesiones -> ONLY B7+
+    expect(
+      extractAntennaBandCodes(['2600 MHz'], undefined, [
+        { ref: 'M M -2680', freq: '2680.00 - 2690.00' },
+      ]),
+    ).toEqual(['B7+']);
+
+    // Dual B7 + B7+ station -> ['B7+', 'B7']
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['2600 MHz'],
+        frecuencias: ['2640.00 - 2660.00', '2680.00 - 2690.00'],
+      }),
+    ).toEqual(['B7+', 'B7']);
+
     // B38-only station via frecuencias -> ONLY B38 (must NOT add false B7 from "2600 MHz")
     expect(
       formatAntennaBandsCompact(['2600 MHz'], ['2595.00 - 2605.00']),
@@ -501,6 +625,44 @@ describe('extractAntennaBandCodes & formatAntennaBandsCompact', () => {
 
     // Synthetic record with only bandas: ['2600 MHz'] -> falls back cleanly to B7
     expect(formatAntennaBandsCompact(['2600 MHz'])).toBe('B7');
+  });
+
+  it('separates 30 MHz N28+ stations from standard N28 and suppresses redundant 700 MHz buckets/sub-slices', () => {
+    // N28+ station with generic "700 MHz" in bandas -> ONLY ['N28+']
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 788.00'],
+      }),
+    ).toEqual(['N28+']);
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['700 MHz'],
+        concesiones: [{ ref: 'M M -758', freq: '758.00 -788.00' }],
+      }),
+    ).toEqual(['N28+']);
+
+    // Merged sub-slice + full 30 MHz block -> ONLY ['N28+']
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00', '758.00 - 788.00'],
+      }),
+    ).toEqual(['N28+']);
+    expect(
+      extractAntennaBandCodes(['758.00 - 768.00', '758.00 - 788.00']),
+    ).toEqual(['N28+']);
+
+    // Standard 10 MHz N28 slices without full 30 MHz block -> ONLY ['N28']
+    expect(
+      extractAntennaBandCodes({
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00', '768.00 - 778.00'],
+      }),
+    ).toEqual(['N28']);
+
+    // Explicit literal 'N28' in bandas alongside N28+ is preserved
+    expect(extractAntennaBandCodes(['N28', 'N28+'])).toEqual(['N28+', 'N28']);
   });
 
   it('deduplicates 26 MHz + 27 MHz (25.70 - 26.70 + 26.70 - 27.10) into a single leading N258', () => {
@@ -739,8 +901,11 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
 });
 
 describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteCache', () => {
-  it('renders High-DPI card with drop shadow, #FFFFFF fill, crisp border, and centered operator-colored rows', () => {
+  it('renders High-DPI card with drop shadow, #FFFFFF fill, crisp border, operator-colored band tokens, and discreet #1E293B mini-dot separators', () => {
     expect(BAND_CARD_PIXEL_RATIO).toBe(2);
+    expect(BAND_SEPARATOR_DOT_COLOR).toBe('#1E293B');
+    expect(BAND_SEPARATOR_DOT_RADIUS).toBe(2.2);
+    expect(BAND_SEPARATOR_GAP_PX).toBe(14);
 
     const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
     const rows: BandCardRow[] = [
@@ -750,30 +915,38 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
 
     const sprite = renderBandCardSprite(rows);
 
-    // Longest row has 17 chars * 12px = 204px -> boxW = 204 + 28 = 232 -> canvasW = 232 + 16 = 248
+    // Row 0: tokens [36, 24, 24, 36, 36] = 156 + 4 * 14 = 212px
+    // Row 1: tokens [36, 24, 36, 24] = 120 + 3 * 14 = 162px
+    // boxW = 212 + 28 = 240 -> canvasW = 240 + 16 = 256
     // 2 rows * 26px + 16px = 68px -> canvasH = 68 + 4 + 10 = 82
-    expect(sprite.width).toBe(248);
+    expect(sprite.width).toBe(256);
     expect(sprite.height).toBe(82);
-    expect(sprite.data).toHaveLength(248 * 82 * 4);
-    expect(env.getCanvasSize()).toEqual({ width: 248, height: 82 });
+    expect(sprite.data).toHaveLength(256 * 82 * 4);
+    expect(env.getCanvasSize()).toEqual({ width: 256, height: 82 });
 
-    // Rounded rect manual quadraticCurveTo path (works without ctx.roundRect)
+    // Rounded rect manual quadraticCurveTo path + arc separator dots
     expect(env.pathOps).toContain('beginPath');
     expect(env.pathOps).toContain('quadraticCurveTo');
+    expect(env.pathOps).toContain('arc');
     expect(env.pathOps).toContain('closePath');
 
-    // Card background fill with soft drop shadow inside save/restore
+    // Card background fill with soft drop shadow inside save/restore, followed by 7 discreet #1E293B separator dots
     expect(env.mockCtx.save).toHaveBeenCalledTimes(1);
     expect(env.mockCtx.restore).toHaveBeenCalledTimes(1);
-    expect(env.fills).toEqual([
-      {
-        fillStyle: '#FFFFFF',
-        shadowColor: 'rgba(15, 23, 42, 0.22)',
-        shadowBlur: 7,
-        shadowOffsetX: 0,
-        shadowOffsetY: 3,
-      },
-    ]);
+    expect(env.fills[0]).toEqual({
+      fillStyle: '#FFFFFF',
+      shadowColor: 'rgba(15, 23, 42, 0.22)',
+      shadowBlur: 7,
+      shadowOffsetX: 0,
+      shadowOffsetY: 3,
+    });
+    expect(env.fills).toHaveLength(1 + 7);
+    for (let d = 1; d < env.fills.length; d++) {
+      expect(env.fills[d]).toMatchObject({
+        fillStyle: '#1E293B',
+        shadowBlur: 0,
+      });
+    }
 
     // Subtle crisp border without shadow bleed
     expect(env.strokes).toEqual([
@@ -784,28 +957,73 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
       },
     ]);
 
-    // Centered bold rows in exact operator colors at 2x coordinates
-    const expectedCenterX = 8 + 232 / 2; // 124
-    expect(env.fillTexts).toHaveLength(2);
+    // Centered rows drawn left-to-right token-by-token in exact operator colors
+    const row0Y = 4 + 8 + 13; // 25
+    const row1Y = 4 + 8 + 26 + 13; // 51
+    expect(env.fillTexts).toHaveLength(9);
+    expect(env.fillTexts.slice(0, 5).map((t) => [t.text, t.x, t.y, t.fillStyle])).toEqual([
+      ['N78', 22, row0Y, '#0066CC'],
+      ['B7', 72, row0Y, '#0066CC'],
+      ['B3', 110, row0Y, '#0066CC'],
+      ['B20', 148, row0Y, '#0066CC'],
+      ['N28', 198, row0Y, '#0066CC'],
+    ]);
     expect(env.fillTexts[0]).toMatchObject({
-      text: 'N78 B7 B3 B20 N28',
-      x: expectedCenterX,
-      y: 4 + 8 + 13,
-      fillStyle: '#0066CC',
-      textAlign: 'center',
+      textAlign: 'left',
       textBaseline: 'middle',
       shadowBlur: 0,
     });
     expect(env.fillTexts[0].font).toContain('700 21px');
-    expect(env.fillTexts[1]).toMatchObject({
-      text: 'N78 B7 B38 B3',
-      x: expectedCenterX,
-      y: 4 + 8 + 26 + 13,
-      fillStyle: '#7C3AED',
-      textAlign: 'center',
-      textBaseline: 'middle',
-      shadowBlur: 0,
+
+    expect(env.fillTexts.slice(5).map((t) => [t.text, t.x, t.y, t.fillStyle])).toEqual([
+      ['N78', 47, row1Y, '#7C3AED'],
+      ['B7', 97, row1Y, '#7C3AED'],
+      ['B38', 135, row1Y, '#7C3AED'],
+      ['B3', 185, row1Y, '#7C3AED'],
+    ]);
+
+    // 4 separator dots on row 0 and 3 separator dots on row 1, centered in each 14px gap
+    expect(env.arcs).toHaveLength(7);
+    expect(env.arcs.map((a) => [a.x, a.y, a.radius])).toEqual([
+      [65, row0Y, 2.2],
+      [103, row0Y, 2.2],
+      [141, row0Y, 2.2],
+      [191, row0Y, 2.2],
+      [90, row1Y, 2.2],
+      [128, row1Y, 2.2],
+      [178, row1Y, 2.2],
+    ]);
+  });
+
+  it('draws 0 separator dots for single-band rows, keeps B7+ and N28+ intact, and falls back to quadratic curves without ctx.arc', () => {
+    const singleEnv = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
+    renderBandCardSprite([{ op: 'vodafone', color: '#E60000', text: 'N28+' }]);
+    expect(singleEnv.fillTexts).toHaveLength(1);
+    expect(singleEnv.fillTexts[0].text).toBe('N28+');
+    expect(singleEnv.arcs).toHaveLength(0);
+    // Only the card background fill (no separator dot fills)
+    expect(singleEnv.fills).toHaveLength(1);
+
+    const noArcEnv = createMockCanvasEnvironment({
+      measureWidthPerChar: 12,
+      withoutArc: true,
     });
+    renderBandCardSprite([
+      { op: 'orange', color: '#EA580C', text: 'N78 B7+ B7 N28+' },
+    ]);
+    expect(noArcEnv.fillTexts.map((t) => t.text)).toEqual([
+      'N78',
+      'B7+',
+      'B7',
+      'N28+',
+    ]);
+    // 1 card fill + 3 #1E293B dot fills drawn via quadraticCurveTo fallback
+    expect(noArcEnv.fills).toHaveLength(4);
+    expect(noArcEnv.fills.slice(1).map((f) => f.fillStyle)).toEqual([
+      '#1E293B',
+      '#1E293B',
+      '#1E293B',
+    ]);
   });
 
   it('uses deterministic fallback width when getContext("2d") is null or measureText returns 0', () => {
@@ -814,17 +1032,17 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
       { op: 'orange', color: '#EA580C', text: 'N78 B38 B3 N28' },
     ];
     const fallbackSprite = renderBandCardSprite(row);
-    // 14 chars * 12.2 = 170.8 -> ceil = 171 -> boxW = 199 -> canvasW = 215
+    // Token widths: [37, 37, 25, 37] = 136 + 3 * 14 = 178 -> boxW = 206 -> canvasW = 222
     // 1 row * 26 + 16 = 42 -> canvasH = 42 + 14 = 56
-    expect(fallbackSprite.width).toBe(215);
+    expect(fallbackSprite.width).toBe(222);
     expect(fallbackSprite.height).toBe(56);
-    expect(nullCtxEnv.getCanvasSize()).toEqual({ width: 215, height: 56 });
+    expect(nullCtxEnv.getCanvasSize()).toEqual({ width: 222, height: 56 });
 
     const zeroMeasureEnv = createMockCanvasEnvironment({
       measureWidthPerChar: 0,
     });
     const zeroMeasureSprite = renderBandCardSprite(row);
-    expect(zeroMeasureSprite.width).toBe(215);
+    expect(zeroMeasureSprite.width).toBe(222);
     expect(zeroMeasureSprite.height).toBe(56);
     expect(zeroMeasureEnv.fillTexts[0]?.fillStyle).toBe('#EA580C');
 
@@ -832,15 +1050,15 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     vi.stubGlobal('document', undefined);
     vi.stubGlobal('ImageData', undefined);
     const headlessSprite = renderBandCardSprite(row);
-    expect(headlessSprite.width).toBe(215);
+    expect(headlessSprite.width).toBe(222);
     expect(headlessSprite.height).toBe(56);
     expect(headlessSprite.data).toBeInstanceOf(Uint8ClampedArray);
-    expect(headlessSprite.data).toHaveLength(215 * 56 * 4);
+    expect(headlessSprite.data).toHaveLength(222 * 56 * 4);
   });
 
   it('caches sprites by key and re-renders after clearBandCardSpriteCache()', () => {
     const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
-    const key = 'bandcard:vodafone:N78 B7 B38 B1 B3 G9 B20 N28';
+    const key = 'bandcard:vodafone:N78 B7+ B7 B38 B1 B3 G9 B20 N28+';
 
     const first = getOrCreateBandCardSprite(key);
     expect(first).not.toBeNull();

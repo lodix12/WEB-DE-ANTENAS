@@ -6,7 +6,10 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import type { DerivedAntenasStructures } from '../../hooks/useAntenasData';
+import {
+  bandCodeToDomId,
+  type DerivedAntenasStructures,
+} from '../../hooks/useAntenasData';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
@@ -217,7 +220,7 @@ export function FilterPanel({
                   onCloseMobile();
                 }
               }}
-              placeholder="Municipio, calle, Gis_ID, 3500 MHz o 40.4168, -3.7038"
+              placeholder="Municipio, calle, Gis_ID, B3, N78 o 40.4168, -3.7038"
               autoComplete="off"
             />
             {searchQuery && (
@@ -373,7 +376,7 @@ export function FilterPanel({
           <section className="panel-section">
             <div className="field-label">
               <span>
-                Frecuencias
+                Bandas
                 {selectedBands.length > 0 ? ` · ${selectedBands.length}` : ''}
               </span>
               {selectedBands.length > 0 && (
@@ -391,7 +394,7 @@ export function FilterPanel({
             <div
               className="band-pills-grid"
               role="group"
-              aria-label="Filtrar por bandas de frecuencia"
+              aria-label="Filtrar por bandas"
             >
               {derived.availableBands.map((item) => {
                 const isSelected = selectedBands.includes(item.band);
@@ -399,7 +402,7 @@ export function FilterPanel({
                   <button
                     key={item.band}
                     type="button"
-                    id={`filter-band-${item.band.replace(/\s+/g, '-').toLowerCase()}`}
+                    id={bandCodeToDomId(item.band)}
                     className={`band-filter-pill ${
                       isSelected ? 'is-active' : ''
                     }`}
@@ -432,8 +435,8 @@ export function FilterPanel({
                 <span className="bands-exclusive-title">Exclusivamente</span>
                 <span className="bands-exclusive-hint">
                   {exclusiveBands
-                    ? 'Solo antenas con exactamente las frecuencias marcadas (ni más ni menos)'
-                    : 'Por defecto: antenas con al menos 1 de las frecuencias marcadas'}
+                    ? 'Solo antenas con exactamente las bandas marcadas (ni más ni menos)'
+                    : 'Por defecto: antenas con al menos 1 de las bandas marcadas'}
                 </span>
               </span>
             </label>
