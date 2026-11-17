@@ -599,8 +599,8 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
     expect(parseSiteBandCardKey(digiKey)).toEqual(digiRows);
   });
 
-  it('orders multi-operator < 35 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
-    // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~10 m (< 35 m)
+  it('orders multi-operator < 30 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
+    // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~10 m (< 30 m)
     const rawAntennas: AntennaRecord[] = [
       makeAntenna({
         id: 'VOD-1',
@@ -638,7 +638,7 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
       }),
     ];
 
-    const sites = groupColocatedAntennasForMap(rawAntennas, 35);
+    const sites = groupColocatedAntennasForMap(rawAntennas);
     expect(sites).toHaveLength(1);
     expect(sites[0].isMultiOperator).toBe(true);
 

@@ -23,6 +23,7 @@ import {
   getOrCreateBandCardSprite,
 } from '../../utils/bandCard';
 import {
+  MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   SPAIN_REGION_PRESETS,
   formatDistance,
   groupColocatedAntennasForMap,
@@ -449,7 +450,7 @@ function buildPopupHtml(
 
     return `
       <div class="map-popup-head">
-        <span class="map-popup-shared-badge">Emplazamiento compartido (&lt; 35 m)</span>
+        <span class="map-popup-shared-badge">Emplazamiento compartido (&lt; ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)</span>
         <span class="map-popup-gid">${opCount} oper.</span>
       </div>
       <div class="map-popup-multi-list">${pillsHtml}</div>
@@ -609,7 +610,7 @@ export function AntenasMap(props: AntenasMapProps) {
     [styleId],
   );
 
-  // Agrupación espacial en memoria (< 35 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
+  // Agrupación espacial en memoria (< 30 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
   // hacia geometrías puntuales para el motor WebGL de MapLibre GL JS
   const { antenasGeoJson, antenasById, sitesById, multiIconKeys } =
     useMemo(() => {
@@ -621,7 +622,10 @@ export function AntenasMap(props: AntenasMapProps) {
         }
       }
 
-      const groupedSites = groupColocatedAntennasForMap(antenas, 35);
+      const groupedSites = groupColocatedAntennasForMap(
+        antenas,
+        MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
+      );
       const bySiteId = new Map<string, MapSiteEntry>();
       const iconKeys = new Set<string>();
       const features: Feature<Point, AntennaFeatureProperties>[] = [];
@@ -1465,7 +1469,7 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 35 m o círculo individual)
+      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 30 m o círculo individual)
       if (unclusteredLayers.length > 0) {
         const stationFeatures = map.queryRenderedFeatures(event.point, {
           layers: unclusteredLayers,

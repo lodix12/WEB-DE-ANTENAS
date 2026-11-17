@@ -17,6 +17,7 @@ import {
   type AntennaRecord,
 } from '../../types/antena';
 import {
+  MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   findNearestAntennas,
   groupColocatedAntennasForMap,
 } from '../../utils/geo';
@@ -89,7 +90,10 @@ export function StationDetailDrawer({
     )
       ? nearby
       : [antenna, ...nearby];
-    const sites = groupColocatedAntennasForMap(candidates, 35);
+    const sites = groupColocatedAntennasForMap(
+      candidates,
+      MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
+    );
     return (
       sites.find(
         (site) =>
@@ -194,16 +198,16 @@ export function StationDetailDrawer({
       </div>
 
       <div className="drawer-body">
-        {/* Operadores integrados en el mismo icono multicolor (< 35 m) */}
+        {/* Operadores integrados en el mismo icono multicolor (< 30 m) */}
         {integratedSite && (
           <section
             className="integrated-operators-card"
-            aria-label="Operadores integrados en este icono (< 35 m)"
+            aria-label={`Operadores integrados en este icono (< ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)`}
           >
             <div className="integrated-operators-head">
               <span className="integrated-operators-title">
                 <Layers size={13} aria-hidden="true" />
-                <span>Operadores integrados en este icono (&lt; 35 m)</span>
+                <span>Operadores integrados en este icono (&lt; {MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)</span>
               </span>
               <span className="colocation-count-pill">
                 {integratedSite.operators.length} oper.
