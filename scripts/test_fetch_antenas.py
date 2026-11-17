@@ -1446,7 +1446,9 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 <h2>CARACTERISTICAS TÉCNICAS</h2>
                 <table class="tablaDetalleEstacionNivelesMedidos">
                     <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2208888</td><td>2620.00 - 2640.00</td></tr>
                     <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M M -2209999</td><td>758.00 - 768.00</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>OR-SHARED</td><td>832.00 - 842.00</td></tr>
                 </table>
             """,
             "0800999": """
@@ -1500,12 +1502,22 @@ class FetchAntenasUnitTests(unittest.TestCase):
         )
         enricher.enrich_dataset(day2_dataset)
 
-        # Solo 1 novedad de frecuencia: 3460.00 - 3600.00 MHz en Movistar 2800006.
+        # Novedades de frecuencia emitidas:
+        # - Antenas nuevas (2800007 con 2 frecuencias de Movistar ignorando OR-SHARED, y 0800999 con 1 de DIGI)
+        #   SÍ emiten sus frecuencias escaneadas del operador.
+        # - Movistar 2800006 existente emite solo su nueva frecuencia 3460.00 - 3600.00 MHz.
         # - Orange 4600111 (fría sin escaneo previo) NO genera falsos positivos.
-        # - Antenas nuevas (2800007, 0800999) NO duplican filas de frecuencia.
         # - Vodafone fusionada (V-800 ya conocida en 0144693) NO genera novedad falsa.
-        self.assertEqual(len(enricher.discovered_novedades), 1)
-        freq_nov = enricher.discovered_novedades[0]
+        self.assertEqual(len(enricher.discovered_novedades), 4)
+        discovered_codes = {n["codigo"] for n in enricher.discovered_novedades}
+        self.assertEqual(discovered_codes, {"2800007", "0800999", "2800006"})
+        self.assertNotIn("4600111", discovered_codes)
+        self.assertNotIn("0144693", discovered_codes)
+        self.assertNotIn("144693", discovered_codes)
+
+        freq_nov = next(
+            n for n in enricher.discovered_novedades if n["codigo"] == "2800006"
+        )
         self.assertEqual(freq_nov["tipo"], "frecuencia")
         self.assertEqual(freq_nov["op"], "movistar")
         self.assertEqual(freq_nov["opRaw"], "TELEFONICA MOVILES ESPAÑA, S.A.U.")
@@ -1527,12 +1539,26 @@ class FetchAntenasUnitTests(unittest.TestCase):
             is_baseline_scan=False,
         )
         self.assertFalse(nov_dataset["isBaselineScan"])
-        self.assertEqual(nov_dataset["total"], 3)
+        self.assertEqual(nov_dataset["total"], 6)
         self.assertEqual(nov_dataset["antenasNuevas"], 2)
-        self.assertEqual(nov_dataset["frecuenciasNuevas"], 1)
+        self.assertEqual(nov_dataset["frecuenciasNuevas"], 4)
         self.assertEqual(nov_dataset["previousScanAt"], "2026-11-15T17:30:00Z")
-        # La frecuencia escaneada a las 17:14Z es más reciente que el crawl de las 17:02Z -> va primera
-        self.assertEqual(nov_dataset["novedades"][0]["tipo"], "frecuencia")
+        # Orden agrupado: cada antena nueva seguida inmediatamente de sus frecuencias asociadas (ordenadas por MHz),
+        # y al final las frecuencias nuevas de antenas ya existentes (Movistar 2800006).
+        self.assertEqual(
+            [
+                (n["tipo"], n["codigo"], n["frecuencia"])
+                for n in nov_dataset["novedades"]
+            ],
+            [
+                ("antena", "0800999", ""),
+                ("frecuencia", "0800999", "1845.10 - 1855.10 MHz"),
+                ("antena", "2800007", ""),
+                ("frecuencia", "2800007", "758.00 - 768.00 MHz"),
+                ("frecuencia", "2800007", "2620.00 - 2640.00 MHz"),
+                ("frecuencia", "2800006", "3460.00 - 3600.00 MHz"),
+            ],
+        )
 
     def test_skip_novedades_produces_empty_baseline_in_reset_and_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1879,8 +1905,16 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(fetched_order, ["9000001", "9000002", "9000003"])
             nov_doc_1 = json.loads(nov_path.read_text(encoding="utf-8"))
             self.assertEqual(nov_doc_1["antenasNuevas"], 1)
-            self.assertEqual(nov_doc_1["frecuenciasNuevas"], 1)  # OR-NEW-3
-            self.assertEqual(nov_doc_1["total"], 2)
+            self.assertEqual(nov_doc_1["frecuenciasNuevas"], 2)  # DG-1 (de nueva 9000001) + OR-NEW-3
+            self.assertEqual(nov_doc_1["total"], 3)
+            self.assertEqual(
+                [(n["tipo"], n["codigo"]) for n in nov_doc_1["novedades"]],
+                [
+                    ("antena", "9000001"),
+                    ("frecuencia", "9000001"),
+                    ("frecuencia", "9000003"),
+                ],
+            )
 
             # Parte 2 (append, max_band_requests=3): solo queda pendiente 9000004 (9000005 ya >= rescan_since)
             nov_writer_2, seeded_2 = fa._prepare_novedades_writer(
@@ -1916,11 +1950,18 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(nov_doc_2["previousScanAt"], "2026-11-15T17:00:00Z")
             self.assertFalse(nov_doc_2["isBaselineScan"])
             self.assertEqual(nov_doc_2["antenasNuevas"], 1)
-            self.assertEqual(nov_doc_2["frecuenciasNuevas"], 2)  # OR-NEW-3 + OR-NEW-4
-            self.assertEqual(nov_doc_2["total"], 3)
             self.assertEqual(
-                [n["codigo"] for n in nov_doc_2["novedades"]],
-                ["9000004", "9000003", "9000001"],
+                nov_doc_2["frecuenciasNuevas"], 3
+            )  # DG-1 (de nueva 9000001) + OR-NEW-3 + OR-NEW-4
+            self.assertEqual(nov_doc_2["total"], 4)
+            self.assertEqual(
+                [(n["tipo"], n["codigo"]) for n in nov_doc_2["novedades"]],
+                [
+                    ("antena", "9000001"),
+                    ("frecuencia", "9000001"),
+                    ("frecuencia", "9000004"),
+                    ("frecuencia", "9000003"),
+                ],
             )
 
     def test_main_full_crawl_cli_end_to_end_novedades_and_skip_novedades(self) -> None:
@@ -2040,7 +2081,8 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(nov_base["novedades"], [])
 
             # 2) Siguiente escaneo diario 18:00 (sin --skip-novedades):
-            # detecta antena nueva DIGI 0800777 + frecuencia nueva 3460.00 - 3600.00 MHz en Movistar 2800006
+            # detecta antena nueva DIGI 0800777 seguida de su frecuencia asociada 1845.10 - 1855.10 MHz,
+            # y después la frecuencia nueva 3460.00 - 3600.00 MHz en Movistar 2800006 existente.
             with (
                 mock.patch(
                     "urllib.request.urlopen",
@@ -2073,23 +2115,31 @@ class FetchAntenasUnitTests(unittest.TestCase):
             nov_daily = json.loads(nov_path.read_text(encoding="utf-8"))
             self.assertFalse(nov_daily["isBaselineScan"])
             self.assertEqual(nov_daily["scanId"], "daily-1800")
-            self.assertEqual(nov_daily["total"], 2)
+            self.assertEqual(nov_daily["total"], 3)
             self.assertEqual(nov_daily["antenasNuevas"], 1)
-            self.assertEqual(nov_daily["frecuenciasNuevas"], 1)
+            self.assertEqual(nov_daily["frecuenciasNuevas"], 2)
 
-            by_tipo = {n["tipo"]: n for n in nov_daily["novedades"]}
-            self.assertEqual(by_tipo["antena"]["codigo"], "0800777")
-            self.assertEqual(by_tipo["antena"]["ubicacion"], "BARCELONA")
-            self.assertEqual(by_tipo["antena"]["codigoBanda"], "")
-            self.assertEqual(by_tipo["antena"]["frecuencia"], "")
-            self.assertEqual(by_tipo["frecuencia"]["codigo"], "2800006")
-            self.assertEqual(by_tipo["frecuencia"]["codigoBanda"], "M M -2205199")
-            self.assertEqual(
-                by_tipo["frecuencia"]["frecuencia"], "3460.00 - 3600.00 MHz"
-            )
-            self.assertEqual(by_tipo["frecuencia"]["ubicacion"], "MADRID")
+            items = nov_daily["novedades"]
+            self.assertEqual(len(items), 3)
+            self.assertEqual(items[0]["tipo"], "antena")
+            self.assertEqual(items[0]["codigo"], "0800777")
+            self.assertEqual(items[0]["ubicacion"], "BARCELONA")
+            self.assertEqual(items[0]["codigoBanda"], "")
+            self.assertEqual(items[0]["frecuencia"], "")
+
+            self.assertEqual(items[1]["tipo"], "frecuencia")
+            self.assertEqual(items[1]["codigo"], "0800777")
+            self.assertEqual(items[1]["codigoBanda"], "M M -2602235")
+            self.assertEqual(items[1]["frecuencia"], "1845.10 - 1855.10 MHz")
+            self.assertEqual(items[1]["ubicacion"], "BARCELONA")
+
+            self.assertEqual(items[2]["tipo"], "frecuencia")
+            self.assertEqual(items[2]["codigo"], "2800006")
+            self.assertEqual(items[2]["codigoBanda"], "M M -2205199")
+            self.assertEqual(items[2]["frecuencia"], "3460.00 - 3600.00 MHz")
+            self.assertEqual(items[2]["ubicacion"], "MADRID")
             self.assertRegex(
-                by_tipo["frecuencia"]["fecha"],
+                items[2]["fecha"],
                 r"^\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}$",
             )
 
@@ -2760,14 +2810,24 @@ class FetchAntenasUnitTests(unittest.TestCase):
                     """
                     return _FakeResp(html.encode("iso-8859-1"))
 
-                html_voda = """
+                if "emplazamiento=0144693" in url:
+                    html_voda_3500 = """
+                        <h2>CARACTERISTICAS TÉCNICAS</h2>
+                        <table>
+                            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                            <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-3500</td><td>3600.00 - 3690.00</td></tr>
+                        </table>
+                    """
+                    return _FakeResp(html_voda_3500.encode("iso-8859-1"))
+
+                html_voda_800 = """
                     <h2>CARACTERISTICAS TÉCNICAS</h2>
                     <table>
                         <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
-                        <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-700</td><td>768.00 - 778.00</td></tr>
+                        <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-800</td><td>842.00 - 852.00</td></tr>
                     </table>
                 """
-                return _FakeResp(html_voda.encode("iso-8859-1"))
+                return _FakeResp(html_voda_800.encode("iso-8859-1"))
 
             return _urlopen
 
@@ -2956,9 +3016,214 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertGreater(st_p2["deltaSeq"], seq_after_p1)
             self.assertEqual(st_p2["liveNewAntennasCount"], 1)
             self.assertEqual(st_p2["liveUpdatedAntennasCount"], 2)
-            self.assertEqual(st_p2["liveNovedadesCount"], 2)
+            # 1 antena nueva Vodafone + sus 2 frecuencias asociadas + 1 frecuencia nueva en Movistar 2800006 existente = 4
+            self.assertEqual(st_p2["liveNovedadesCount"], 4)
             final_ds = json.loads(ant_path.read_text(encoding="utf-8"))
             self.assertEqual(st_p2["completedDatasetUpdatedAt"], final_ds["updatedAt"])
+
+            nov_p2 = json.loads(nov_path.read_text(encoding="utf-8"))
+            self.assertEqual(nov_p2["total"], 4)
+            self.assertEqual(nov_p2["antenasNuevas"], 1)
+            self.assertEqual(nov_p2["frecuenciasNuevas"], 3)
+            self.assertEqual(
+                [
+                    (n["tipo"], n["op"], n["codigo"], n["frecuencia"])
+                    for n in nov_p2["novedades"]
+                ],
+                [
+                    ("antena", "vodafone", "144693", ""),
+                    ("frecuencia", "vodafone", "144693", "842.00 - 852.00 MHz"),
+                    ("frecuencia", "vodafone", "144693", "3600.00 - 3690.00 MHz"),
+                    ("frecuencia", "movistar", "2800006", "3460.00 - 3600.00 MHz"),
+                ],
+            )
+
+    def test_sort_novedades_grouped_interleaves_each_new_antenna_with_its_frequencies_before_existing(
+        self,
+    ) -> None:
+        scrambled: list[dict[str, object]] = [
+            # Frecuencias de antenas ya existentes (incluso con marca temporal más reciente que las nuevas)
+            {
+                "id": "freq:EXIST-1:M2:3460.00 - 3600.00",
+                "tipo": "frecuencia",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "codigo": "4100500",
+                "antennaId": "EXIST-1",
+                "codigoBanda": "M2",
+                "frecuencia": "3460.00 - 3600.00 MHz",
+                "ubicacion": "SEVILLA",
+                "prov": "SEVILLA",
+                "scannedAt": "2026-11-16T18:25:00Z",
+                "fecha": "16/11/2026 19:25:00",
+            },
+            {
+                "id": "freq:EXIST-2:OR1:1805.10 - 1825.10",
+                "tipo": "frecuencia",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "codigo": "4600600",
+                "antennaId": "",  # Prueba respaldo de clave op::codigo cuando antennaId está vacío
+                "codigoBanda": "OR1",
+                "frecuencia": "1805.10 - 1825.10 MHz",
+                "ubicacion": "VALENCIA",
+                "prov": "VALENCIA",
+                "scannedAt": "2026-11-16T18:20:00Z",
+                "fecha": "16/11/2026 19:20:00",
+            },
+            {
+                "id": "freq:EXIST-1:M1:935.10 - 949.90",
+                "tipo": "frecuencia",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "codigo": "4100500",
+                "antennaId": "EXIST-1",
+                "codigoBanda": "M1",
+                "frecuencia": "935.10 - 949.90 MHz",
+                "ubicacion": "SEVILLA",
+                "prov": "SEVILLA",
+                "scannedAt": "2026-11-16T18:25:00Z",
+                "fecha": "16/11/2026 19:25:00",
+            },
+            # Frecuencias desordenadas de Antena Nueva A (incluye 26 GHz para verificar * 1000 MHz)
+            {
+                "id": "freq:NEW-A:D3:26.50 - 27.50 GHz",
+                "tipo": "frecuencia",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800100",
+                "antennaId": "NEW-A",
+                "codigoBanda": "D3",
+                "frecuencia": "26.50 - 27.50 GHz",
+                "ubicacion": "BARCELONA",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T18:10:00Z",
+                "fecha": "16/11/2026 19:10:00",
+            },
+            {
+                "id": "freq:NEW-B:V2:3600.00 - 3690.00",
+                "tipo": "frecuencia",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "codigo": "2800200",
+                "antennaId": "NEW-B",
+                "codigoBanda": "V2",
+                "frecuencia": "3600.00 - 3690.00 MHz",
+                "ubicacion": "MADRID",
+                "prov": "MADRID",
+                "scannedAt": "2026-11-16T18:08:00Z",
+                "fecha": "16/11/2026 19:08:00",
+            },
+            # Antena Nueva B (escaneada a las 18:01Z -> va después de Antena Nueva A de las 18:05Z)
+            {
+                "id": "ant:NEW-B",
+                "tipo": "antena",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "codigo": "2800200",
+                "antennaId": "NEW-B",
+                "codigoBanda": "",
+                "frecuencia": "",
+                "ubicacion": "MADRID",
+                "prov": "MADRID",
+                "scannedAt": "2026-11-16T18:01:00Z",
+                "fecha": "16/11/2026 19:01:00",
+            },
+            {
+                "id": "freq:NEW-A:D2:3420.00 - 3460.00",
+                "tipo": "frecuencia",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800100",
+                "antennaId": "NEW-A",
+                "codigoBanda": "D2",
+                "frecuencia": "3420.00 - 3460.00 MHz",
+                "ubicacion": "BARCELONA",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T18:10:00Z",
+                "fecha": "16/11/2026 19:10:00",
+            },
+            # Duplicado previo de NEW-A que debe deduplicarse conservando la última copia
+            {
+                "id": "ant:NEW-A",
+                "tipo": "antena",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800100",
+                "antennaId": "NEW-A",
+                "codigoBanda": "",
+                "frecuencia": "",
+                "ubicacion": "ANTIGUO",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T18:00:00Z",
+                "fecha": "16/11/2026 19:00:00",
+            },
+            {
+                "id": "freq:NEW-B:V1:758.00 - 768.00",
+                "tipo": "frecuencia",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "codigo": "2800200",
+                "antennaId": "NEW-B",
+                "codigoBanda": "V1",
+                "frecuencia": "758.00 - 768.00 MHz",
+                "ubicacion": "MADRID",
+                "prov": "MADRID",
+                "scannedAt": "2026-11-16T18:08:00Z",
+                "fecha": "16/11/2026 19:08:00",
+            },
+            {
+                "id": "freq:NEW-A:D1:1845.10 - 1855.10",
+                "tipo": "frecuencia",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800100",
+                "antennaId": "NEW-A",
+                "codigoBanda": "D1",
+                "frecuencia": "1845.10 - 1855.10 MHz",
+                "ubicacion": "BARCELONA",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T18:10:00Z",
+                "fecha": "16/11/2026 19:10:00",
+            },
+            # Copia final de Antena Nueva A (18:05Z -> primera antena nueva)
+            {
+                "id": "ant:NEW-A",
+                "tipo": "antena",
+                "op": "digi",
+                "opRaw": "DS MOBILE NETWORKS, S.L.",
+                "codigo": "0800100",
+                "antennaId": "NEW-A",
+                "codigoBanda": "",
+                "frecuencia": "",
+                "ubicacion": "BARCELONA",
+                "prov": "BARCELONA",
+                "scannedAt": "2026-11-16T18:05:00Z",
+                "fecha": "16/11/2026 19:05:00",
+            },
+        ]
+
+        ordered = fa.sort_novedades_grouped(scrambled)  # type: ignore[arg-type]
+        self.assertEqual(len(ordered), 10)
+        self.assertEqual(ordered[0]["ubicacion"], "BARCELONA")
+        self.assertEqual(
+            [(item["id"], item["tipo"], item["frecuencia"]) for item in ordered],
+            [
+                # 1) Antena Nueva A + sus 3 frecuencias ordenadas por MHz (1800 -> 3500 -> 26 GHz)
+                ("ant:NEW-A", "antena", ""),
+                ("freq:NEW-A:D1:1845.10 - 1855.10", "frecuencia", "1845.10 - 1855.10 MHz"),
+                ("freq:NEW-A:D2:3420.00 - 3460.00", "frecuencia", "3420.00 - 3460.00 MHz"),
+                ("freq:NEW-A:D3:26.50 - 27.50 GHz", "frecuencia", "26.50 - 27.50 GHz"),
+                # 2) Antena Nueva B + sus 2 frecuencias ordenadas por MHz (700 -> 3500)
+                ("ant:NEW-B", "antena", ""),
+                ("freq:NEW-B:V1:758.00 - 768.00", "frecuencia", "758.00 - 768.00 MHz"),
+                ("freq:NEW-B:V2:3600.00 - 3690.00", "frecuencia", "3600.00 - 3690.00 MHz"),
+                # 3) Antenas ya existentes agrupadas (EXIST-1 a las 18:25Z antes que EXIST-2 a las 18:20Z)
+                ("freq:EXIST-1:M1:935.10 - 949.90", "frecuencia", "935.10 - 949.90 MHz"),
+                ("freq:EXIST-1:M2:3460.00 - 3600.00", "frecuencia", "3460.00 - 3600.00 MHz"),
+                ("freq:EXIST-2:OR1:1805.10 - 1825.10", "frecuencia", "1805.10 - 1825.10 MHz"),
+            ],
+        )
 
     def test_publish_scan_status_git_tree_push_blob_cache_finalize_and_restore(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

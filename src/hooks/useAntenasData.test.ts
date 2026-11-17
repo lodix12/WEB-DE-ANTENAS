@@ -23,6 +23,7 @@ import {
   type AntennaRecord,
   type AntenasDataset,
   type LiveScanDeltaChunk,
+  type NovedadRecord,
   type NovedadesDataset,
   type OperatorKey,
   type ScanStatusPayload,
@@ -34,7 +35,10 @@ import {
   normalizeSearchText,
   parseCoordinateInput,
 } from '../utils/export';
-import { groupColocatedAntennasForMap } from '../utils/geo';
+import {
+  MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
+  groupColocatedAntennasForMap,
+} from '../utils/geo';
 import { EstadisticasView } from '../views/EstadisticasView';
 import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
@@ -59,12 +63,16 @@ import {
   classifyFrequencyBandMhz,
   filterNovedades,
   formatScanDateTimeDmyHms,
+  getNovedadAntennaGroupKey,
   getOperatorRowBackground,
   importNovedadesJsonDataset,
   isValidNovedadesPageSize,
   mergeLiveDeltaIntoNovedadesDataset,
+  orderNovedadesGroupedByNewAntenna,
   paginateNovedades,
   parseCustomNovedadesJson,
+  splitFrequencyRangeLines,
+  splitScanDateTimeLines,
 } from './useNovedadesData';
 import {
   accumulateLiveDeltaChunks,
@@ -2994,9 +3002,9 @@ describe('Streaming de deltas en tiempo real (parseLiveScanDeltaChunk, accumulat
     expect(mergedDaily.frecuenciasNuevas).toBe(2);
     expect(mergedDaily.total).toBe(3);
     expect(mergedDaily.novedades.map((n) => n.id)).toEqual([
+      'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
       'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -1100800::801.00 - 811.00 MHz',
       'freq::TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001::M M -2205199::3460.00 - 3600.00 MHz',
-      'antena::DIGI SPAIN TELECOM, S.L.U. - 2808801',
     ]);
 
     // Escaneo forzado de línea base (recordNovedades === false): deja NovedadesDataset intacto (misma referencia)
@@ -4937,7 +4945,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
     expect(clusterCountLayerBlock).not.toMatch(/['"]k['"]/i);
   });
 
-  it('evaluateClusterCountLabel devuelve cadenas enteras exactas hasta la unidad con stationSum (incluyendo emplazamientos < 35 m) y con fallback a point_count', () => {
+  it('evaluateClusterCountLabel devuelve cadenas enteras exactas hasta la unidad con stationSum (incluyendo emplazamientos < 30 m) y con fallback a point_count', () => {
     const exactUnitCounts = [2, 49, 999, 1000, 1247, 5893, 15482, 62238];
 
     for (const exactCount of exactUnitCounts) {
@@ -4958,7 +4966,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       expect(fallbackPointCount).toBe(String(exactCount));
     }
 
-    // Caso representativo de emplazamientos compartidos (< 35 m) donde stationSum > point_count
+    // Caso representativo de emplazamientos compartidos (< 30 m) donde stationSum > point_count
     expect(
       AntenasMapModule.evaluateClusterCountLabel({
         stationSum: 1247,
@@ -4985,7 +4993,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
     ).toBe('0');
   });
 
-  it('groupColocatedAntennasForMap conserva la suma exacta de antenas hasta la unidad (stationCount) en datasets mixtos con emplazamientos compartidos < 35 m y estaciones individuales', () => {
+  it('groupColocatedAntennasForMap conserva la suma exacta de antenas hasta la unidad (stationCount) en datasets mixtos con emplazamientos compartidos < 30 m y estaciones individuales', () => {
     const makeStation = (
       id: string,
       gid: string,
@@ -5006,7 +5014,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
 
     const mixedAntenas: AntennaRecord[] = [];
 
-    // 1. 120 emplazamientos tri-operador (< 35 m: ~9 m de separación) => 360 antenas reales en 120 puntos GeoJSON
+    // 1. 120 emplazamientos tri-operador (< 30 m: ~9 m de separación) => 360 antenas reales en 120 puntos GeoJSON
     for (let i = 0; i < 120; i++) {
       const baseLat = 40.0 + i * 0.01;
       const baseLon = -3.9 + (i % 10) * 0.01;
@@ -5029,7 +5037,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       );
     }
 
-    // 2. 24 emplazamientos bi-operador (< 35 m: ~7 m de separación) => 48 antenas reales en 24 puntos GeoJSON
+    // 2. 24 emplazamientos bi-operador (< 30 m: ~7 m de separación) => 48 antenas reales en 24 puntos GeoJSON
     for (let i = 0; i < 24; i++) {
       const baseLat = 41.5 + i * 0.01;
       const baseLon = 2.0 + (i % 8) * 0.01;
@@ -5045,7 +5053,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       );
     }
 
-    // 3. Pareja de Telefónica/Movistar a < 35 m (~11 m): NUNCA se fusionan entre sí => 2 antenas en 2 puntos
+    // 3. Pareja de Telefónica/Movistar a < 30 m (~11 m): NUNCA se fusionan entre sí => 2 antenas en 2 puntos
     mixedAntenas.push(
       makeStation('MOV-PAIR-A', '460001', 'movistar', 39.4699, -0.3763),
       makeStation('MOV-PAIR-B', '460002', 'movistar', 39.47, -0.3763),
@@ -5070,7 +5078,10 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
 
     expect(mixedAntenas).toHaveLength(1247);
 
-    const groupedSites = groupColocatedAntennasForMap(mixedAntenas, 35);
+    const groupedSites = groupColocatedAntennasForMap(
+      mixedAntenas,
+      MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
+    );
     expect(groupedSites).toHaveLength(983);
 
     const multiOpSites = groupedSites.filter((s) => s.isMultiOperator);
@@ -5164,6 +5175,490 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
   });
 });
 
+describe('Tabla Novedades compacta, frecuencia inicio/fin en dos líneas, divisores verticales y agrupación antena nueva + frecuencias', () => {
+  it('splitFrequencyRangeLines y splitScanDateTimeLines dividen rangos MHz/GHz y fecha/hora en dos líneas compactas', () => {
+    expect(splitFrequencyRangeLines('3460.00 - 3600.00 MHz')).toEqual({
+      start: '3460.00 MHz',
+      end: '3600.00 MHz',
+    });
 
+    expect(splitFrequencyRangeLines('26.50 - 27.50 GHz')).toEqual({
+      start: '26.50 GHz',
+      end: '27.50 GHz',
+    });
+
+    expect(splitFrequencyRangeLines('26.50 – 27.50 ghz')).toEqual({
+      start: '26.50 GHz',
+      end: '27.50 GHz',
+    });
+
+    expect(splitFrequencyRangeLines('758.00 - 768.00')).toEqual({
+      start: '758.00 MHz',
+      end: '768.00 MHz',
+    });
+
+    expect(splitFrequencyRangeLines('26 GHz')).toEqual({
+      start: '26 GHz',
+      end: null,
+    });
+
+    expect(splitFrequencyRangeLines('')).toEqual({
+      start: '—',
+      end: null,
+    });
+    expect(splitFrequencyRangeLines('   ')).toEqual({
+      start: '—',
+      end: null,
+    });
+
+    expect(splitScanDateTimeLines('15/11/2026 18:04:27')).toEqual({
+      datePart: '15/11/2026',
+      timePart: '18:04:27',
+    });
+    expect(splitScanDateTimeLines('15/11/2026')).toEqual({
+      datePart: '15/11/2026',
+      timePart: null,
+    });
+    expect(splitScanDateTimeLines('')).toEqual({
+      datePart: '—',
+      timePart: null,
+    });
+
+    expect(
+      getNovedadAntennaGroupKey({
+        antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809001',
+        op: 'digi',
+        codigo: '2809001',
+      }),
+    ).toBe('DIGI SPAIN TELECOM, S.L.U. - 2809001');
+    expect(
+      getNovedadAntennaGroupKey({
+        antennaId: '   ',
+        op: 'digi',
+        codigo: '2809001',
+      }),
+    ).toBe('digi::2809001');
+  });
+
+  it('orderNovedadesGroupedByNewAntenna intercala cada antena nueva seguida inmediatamente por sus frecuencias asociadas y deja al final las frecuencias de antenas ya existentes', () => {
+    const scrambledInput: NovedadRecord[] = [
+      // Frecuencia de antena existente (Vodafone) puesta primero en la entrada desordenada
+      {
+        id: 'freq::VOD-EXIST-0800100::3500',
+        tipo: 'frecuencia',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        codigo: '0800100',
+        antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800100',
+        codigoBanda: 'B-VOD-3500',
+        frecuencia: '3710.00 - 3800.00 MHz',
+        ubicacion: 'BARCELONA',
+        prov: 'BARCELONA',
+        scannedAt: '2026-11-16T18:09:00Z',
+        fecha: '16/11/2026 19:09:00',
+      },
+      // Antena nueva 2 (Orange, escaneada antes que Antena nueva 1)
+      {
+        id: 'antena::ORA-NEW-4600200',
+        tipo: 'antena',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        codigo: '4600200',
+        antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600200',
+        codigoBanda: '',
+        frecuencia: '',
+        ubicacion: 'VALENCIA',
+        prov: 'VALENCIA',
+        scannedAt: '2026-11-16T18:03:00Z',
+        fecha: '16/11/2026 19:03:00',
+      },
+      // Antena nueva 1 (DIGI, más reciente)
+      {
+        id: 'antena::DIGI-NEW-2809500',
+        tipo: 'antena',
+        op: 'digi',
+        opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+        codigo: '2809500',
+        antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809500',
+        codigoBanda: '',
+        frecuencia: '',
+        ubicacion: 'MADRID',
+        prov: 'MADRID',
+        scannedAt: '2026-11-16T18:06:00Z',
+        fecha: '16/11/2026 19:06:00',
+      },
+      // Frecuencias asociadas a Antena nueva 1 en orden inverso de banda (2600 antes de 1800)
+      {
+        id: 'freq::DIGI-NEW-2809500::2600',
+        tipo: 'frecuencia',
+        op: 'digi',
+        opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+        codigo: '2809500',
+        antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809500',
+        codigoBanda: 'DG-2600',
+        frecuencia: '2620.00 - 2640.00 MHz',
+        ubicacion: 'MADRID',
+        prov: 'MADRID',
+        scannedAt: '2026-11-16T18:06:02Z',
+        fecha: '16/11/2026 19:06:02',
+      },
+      // Frecuencia de otra antena existente (Movistar)
+      {
+        id: 'freq::MOV-EXIST-2800001::700',
+        tipo: 'frecuencia',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        codigo: '2800001',
+        antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+        codigoBanda: 'M-700',
+        frecuencia: '758.00 - 768.00 MHz',
+        ubicacion: 'MADRID',
+        prov: 'MADRID',
+        scannedAt: '2026-11-16T18:08:00Z',
+        fecha: '16/11/2026 19:08:00',
+      },
+      // Frecuencias asociadas a Antena nueva 2 (26 GHz y 800 MHz mezcladas)
+      {
+        id: 'freq::ORA-NEW-4600200::26GHZ',
+        tipo: 'frecuencia',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        codigo: '4600200',
+        antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600200',
+        codigoBanda: 'OR-26G',
+        frecuencia: '26.50 - 27.50 GHz',
+        ubicacion: 'VALENCIA',
+        prov: 'VALENCIA',
+        scannedAt: '2026-11-16T18:03:05Z',
+        fecha: '16/11/2026 19:03:05',
+      },
+      {
+        id: 'freq::DIGI-NEW-2809500::1800',
+        tipo: 'frecuencia',
+        op: 'digi',
+        opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+        codigo: '2809500',
+        antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809500',
+        codigoBanda: 'DG-1800',
+        frecuencia: '1805.00 - 1825.00 MHz',
+        ubicacion: 'MADRID',
+        prov: 'MADRID',
+        scannedAt: '2026-11-16T18:06:01Z',
+        fecha: '16/11/2026 19:06:01',
+      },
+      {
+        id: 'freq::ORA-NEW-4600200::800',
+        tipo: 'frecuencia',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        codigo: '4600200',
+        antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600200',
+        codigoBanda: 'OR-800',
+        frecuencia: '791.00 - 801.00 MHz',
+        ubicacion: 'VALENCIA',
+        prov: 'VALENCIA',
+        scannedAt: '2026-11-16T18:03:04Z',
+        fecha: '16/11/2026 19:03:04',
+      },
+      //Segunda frecuencia de la antena existente Vodafone (700 MHz debe ir antes de 3500 MHz dentro del grupo Vodafone)
+      {
+        id: 'freq::VOD-EXIST-0800100::700',
+        tipo: 'frecuencia',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        codigo: '0800100',
+        antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800100',
+        codigoBanda: 'B-VOD-700',
+        frecuencia: '768.00 - 778.00 MHz',
+        ubicacion: 'BARCELONA',
+        prov: 'BARCELONA',
+        scannedAt: '2026-11-16T18:08:50Z',
+        fecha: '16/11/2026 19:08:50',
+      },
+    ];
+
+    const expectedIds = [
+      // Antena nueva 1 + sus frecuencias asociadas en orden ascendente de MHz
+      'antena::DIGI-NEW-2809500',
+      'freq::DIGI-NEW-2809500::1800',
+      'freq::DIGI-NEW-2809500::2600',
+      // Antena nueva 2 + sus frecuencias asociadas en orden ascendente (800 MHz -> 26.50 GHz)
+      'antena::ORA-NEW-4600200',
+      'freq::ORA-NEW-4600200::800',
+      'freq::ORA-NEW-4600200::26GHZ',
+      // Después todas las frecuencias nuevas de antenas ya existentes agrupadas por antena
+      'freq::VOD-EXIST-0800100::700',
+      'freq::VOD-EXIST-0800100::3500',
+      'freq::MOV-EXIST-2800001::700',
+    ];
+
+    const ordered = orderNovedadesGroupedByNewAntenna(scrambledInput);
+    expect(ordered.map((r) => r.id)).toEqual(expectedIds);
+
+    const parsedDataset = parseCustomNovedadesJson({
+      updatedAt: '2026-11-16T18:10:00Z',
+      scanId: 'daily-2026-11-16',
+      previousScanAt: '2026-11-15T18:10:00Z',
+      isBaselineScan: false,
+      total: scrambledInput.length,
+      antenasNuevas: 2,
+      frecuenciasNuevas: 7,
+      novedades: scrambledInput,
+    });
+    expect(parsedDataset.novedades.map((r) => r.id)).toEqual(expectedIds);
+  });
+
+  it('renderiza en SSR frecuencias apiladas inicio/fin, orden agrupado antena+frecuencias y CSS compacto con líneas verticales entre columnas', async () => {
+    const dataset: NovedadesDataset = {
+      updatedAt: '2026-11-16T18:10:00Z',
+      scanId: 'daily-2026-11-16',
+      previousScanAt: '2026-11-15T18:10:00Z',
+      isBaselineScan: false,
+      total: 4,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 3,
+      // Entrada deliberadamente desordenada: primero todas las antenas o frecuencias sueltas
+      novedades: [
+        {
+          id: 'freq::MOV-EXIST-2800001::3500',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T18:09:00Z',
+          fecha: '16/11/2026 19:09:00',
+        },
+        {
+          id: 'antena::DIGI-NEW-2809991',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T18:04:11Z',
+          fecha: '16/11/2026 19:04:11',
+        },
+        {
+          id: 'freq::DIGI-NEW-2809991::2600',
+          tipo: 'frecuencia',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: 'DG-2600',
+          frecuencia: '2620.00 - 2640.00 MHz',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T18:04:13Z',
+          fecha: '16/11/2026 19:04:13',
+        },
+        {
+          id: 'freq::DIGI-NEW-2809991::1800',
+          tipo: 'frecuencia',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: 'DG-1800',
+          frecuencia: '1805.00 - 1825.00 MHz',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-16T18:04:12Z',
+          fecha: '16/11/2026 19:04:12',
+        },
+      ],
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['novedades-dataset'], dataset);
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      component: () => createElement('div', null, 'Mapa'),
+    });
+    const testNov = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await testRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: testRouter }),
+      ),
+    );
+
+    // 1. Frecuencias en dos líneas: inicio arriba (.novedades-freq-start) y final abajo (.novedades-freq-end)
+    expect(html).toContain(
+      '<span class="novedades-freq-line novedades-freq-start">3460.00 MHz</span>',
+    );
+    expect(html).toContain(
+      '<span class="novedades-freq-line novedades-freq-end">3600.00 MHz</span>',
+    );
+    expect(html).toContain(
+      '<span class="novedades-freq-line novedades-freq-start">1805.00 MHz</span>',
+    );
+    expect(html).toContain(
+      '<span class="novedades-freq-line novedades-freq-end">1825.00 MHz</span>',
+    );
+    expect(html).toContain('<span class="novedades-date-day">16/11/2026</span>');
+    expect(html).toContain('<span class="novedades-date-time">19:09:00</span>');
+
+    // 2. Orden exacto de filas en el DOM de #novedades-table:
+    //    Fila 1: Antena nueva DIGI (2809991)
+    //    Fila 2: Frecuencia asociada DIGI 1800 MHz (.is-associated-freq)
+    //    Fila 3: Frecuencia asociada DIGI 2600 MHz (.is-associated-freq)
+    //    Fila 4: Frecuencia de antena existente Movistar 3500 MHz (sin .is-associated-freq)
+    const rowMatches = Array.from(
+      html.matchAll(/<tr\b[^>]*class="([^"]*novedades-row[^"]*)"[^>]*>([\s\S]*?)<\/tr>/g),
+    );
+    expect(rowMatches).toHaveLength(4);
+    expect(rowMatches[0]?.[1]).toBe('novedades-row');
+    expect(rowMatches[0]?.[2]).toContain('Antena nueva');
+    expect(rowMatches[0]?.[2]).toContain('2809991');
+
+    expect(rowMatches[1]?.[1]).toContain('is-associated-freq');
+    expect(rowMatches[1]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[1]?.[2]).toContain('DG-1800');
+
+    expect(rowMatches[2]?.[1]).toContain('is-associated-freq');
+    expect(rowMatches[2]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[2]?.[2]).toContain('DG-2600');
+
+    expect(rowMatches[3]?.[1]).toBe('novedades-row');
+    expect(rowMatches[3]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[3]?.[2]).toContain('M M -2205199');
+
+    // 3. Verificación CSS: anchura compacta min-width: 540px y líneas verticales separadoras entre columnas
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table\s*\{[^}]*min-width:\s*540px;/,
+    );
+    expect(indexCssSource).not.toMatch(
+      /\.novedades-table\s*\{[^}]*min-width:\s*880px;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table thead th:not\(:last-child\)\s*\{[^}]*border-right:\s*1px solid/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table tbody td:not\(:last-child\)\s*\{[^}]*border-right:\s*1px solid/,
+    );
+    expect(indexCssSource).toMatch(
+      /\[data-theme='dark'\]\s+\.novedades-table tbody td:not\(:last-child\)\s*\{[^}]*border-right-color:/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-freq-stack\s*\{[^}]*flex-direction:\s*column;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-cell-novedad\s*\{[^}]*flex-direction:\s*column;/,
+    );
+  });
+});
+
+describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 30 m)', () => {
+  it('fija MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS en 30 m en AntenasMap y StationDetailDrawer (fusionando a ~28 m y separando a ~32 m)', () => {
+    expect(MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS).toBe(30);
+    expect(antenasMapRawSource).toMatch(
+      /groupColocatedAntennasForMap\(\s*antenas,\s*MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,?\s*\)/,
+    );
+    expect(antenasMapRawSource).not.toMatch(
+      /groupColocatedAntennasForMap\(\s*antenas,\s*35\b/,
+    );
+    expect(antenasMapRawSource).toContain(
+      'Emplazamiento compartido (&lt; ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)',
+    );
+
+    const baseLat = 40.4168;
+    const baseLon = -3.7038;
+    const movistarBase: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2807701',
+      gid: '2807701',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: baseLat,
+      lon: baseLon,
+      dir: 'C/ Gran Vía, 28',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const orange28m: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - 2807702',
+      gid: '2807702',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: baseLat + 0.000252, // ~28.0 m (< 30 m)
+      lon: baseLon,
+      dir: 'C/ Gran Vía, 28',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+    const digi32m: AntennaRecord = {
+      id: 'DIGI SPAIN TELECOM, S.L.U. - 2807703',
+      gid: '2807703',
+      op: 'digi',
+      opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+      lat: baseLat + 0.000288, // ~32.0 m (>= 30 m, antes < 35 m)
+      lon: baseLon,
+      dir: 'C/ Gran Vía, 30',
+      mun: 'Madrid',
+      prov: 'Madrid',
+    };
+
+    const htmlUnder30m = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: movistarBase,
+        allAntenas: [movistarBase, orange28m],
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(htmlUnder30m).toContain('integrated-operators-card');
+    expect(htmlUnder30m).toContain(
+      'Operadores integrados en este icono (&lt; 30 m)',
+    );
+    expect(htmlUnder30m).not.toContain(
+      'Operadores integrados en este icono (&lt; 35 m)',
+    );
+
+    const htmlOver30m = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: movistarBase,
+        allAntenas: [movistarBase, digi32m],
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(htmlOver30m).not.toContain('integrated-operators-card');
+  });
+});
 
 

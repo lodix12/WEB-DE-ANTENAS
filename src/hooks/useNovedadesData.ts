@@ -175,7 +175,12 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
     }
   }
 
-  return raw as unknown as NovedadesDataset;
+  return {
+    ...(raw as unknown as NovedadesDataset),
+    novedades: orderNovedadesGroupedByNewAntenna(
+      (raw as { novedades: NovedadRecord[] }).novedades,
+    ),
+  };
 }
 
 /**
@@ -502,26 +507,272 @@ function pickLatestNovedadesIso(baseIso: string, deltaIso: string): string {
   return deltaIso >= baseIso ? deltaIso : baseIso;
 }
 
-function deduplicateAndSortNovedades(
+function normalizeFreqUnit(rawUnit: string): 'MHz' | 'GHz' {
+  return rawUnit.toLowerCase() === 'ghz' ? 'GHz' : 'MHz';
+}
+
+/**
+ * Divide un rango de frecuencias en dos líneas compactas (frecuencia inicial arriba
+ * y frecuencia final abajo) conservando la unidad en cada extremo para reducir la
+ * anchura horizontal de la columna "Frecuencia".
+ */
+export function splitFrequencyRangeLines(frecuencia: string): {
+  start: string;
+  end: string | null;
+} {
+  const trimmed = frecuencia.trim();
+  if (!trimmed) {
+    return { start: '—', end: null };
+  }
+
+  const rangeMatch = trimmed.match(
+    /^(.+?)\s*[-–]\s*(.+?)(?:\s+(MHz|GHz))?$/i,
+  );
+  if (!rangeMatch) {
+    return { start: trimmed, end: null };
+  }
+
+  const rawStart = rangeMatch[1].trim();
+  const rawEnd = rangeMatch[2].trim();
+  const trailingUnit = rangeMatch[3];
+
+  const startWithUnit = rawStart.match(
+    /^(\d+(?:[.,]\d+)?)(?:\s*(MHz|GHz))?$/i,
+  );
+  const endWithUnit = rawEnd.match(
+    /^(\d+(?:[.,]\d+)?)(?:\s*(MHz|GHz))?$/i,
+  );
+
+  if (!startWithUnit || !endWithUnit) {
+    return { start: trimmed, end: null };
+  }
+
+  const startNum = startWithUnit[1];
+  const endNum = endWithUnit[1];
+  const detectedUnit = trailingUnit || endWithUnit[2] || startWithUnit[2];
+  const endUnit = detectedUnit ? normalizeFreqUnit(detectedUnit) : 'MHz';
+  const startUnit = startWithUnit[2]
+    ? normalizeFreqUnit(startWithUnit[2])
+    : endUnit;
+
+  return {
+    start: `${startNum} ${startUnit}`,
+    end: `${endNum} ${endUnit}`,
+  };
+}
+
+/**
+ * Divide una fecha formateada ("DD/MM/YYYY HH:MM:SS") en línea de fecha y línea
+ * de hora para reducir la anchura horizontal de la columna "Fecha".
+ */
+export function splitScanDateTimeLines(formattedFecha: string): {
+  datePart: string;
+  timePart: string | null;
+} {
+  const trimmed = formattedFecha.trim();
+  if (!trimmed) {
+    return { datePart: '—', timePart: null };
+  }
+  const spaceIdx = trimmed.indexOf(' ');
+  if (spaceIdx > 0) {
+    const datePart = trimmed.slice(0, spaceIdx).trim();
+    const timePart = trimmed.slice(spaceIdx + 1).trim();
+    return {
+      datePart: datePart || '—',
+      timePart: timePart || null,
+    };
+  }
+  return { datePart: trimmed, timePart: null };
+}
+
+/**
+ * Devuelve la clave estable de agrupación por antena de una novedad para vincular
+ * cada antena nueva con todas sus frecuencias escaneadas asociadas.
+ */
+export function getNovedadAntennaGroupKey(
+  row: Pick<NovedadRecord, 'antennaId' | 'op' | 'codigo'>,
+): string {
+  return row.antennaId.trim() || `${row.op}::${row.codigo.trim()}`;
+}
+
+function safeScanTimestampMs(scannedAt: string): number {
+  const ms = Date.parse(scannedAt);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function parseFreqSortTuple(freqText: string): [number, number] {
+  if (!freqText) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const trimmed = freqText.trim();
+  if (!trimmed) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const matches = trimmed.match(/\d+(?:[.,]\d+)?/g);
+  if (!matches || matches.length === 0) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const nums = matches
+    .map((n) => Number.parseFloat(n.replace(',', '.')))
+    .filter((n) => Number.isFinite(n));
+  if (nums.length === 0) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const first = nums[0];
+  const second = nums[1] ?? first;
+  const lo = Math.min(first, second);
+  const hi = Math.max(first, second);
+  const isGhz =
+    /^2[67](?:[.,]\d+)?\s*[mg]hz$/i.test(trimmed) ||
+    (lo >= 24 && hi <= 29.5) ||
+    (/ghz/i.test(trimmed) && lo < 100);
+  const scale = isGhz ? 1000 : 1;
+  return [lo * scale, hi * scale];
+}
+
+function compareFrequencyRows(a: NovedadRecord, b: NovedadRecord): number {
+  const tupleA = parseFreqSortTuple(a.frecuencia);
+  const tupleB = parseFreqSortTuple(b.frecuencia);
+  if (tupleA[0] !== tupleB[0]) {
+    return tupleA[0] < tupleB[0] ? -1 : 1;
+  }
+  if (tupleA[1] !== tupleB[1]) {
+    return tupleA[1] < tupleB[1] ? -1 : 1;
+  }
+  const cmpBand = a.codigoBanda.localeCompare(b.codigoBanda, 'es');
+  if (cmpBand !== 0) return cmpBand;
+  return a.id.localeCompare(b.id, 'es');
+}
+
+/**
+ * Ordena las novedades agrupando cada antena nueva inmediatamente seguida por todas
+ * las frecuencias asociadas a esa antena del operador, y situando después todas las
+ * frecuencias nuevas pertenecientes a antenas ya existentes.
+ */
+export function orderNovedadesGroupedByNewAntenna(
   rows: readonly NovedadRecord[],
 ): NovedadRecord[] {
   const seenIds = new Set<string>();
-  const unique: NovedadRecord[] = [];
+  const newAntennas: NovedadRecord[] = [];
+  const frequencies: NovedadRecord[] = [];
+
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    if (!seenIds.has(row.id)) {
-      seenIds.add(row.id);
-      unique.push(row);
+    if (seenIds.has(row.id)) continue;
+    seenIds.add(row.id);
+    if (row.tipo === 'antena') {
+      newAntennas.push(row);
+    } else {
+      frequencies.push(row);
     }
   }
-  unique.sort((a, b) => {
-    const msA = Date.parse(a.scannedAt);
-    const msB = Date.parse(b.scannedAt);
-    const safeA = Number.isFinite(msA) ? msA : 0;
-    const safeB = Number.isFinite(msB) ? msB : 0;
-    return safeB - safeA;
+
+  newAntennas.sort((a, b) => {
+    const msDiff =
+      safeScanTimestampMs(b.scannedAt) - safeScanTimestampMs(a.scannedAt);
+    if (msDiff !== 0) return msDiff;
+    const cmpCodigo = a.codigo.localeCompare(b.codigo, 'es');
+    if (cmpCodigo !== 0) return cmpCodigo;
+    const cmpOp = a.op.localeCompare(b.op, 'es');
+    if (cmpOp !== 0) return cmpOp;
+    const cmpKey = getNovedadAntennaGroupKey(a).localeCompare(
+      getNovedadAntennaGroupKey(b),
+      'es',
+    );
+    if (cmpKey !== 0) return cmpKey;
+    return a.id.localeCompare(b.id, 'es');
   });
-  return unique;
+
+  const newAntennaKeys = new Set<string>();
+  for (let i = 0; i < newAntennas.length; i++) {
+    newAntennaKeys.add(getNovedadAntennaGroupKey(newAntennas[i]));
+  }
+
+  const associatedFreqsByAntKey = new Map<string, NovedadRecord[]>();
+  const existingAntFreqsByKey = new Map<string, NovedadRecord[]>();
+
+  for (let i = 0; i < frequencies.length; i++) {
+    const freq = frequencies[i];
+    const key = getNovedadAntennaGroupKey(freq);
+    const targetMap = newAntennaKeys.has(key)
+      ? associatedFreqsByAntKey
+      : existingAntFreqsByKey;
+    const list = targetMap.get(key);
+    if (list) {
+      list.push(freq);
+    } else {
+      targetMap.set(key, [freq]);
+    }
+  }
+
+  const ordered: NovedadRecord[] = [];
+
+  // Bloque 1: cada antena nueva seguida inmediatamente por sus frecuencias asociadas
+  for (let i = 0; i < newAntennas.length; i++) {
+    const ant = newAntennas[i];
+    ordered.push(ant);
+    const key = getNovedadAntennaGroupKey(ant);
+    const assocFreqs = associatedFreqsByAntKey.get(key);
+    if (assocFreqs) {
+      associatedFreqsByAntKey.delete(key);
+      assocFreqs.sort(compareFrequencyRows);
+      for (let j = 0; j < assocFreqs.length; j++) {
+        ordered.push(assocFreqs[j]);
+      }
+    }
+  }
+
+  // Bloque 2: frecuencias nuevas de antenas ya existentes agrupadas por antena
+  const existingGroups: {
+    groupKey: string;
+    maxScannedAtMs: number;
+    codigo: string;
+    op: string;
+    items: NovedadRecord[];
+  }[] = [];
+
+  for (const [groupKey, items] of existingAntFreqsByKey.entries()) {
+    let maxScannedAtMs = 0;
+    for (let i = 0; i < items.length; i++) {
+      const ms = safeScanTimestampMs(items[i].scannedAt);
+      if (ms > maxScannedAtMs) {
+        maxScannedAtMs = ms;
+      }
+    }
+    items.sort(compareFrequencyRows);
+    existingGroups.push({
+      groupKey,
+      maxScannedAtMs,
+      codigo: items[0].codigo,
+      op: items[0].op,
+      items,
+    });
+  }
+
+  existingGroups.sort((a, b) => {
+    const msDiff = b.maxScannedAtMs - a.maxScannedAtMs;
+    if (msDiff !== 0) return msDiff;
+    const cmpCodigo = a.codigo.localeCompare(b.codigo, 'es');
+    if (cmpCodigo !== 0) return cmpCodigo;
+    const cmpOp = a.op.localeCompare(b.op, 'es');
+    if (cmpOp !== 0) return cmpOp;
+    return a.groupKey.localeCompare(b.groupKey, 'es');
+  });
+
+  for (let i = 0; i < existingGroups.length; i++) {
+    const groupItems = existingGroups[i].items;
+    for (let j = 0; j < groupItems.length; j++) {
+      ordered.push(groupItems[j]);
+    }
+  }
+
+  return ordered;
+}
+
+function deduplicateAndSortNovedades(
+  rows: readonly NovedadRecord[],
+): NovedadRecord[] {
+  return orderNovedadesGroupedByNewAntenna(rows);
 }
 
 /**

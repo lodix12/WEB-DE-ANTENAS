@@ -2314,6 +2314,58 @@ def _extract_record_ranges_for_gid(
     return [(float(e["minMhz"]), float(e["maxMhz"])) for e in matched]
 
 
+_NOVEDAD_FREQ_RANGE_RE = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*(?:MHz|GHz)?\s*-\s*(\d+(?:\.\d+)?)(?:\s*(?:MHz|GHz))?$",
+    re.IGNORECASE,
+)
+_NOVEDAD_SINGLE_FREQ_RE = re.compile(
+    r"^(\d+(?:\.\d+)?)(?:\s*(?:MHz|GHz))?$",
+    re.IGNORECASE,
+)
+
+
+def _novedad_antenna_group_key(item: dict[str, Any]) -> str:
+    return (
+        str(item.get("antennaId") or "").strip()
+        or f"{str(item.get('op') or '').strip()}::{str(item.get('codigo') or '').strip()}"
+    )
+
+
+def _novedad_freq_sort_key(item: dict[str, Any]) -> tuple[float, float, str, str]:
+    raw_freq = " ".join(str(item.get("frecuencia") or "").split()).strip()
+    min_mhz = float("inf")
+    max_mhz = float("inf")
+    if raw_freq:
+        m = _NOVEDAD_FREQ_RANGE_RE.match(raw_freq)
+        if m:
+            lo = float(m.group(1))
+            hi = float(m.group(2))
+        else:
+            m_single = _NOVEDAD_SINGLE_FREQ_RE.match(raw_freq)
+            if m_single:
+                lo = hi = float(m_single.group(1))
+            else:
+                lo = hi = float("inf")
+
+        if math.isfinite(lo) and math.isfinite(hi):
+            if lo > hi:
+                lo, hi = hi, lo
+            has_ghz = "GHZ" in raw_freq.upper()
+            if (has_ghz and lo < 100.0 and hi < 100.0) or (
+                24.0 <= lo <= 29.5 and 24.0 <= hi <= 29.5
+            ):
+                lo *= 1000.0
+                hi *= 1000.0
+            min_mhz, max_mhz = lo, hi
+
+    return (
+        min_mhz,
+        max_mhz,
+        str(item.get("codigoBanda") or ""),
+        str(item.get("id") or ""),
+    )
+
+
 def _diff_record_new_frequencies(
     rec: dict[str, Any],
     matched_entries: list[dict[str, Any]],
@@ -2322,15 +2374,65 @@ def _diff_record_new_frequencies(
     prior_index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Detecta concesiones/frecuencias nuevas en una antena existente que YA contaba con
-    un escaneo previo de frecuencias (`concesiones` o `frecuencias` no nulos).
-    Nunca emite falsos positivos para antenas nuevas ni para antenas antiguas aún sin escanear.
+    Emite filas de concesión/frecuencia (`tipo == "frecuencia"`):
+    - Si `rec` es una antena nueva descubierta en este escaneo (`rec["id"] in new_antenna_ids`),
+      emite todas las frecuencias válidas del operador asociadas a esa antena nueva.
+    - Si `rec` es una antena existente, detecta únicamente concesiones/frecuencias nuevas cuando
+      YA contaba con un escaneo previo (`concesiones` o `frecuencias` no nulos), sin emitir jamás
+      falsos positivos para antenas antiguas aún sin escanear ni fusiones Vodafone conocidas.
     """
     rec_id = str(rec.get("id") or "").strip()
     if not rec_id or not matched_entries:
         return []
+
     if new_antenna_ids and rec_id in new_antenna_ids:
-        return []
+        scan_iso = _normalize_iso_utc(fetched_iso)
+        fecha_es = format_spain_datetime(scan_iso)
+        mun = str(rec.get("mun") or "").strip()
+        prov = str(rec.get("prov") or "").strip()
+        ubicacion = mun or prov
+
+        emitted_new: list[dict[str, Any]] = []
+        seen_new_ant_keys: set[tuple[str, str, str]] = set()
+        for entry in matched_entries:
+            ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+            banda_raw = " ".join(
+                str(
+                    entry.get("frecuenciaDeclarada")
+                    or entry.get("frecuencia")
+                    or ""
+                ).split()
+            ).strip()
+            freq_clean = _norm_freq_str(
+                str(entry.get("frecuencia") or banda_raw)
+            )
+            if not banda_raw or not freq_clean:
+                continue
+
+            dedup_key = (rec_id, ref, banda_raw)
+            if dedup_key in seen_new_ant_keys:
+                continue
+            seen_new_ant_keys.add(dedup_key)
+
+            op_raw_entry = " ".join(str(entry.get("operador") or "").split()).strip()
+            emitted_new.append(
+                {
+                    "id": f"freq:{rec_id}:{ref}:{banda_raw}",
+                    "tipo": "frecuencia",
+                    "op": rec["op"],
+                    "opRaw": op_raw_entry or rec["opRaw"],
+                    "codigo": rec["gid"],
+                    "antennaId": rec_id,
+                    "codigoBanda": ref,
+                    "frecuencia": format_exact_ministry_frequency(banda_raw),
+                    "ubicacion": ubicacion,
+                    "prov": prov,
+                    "scannedAt": scan_iso,
+                    "fecha": fecha_es,
+                }
+            )
+        emitted_new.sort(key=_novedad_freq_sort_key)
+        return emitted_new
 
     prior_conc: list[dict[str, Any]] | None = (
         rec["concesiones"] if isinstance(rec.get("concesiones"), list) else None
@@ -2492,21 +2594,111 @@ def _diff_record_new_frequencies(
                 }
             )
 
+    emitted.sort(key=_novedad_freq_sort_key)
     return emitted
 
 
-def _novedad_sort_key(item: dict[str, Any]) -> tuple[float, str, str, str]:
+def _novedad_timestamp(item: dict[str, Any]) -> float:
     scanned_at = str(item.get("scannedAt") or "")
     try:
-        ts = _parse_utc_datetime(scanned_at).timestamp()
+        return _parse_utc_datetime(scanned_at).timestamp()
     except ValueError:
-        ts = 0.0
+        return 0.0
+
+
+def _novedad_sort_key(item: dict[str, Any]) -> tuple[float, str, str, str]:
+    ts = _novedad_timestamp(item)
     return (
         -ts,
         str(item.get("tipo") or ""),
         str(item.get("codigo") or ""),
         str(item.get("id") or ""),
     )
+
+
+def sort_novedades_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Deduplica novedades por `id` y las ordena de forma agrupada:
+    1) Cada antena nueva (`tipo == "antena"`), seguida inmediatamente de todas sus
+       frecuencias asociadas (`tipo == "frecuencia"`) ordenadas por MHz.
+    2) A continuación, todas las frecuencias nuevas detectadas en antenas ya existentes,
+       agrupadas por antena y ordenadas por MHz dentro de cada antena.
+    """
+    deduped_by_id: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nov_id = str(item.get("id") or "").strip()
+        if not nov_id:
+            continue
+        deduped_by_id[nov_id] = dict(item)
+
+    antena_items: list[dict[str, Any]] = []
+    freq_items: list[dict[str, Any]] = []
+    for item in deduped_by_id.values():
+        if item.get("tipo") == "antena":
+            antena_items.append(item)
+        else:
+            freq_items.append(item)
+
+    antena_items.sort(
+        key=lambda item: (
+            -_novedad_timestamp(item),
+            str(item.get("codigo") or ""),
+            str(item.get("op") or ""),
+            _novedad_antenna_group_key(item),
+            str(item.get("id") or ""),
+        )
+    )
+
+    unique_antena_items: list[dict[str, Any]] = []
+    new_ant_keys: set[str] = set()
+    for ant in antena_items:
+        key = _novedad_antenna_group_key(ant)
+        if key in new_ant_keys:
+            continue
+        new_ant_keys.add(key)
+        unique_antena_items.append(ant)
+
+    freqs_by_new_ant: dict[str, list[dict[str, Any]]] = {}
+    existing_ant_freqs: list[dict[str, Any]] = []
+    for freq in freq_items:
+        key = _novedad_antenna_group_key(freq)
+        if key in new_ant_keys:
+            freqs_by_new_ant.setdefault(key, []).append(freq)
+        else:
+            existing_ant_freqs.append(freq)
+
+    ordered: list[dict[str, Any]] = []
+    for ant in unique_antena_items:
+        key = _novedad_antenna_group_key(ant)
+        ordered.append(ant)
+        ordered.extend(
+            sorted(freqs_by_new_ant.get(key, []), key=_novedad_freq_sort_key)
+        )
+
+    existing_groups: dict[str, list[dict[str, Any]]] = {}
+    for freq in existing_ant_freqs:
+        key = _novedad_antenna_group_key(freq)
+        existing_groups.setdefault(key, []).append(freq)
+
+    sorted_existing_groups: list[
+        tuple[tuple[float, str, str, str], list[dict[str, Any]]]
+    ] = []
+    for key, group_items in existing_groups.items():
+        group_sorted = sorted(group_items, key=_novedad_freq_sort_key)
+        max_ts = max(_novedad_timestamp(f) for f in group_sorted)
+        first_codigo = str(group_sorted[0].get("codigo") or "")
+        first_op = str(group_sorted[0].get("op") or "")
+        sorted_existing_groups.append(
+            ((-max_ts, first_codigo, first_op, key), group_sorted)
+        )
+
+    sorted_existing_groups.sort(key=lambda entry: entry[0])
+    for _, group_sorted in sorted_existing_groups:
+        ordered.extend(group_sorted)
+
+    return ordered
 
 
 def load_novedades_dataset(path: Path | str | None) -> dict[str, Any] | None:
@@ -2535,7 +2727,8 @@ def build_novedades_dataset(
 ) -> dict[str, Any]:
     """
     Construye un `NovedadesDataset` compatible al 100% con `src/types/antena.ts`,
-    deduplicado por `id` y ordenado con las novedades más recientes primero.
+    deduplicado por `id` y ordenado agrupando cada antena nueva seguida de sus
+    frecuencias asociadas y, después, las frecuencias nuevas de antenas existentes.
     """
     ts = _normalize_iso_utc(updated_at) if updated_at else _utc_now_iso()
     effective_scan_id = str(scan_id or "").strip() or f"scan-{ts}"
@@ -2552,16 +2745,7 @@ def build_novedades_dataset(
             "novedades": [],
         }
 
-    deduped_by_id: dict[str, dict[str, Any]] = {}
-    for item in novedades:
-        if not isinstance(item, dict):
-            continue
-        nov_id = str(item.get("id") or "").strip()
-        if not nov_id:
-            continue
-        deduped_by_id[nov_id] = dict(item)
-
-    sorted_items = sorted(deduped_by_id.values(), key=_novedad_sort_key)
+    sorted_items = sort_novedades_grouped(novedades)
     antenas_nuevas = sum(1 for n in sorted_items if n.get("tipo") == "antena")
     frecuencias_nuevas = sum(1 for n in sorted_items if n.get("tipo") == "frecuencia")
 
@@ -2781,7 +2965,9 @@ class LiveDeltaStreamWriter:
             "newAntennas": list(self._tail_new_antennas.values()),
             "bandPatches": list(self._tail_band_patches.values()),
             "novedades": (
-                list(self._tail_novedades.values()) if self.record_novedades else []
+                sort_novedades_grouped(list(self._tail_novedades.values()))
+                if self.record_novedades
+                else []
             ),
         }
 

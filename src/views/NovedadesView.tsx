@@ -33,9 +33,13 @@ import {
   extractScanDayDmy,
   filterNovedades,
   formatScanDateTimeDmyHms,
+  getNovedadAntennaGroupKey,
   getOperatorRowBackground,
   isValidNovedadesPageSize,
+  orderNovedadesGroupedByNewAntenna,
   paginateNovedades,
+  splitFrequencyRangeLines,
+  splitScanDateTimeLines,
   useNovedadesData,
   type NovedadesPageSize,
 } from '../hooks/useNovedadesData';
@@ -220,10 +224,26 @@ export function NovedadesView() {
     return Array.from(dates);
   }, [dataset]);
 
+  const orderedNovedades = useMemo(
+    () => (dataset ? orderNovedadesGroupedByNewAntenna(dataset.novedades) : []),
+    [dataset],
+  );
+
+  const newAntennaKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (let i = 0; i < orderedNovedades.length; i++) {
+      const r = orderedNovedades[i];
+      if (r.tipo === 'antena') {
+        keys.add(getNovedadAntennaGroupKey(r));
+      }
+    }
+    return keys;
+  }, [orderedNovedades]);
+
   const filteredRows = useMemo(() => {
-    if (!dataset) return [];
+    if (orderedNovedades.length === 0) return [];
     return filterNovedades({
-      novedades: dataset.novedades,
+      novedades: orderedNovedades,
       tipoFilter,
       operatorFilter,
       bandFilter,
@@ -232,7 +252,7 @@ export function NovedadesView() {
       searchQuery,
     });
   }, [
-    dataset,
+    orderedNovedades,
     tipoFilter,
     operatorFilter,
     bandFilter,
@@ -905,16 +925,25 @@ export function NovedadesView() {
                   const operatorDisplayName =
                     row.op === 'otros' && row.opRaw ? row.opRaw : meta.name;
                   const isFrecuencia = row.tipo === 'frecuencia';
+                  const isAssociatedNewAntFreq =
+                    isFrecuencia &&
+                    newAntennaKeys.has(getNovedadAntennaGroupKey(row));
                   const formattedFecha = formatScanDateTimeDmyHms(
                     row.scannedAt,
                     row.fecha,
                   );
+                  const dateLines = splitScanDateTimeLines(formattedFecha);
+                  const freqLines = isFrecuencia
+                    ? splitFrequencyRangeLines(row.frecuencia)
+                    : null;
                   const rowBgColor = getOperatorRowBackground(row.op, 0.5);
 
                   return (
                     <tr
                       key={row.id}
-                      className="novedades-row"
+                      className={`novedades-row${
+                        isAssociatedNewAntFreq ? ' is-associated-freq' : ''
+                      }`}
                       data-operator={row.op}
                       style={{ backgroundColor: rowBgColor }}
                     >
@@ -983,9 +1012,19 @@ export function NovedadesView() {
                       </td>
 
                       <td>
-                        {isFrecuencia ? (
-                          <span className="mono novedades-freq-exact">
-                            {row.frecuencia || '—'}
+                        {isFrecuencia && freqLines ? (
+                          <span
+                            className="mono novedades-freq-exact novedades-freq-stack"
+                            title={row.frecuencia || undefined}
+                          >
+                            <span className="novedades-freq-line novedades-freq-start">
+                              {freqLines.start}
+                            </span>
+                            {freqLines.end && (
+                              <span className="novedades-freq-line novedades-freq-end">
+                                {freqLines.end}
+                              </span>
+                            )}
                           </span>
                         ) : (
                           <span
@@ -1011,8 +1050,20 @@ export function NovedadesView() {
                       </td>
 
                       <td>
-                        <span className="mono novedades-date-cell">
-                          {formattedFecha}
+                        <span
+                          className="mono novedades-date-cell"
+                          title={
+                            formattedFecha !== '—' ? formattedFecha : undefined
+                          }
+                        >
+                          <span className="novedades-date-day">
+                            {dateLines.datePart}
+                          </span>
+                          {dateLines.timePart && (
+                            <span className="novedades-date-time">
+                              {dateLines.timePart}
+                            </span>
+                          )}
                         </span>
                       </td>
                     </tr>
