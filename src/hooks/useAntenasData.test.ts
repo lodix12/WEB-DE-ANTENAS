@@ -6868,6 +6868,23 @@ describe('Novedades — Contadores del último escaneo, encabezado simplificado,
       expect(badgeInner).toContain('<span>Antena</span>');
     }
 
+    // En cada una de las 2 filas de antena nueva:
+    // - "Código" mantiene su enlace clicable (.novedades-code-link) con 4609001 y 2809991
+    // - "Código Banda" y "Frecuencia" muestran el icono de antena (.novedades-antena-cell-icon con lucide-radio-tower) en vez de "—"
+    expect(html).toContain('>4609001</a>');
+    expect(html).toContain('>2809991</a>');
+    expect(html).not.toContain('No aplica para antena nueva');
+    const antCellIcons = Array.from(
+      html.matchAll(
+        /<td class="is-antena-placeholder"><span class="novedades-antena-cell-icon"[^>]*>([\s\S]*?)<\/span><\/td>/g,
+      ),
+      (m) => m[1],
+    );
+    expect(antCellIcons).toHaveLength(4);
+    for (const iconInner of antCellIcons) {
+      expect(iconInner).toContain('lucide-radio-tower');
+    }
+
     // 5. CSS: 2 bloques en paralelo y tabla móvil a todo el ancho sin bordes laterales
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {

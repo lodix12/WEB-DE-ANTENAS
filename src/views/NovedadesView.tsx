@@ -974,42 +974,61 @@ export function NovedadesView() {
                         </Link>
                       </td>
 
-                      <td>
+                      <td
+                        className={
+                          !isFrecuencia ? 'is-antena-placeholder' : undefined
+                        }
+                      >
                         {isFrecuencia ? (
                           <span className="mono novedades-band-code">
                             {row.codigoBanda || 'Sin código'}
                           </span>
                         ) : (
                           <span
-                            className="novedades-empty-cell"
-                            aria-label="No aplica para antena nueva"
+                            className="novedades-antena-cell-icon"
+                            role="img"
+                            aria-label="Antena"
                           >
-                            —
+                            <RadioTower size={12} aria-hidden="true" />
                           </span>
                         )}
                       </td>
 
-                      <td>
-                        {isFrecuencia && freqLines ? (
-                          <span
-                            className="mono novedades-freq-exact novedades-freq-stack"
-                            title={row.frecuencia || undefined}
-                          >
-                            <span className="novedades-freq-line novedades-freq-start">
-                              {freqLines.start}
-                            </span>
-                            {freqLines.end && (
-                              <span className="novedades-freq-line novedades-freq-end">
-                                {freqLines.end}
+                      <td
+                        className={
+                          !isFrecuencia ? 'is-antena-placeholder' : undefined
+                        }
+                      >
+                        {isFrecuencia ? (
+                          freqLines ? (
+                            <span
+                              className="mono novedades-freq-exact novedades-freq-stack"
+                              title={row.frecuencia || undefined}
+                            >
+                              <span className="novedades-freq-line novedades-freq-start">
+                                {freqLines.start}
                               </span>
-                            )}
-                          </span>
+                              {freqLines.end && (
+                                <span className="novedades-freq-line novedades-freq-end">
+                                  {freqLines.end}
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            <span
+                              className="novedades-empty-cell"
+                              aria-label="Sin frecuencia registrada"
+                            >
+                              —
+                            </span>
+                          )
                         ) : (
                           <span
-                            className="novedades-empty-cell"
-                            aria-label="No aplica para antena nueva"
+                            className="novedades-antena-cell-icon"
+                            role="img"
+                            aria-label="Antena"
                           >
-                            —
+                            <RadioTower size={12} aria-hidden="true" />
                           </span>
                         )}
                       </td>

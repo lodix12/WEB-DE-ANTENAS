@@ -2979,6 +2979,29 @@ code {
   user-select: none;
 }
 
+.novedades-table tbody td.is-antena-placeholder {
+  text-align: center;
+}
+
+.novedades-antena-cell-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5px 6px;
+  border-radius: var(--radius-xs);
+  line-height: 1;
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme='dark'] .novedades-antena-cell-icon {
+  color: #5eead4;
+  background: rgba(15, 23, 42, 0.84);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
 .novedades-location-cell {
   display: block;
   max-width: 104px;
