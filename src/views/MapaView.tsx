@@ -165,7 +165,7 @@ export function MapaView() {
         <button
           type="button"
           id="error-open-sections-btn"
-          className="btn btn-secondary btn-sm page-floating-sections-btn"
+          className="btn btn-secondary btn-sm page-floating-sections-btn map-error-sections-btn"
           onClick={() => setSectionsMenuOpen(true)}
           aria-expanded={sectionsMenuOpen}
           aria-controls="sections-drawer"
@@ -251,7 +251,7 @@ export function MapaView() {
       />
 
       <div className="map-stage">
-        {/* Botones flotantes superiores izquierdos en escritorio: Secciones encima de Filtros */}
+        {/* Botones flotantes inferiores izquierdos en escritorio: Filtros a la derecha de Secciones */}
         <div className="desktop-floating-controls">
           <button
             type="button"
@@ -284,7 +284,7 @@ export function MapaView() {
           )}
         </div>
 
-        {/* Botones flotantes superiores izquierdos en móvil: Secciones encima de Filtros */}
+        {/* Botones flotantes inferiores izquierdos en móvil: Filtros a la derecha de Secciones */}
         <div className="mobile-controls-bar">
           <button
             type="button"

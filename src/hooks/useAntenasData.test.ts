@@ -3899,14 +3899,17 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     });
     expect(mmwNovItems).toHaveLength(1);
 
-    // AntenasMap exporta el componente principal y los helpers puros de conteo exacto en clústeres
+    // AntenasMap exporta el componente principal y los helpers puros de conteo exacto en clústeres y medición
     expect(AntenasMapModule.AntenasMap).toBeTypeOf('function');
     expect(Object.keys(AntenasMapModule).sort()).toEqual([
       'AntenasMap',
+      'MAX_MEASURE_POINTS',
+      'appendMeasurePointWithLimit',
       'buildClusterCircleRadiusExpr',
       'buildClusterCountTextFieldExpr',
       'buildClusterCountTextSizeExpr',
       'buildClusterExactCountExpr',
+      'buildMeasureGeoJson',
       'evaluateClusterCountLabel',
     ]);
     expect(antenasMapRawSource).toContain('normalizeAntennaBandsList');
@@ -7374,4 +7377,201 @@ describe('Unificación total de XFERA MÓVILES, S.A.U. (Yoigo y MásMóvil) dent
     ).toBe(false);
   });
 });
+
+describe('Mapa — Controles flotantes inferiores, Filtros a la derecha de Secciones, botón de opciones compacto sin flecha, icono "i" reducido y medición persistente de hasta 10 puntos', () => {
+  it('permite seleccionar hasta 10 puntos en modo medir y mantiene las mediciones intactas al tocar de nuevo tras llegar al límite', async () => {
+    expect(AntenasMapModule.MAX_MEASURE_POINTS).toBe(10);
+
+    const routeCoords = [
+      { lat: 40.4168, lon: -3.7038, label: 'Punto 1 · Madrid' },
+      { lat: 40.6337, lon: -3.1674, label: 'Punto 2 · Guadalajara' },
+      { lat: 41.6488, lon: -0.8891, label: 'Punto 3 · Zaragoza' },
+      { lat: 41.6176, lon: 0.62, label: 'Punto 4 · Lleida' },
+      { lat: 41.3874, lon: 2.1686, label: 'Punto 5 · Barcelona' },
+      { lat: 41.1189, lon: 1.2445, label: 'Punto 6 · Tarragona' },
+      { lat: 39.9864, lon: -0.0513, label: 'Punto 7 · Castellón' },
+      { lat: 39.4699, lon: -0.3763, label: 'Punto 8 · Valencia' },
+      { lat: 38.9943, lon: -1.8585, label: 'Punto 9 · Albacete' },
+      { lat: 40.0704, lon: -2.1374, label: 'Punto 10 · Cuenca' },
+    ];
+
+    let currentPoints: { lat: number; lon: number; label?: string }[] = [];
+    for (let i = 0; i < routeCoords.length; i++) {
+      currentPoints = AntenasMapModule.appendMeasurePointWithLimit(
+        currentPoints,
+        routeCoords[i],
+      );
+      expect(currentPoints).toHaveLength(i + 1);
+      expect(currentPoints[i]).toEqual(routeCoords[i]);
+    }
+
+    expect(currentPoints).toHaveLength(10);
+
+    // Tocar de nuevo la pantalla una vez alcanzado el límite de 10 puntos NO borra ni reinicia la medición
+    const extraTap1 = AntenasMapModule.appendMeasurePointWithLimit(
+      currentPoints,
+      { lat: 37.3891, lon: -5.9845, label: 'Toque extra 11 · Sevilla' },
+    );
+    const extraTap2 = AntenasMapModule.appendMeasurePointWithLimit(extraTap1, {
+      lat: 43.263,
+      lon: -2.935,
+      label: 'Toque extra 12 · Bilbao',
+    });
+    expect(extraTap1).toBe(currentPoints);
+    expect(extraTap2).toBe(currentPoints);
+    expect(extraTap2).toHaveLength(10);
+    expect(extraTap2).toEqual(routeCoords);
+
+    // Geometría GeoJSON completa para los 10 puntos (1 polilínea continua, 9 tramos intermedios, 1 total acumulado y 10 vértices numerados)
+    const geojson10 = AntenasMapModule.buildMeasureGeoJson(currentPoints);
+    const lineFeatures = geojson10.features.filter(
+      (f) => f.properties.kind === 'measure-line',
+    );
+    const midpointFeatures = geojson10.features.filter(
+      (f) => f.properties.kind === 'measure-midpoint',
+    );
+    const totalFeatures = geojson10.features.filter(
+      (f) => f.properties.kind === 'measure-total',
+    );
+    const pointFeatures = geojson10.features.filter(
+      (f) => f.properties.kind === 'measure-point',
+    );
+
+    expect(lineFeatures).toHaveLength(1);
+    if (lineFeatures[0].geometry.type === 'LineString') {
+      expect(lineFeatures[0].geometry.coordinates).toHaveLength(10);
+    }
+    expect(midpointFeatures).toHaveLength(9);
+    expect(midpointFeatures.map((f) => f.properties.segmentIndex)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    expect(totalFeatures).toHaveLength(1);
+    expect(totalFeatures[0].properties.distanceLabel).toMatch(/^Total:\s+/);
+    expect(pointFeatures).toHaveLength(10);
+    expect(pointFeatures.map((f) => f.properties.pointTag)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+    ]);
+
+    // Con 2 puntos exactos no duplica etiqueta total sobre el único tramo
+    const geojson2 = AntenasMapModule.buildMeasureGeoJson(
+      currentPoints.slice(0, 2),
+    );
+    expect(
+      geojson2.features.filter((f) => f.properties.kind === 'measure-midpoint'),
+    ).toHaveLength(1);
+    expect(
+      geojson2.features.filter((f) => f.properties.kind === 'measure-total'),
+    ).toHaveLength(0);
+
+    // Guarda explícita en handleMapClick: al llegar a MAX_MEASURE_POINTS ignora clics en el mapa sin vaciar ni sobrescribir
+    expect(antenasMapRawSource).toMatch(
+      /if\s*\(\s*measureModeActiveRef\.current\s*\)\s*\{[\s\S]*?if\s*\(\s*currentPts\.length\s*>=\s*MAX_MEASURE_POINTS\s*\)\s*\{\s*return;\s*\}/,
+    );
+
+    // WorkspaceProvider solo limpia las mediciones al cambiar/desactivar el modo de medición
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const workspaceSource = readFileSync(
+      new URL('./WorkspaceProvider.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(workspaceSource).not.toContain('pts.length >= 2');
+  });
+
+  it('sitúa todas las ventanas flotantes del mapa abajo del todo, coloca Filtros a la derecha de Secciones, estrecha el botón de opciones sin flecha hacia abajo y reduce el icono "i"', async () => {
+    // 1. El botón de opciones del mapa (#map-style-switcher-btn) no importa ni renderiza flecha hacia abajo (ChevronDown)
+    expect(mapOverlaysRawSource).not.toContain('ChevronDown');
+    const overlaysHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'positron',
+        onStyleChange: () => {},
+        onFlyToRegion: () => {},
+        measurePoints: [],
+        onMeasurePointsChange: () => {},
+        measureModeActive: false,
+        onToggleMeasureMode: () => {},
+        lock3dPitch: true,
+        onToggleLock3dPitch: () => {},
+        disableClustering: false,
+        onToggleDisableClustering: () => {},
+        showBandsOnMap: false,
+        onToggleShowBandsOnMap: () => {},
+      }),
+    );
+
+    expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
+    expect(overlaysHtml).toContain('map-style-switcher-btn');
+    expect(overlaysHtml).not.toContain('lucide-chevron-down');
+    expect(overlaysHtml).toContain(
+      'Medir distancia seleccionando hasta 10 puntos en el mapa',
+    );
+
+    // 2. En MapaView, tanto en escritorio como en móvil "Secciones" precede a "Filtros" dentro de contenedores horizontales (flex-direction: row)
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapaViewSource = readFileSync(
+      new URL('../views/MapaView.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(
+      mapaViewSource.indexOf('id="desktop-open-sections-btn"'),
+    ).toBeLessThan(mapaViewSource.indexOf('id="sidebar-reopen-btn"'));
+    expect(
+      mapaViewSource.indexOf('id="mobile-open-sections-btn"'),
+    ).toBeLessThan(mapaViewSource.indexOf('id="mobile-open-filters-btn"'));
+
+    // 3. Verificación estructural de reglas CSS en index.css y map.css
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    const mapCssSource = readFileSync(
+      new URL('../styles/map.css', import.meta.url),
+      'utf-8',
+    );
+
+    // Controles flotantes izquierdos del mapa abajo del todo y en fila (Filtros a la derecha de Secciones)
+    expect(indexCssSource).toMatch(
+      /\.desktop-floating-controls\s*\{[\s\S]*?top:\s*auto;[\s\S]*?bottom:\s*calc\(12px\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\);[\s\S]*?flex-direction:\s*row;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.mobile-controls-bar\s*\{[\s\S]*?top:\s*auto;[\s\S]*?bottom:\s*calc\(12px\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\);[\s\S]*?flex-direction:\s*row;/,
+    );
+
+    // Herramientas flotantes derechas abajo del todo y menú desplegable abriendo hacia arriba
+    expect(mapCssSource).toMatch(
+      /\.map-overlay-top-stack\s*\{[\s\S]*?top:\s*auto;[\s\S]*?bottom:\s*calc\(12px\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\);[\s\S]*?flex-direction:\s*column-reverse;/,
+    );
+    expect(mapCssSource).toMatch(
+      /\.map-style-popover\s*\{[\s\S]*?top:\s*auto;[\s\S]*?bottom:\s*calc\(100%\s*\+\s*8px\);/,
+    );
+
+    // Botón de opciones del mapa más estrecho
+    expect(mapCssSource).toMatch(
+      /\.map-tool-btn\.map-style-switcher-btn\s*\{[\s\S]*?padding:\s*0\s+7px;/,
+    );
+
+    // Icono "i" de atribución reducido a 16×16 px y elevado sobre la barra inferior
+    expect(mapCssSource).toMatch(
+      /\.antenas-map-root\s+\.maplibregl-ctrl-bottom-right,[\s\S]*?bottom:\s*calc\(46px\s*\+\s*env\(safe-area-inset-bottom,\s*0px\)\);/,
+    );
+    expect(mapCssSource).toMatch(
+      /\.antenas-map-root\s+\.maplibregl-ctrl-attrib-button,[\s\S]*?width:\s*16px;[\s\S]*?height:\s*16px;[\s\S]*?background-size:\s*12px\s+12px;/,
+    );
+  });
+});
+
 

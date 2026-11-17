@@ -15,7 +15,11 @@ import {
   type OperatorKey,
 } from '../../types/antena';
 import { normalizeAntennaBandsList } from '../../hooks/useAntenasData';
-import type { AntenasMapProps, MeasurePoint } from '../../types/map';
+import {
+  MAX_MEASURE_POINTS,
+  type AntenasMapProps,
+  type MeasurePoint,
+} from '../../types/map';
 import {
   BAND_CARD_KEY_PREFIX,
   BAND_CARD_PIXEL_RATIO,
@@ -53,6 +57,7 @@ const LAYER_MEASURE_POINTS_HALO = 'measure-points-halo';
 const LAYER_MEASURE_POINTS = 'measure-points';
 const LAYER_MEASURE_POINT_LABELS = 'measure-point-labels';
 const LAYER_MEASURE_DISTANCE_LABEL = 'measure-distance-label';
+const LAYER_MEASURE_TOTAL_LABEL = 'measure-total-label';
 
 const LAYER_CLUSTERS = 'antenas-clusters';
 const LAYER_CLUSTER_COUNT = 'antenas-cluster-count';
@@ -85,10 +90,11 @@ interface AntennaFeatureProperties {
   memberIdsPipe: string;
 }
 
-interface MeasureFeatureProperties {
-  kind: 'measure-line' | 'measure-point' | 'measure-midpoint';
-  pointTag?: 'A' | 'B';
+export interface MeasureFeatureProperties {
+  kind: 'measure-line' | 'measure-point' | 'measure-midpoint' | 'measure-total';
+  pointTag?: string;
   distanceLabel?: string;
+  segmentIndex?: number;
 }
 
 function applyPitchLock(map: maplibregl.Map, locked: boolean): void {
@@ -334,6 +340,109 @@ export function evaluateClusterCountLabel(props: {
     ),
   );
 }
+
+export { MAX_MEASURE_POINTS };
+
+export function appendMeasurePointWithLimit(
+  currentPoints: readonly MeasurePoint[],
+  newPoint: MeasurePoint,
+  maxPoints: number = MAX_MEASURE_POINTS,
+): MeasurePoint[] {
+  if (currentPoints.length >= maxPoints) {
+    return currentPoints as MeasurePoint[];
+  }
+  return [...currentPoints, newPoint];
+}
+
+export function buildMeasureGeoJson(
+  points: readonly MeasurePoint[],
+): FeatureCollection<Point | LineString, MeasureFeatureProperties> {
+  const features: Feature<Point | LineString, MeasureFeatureProperties>[] = [];
+  const validPts = points.filter(
+    (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon),
+  );
+  const pts = validPts.slice(0, MAX_MEASURE_POINTS);
+
+  if (pts.length >= 2) {
+    const segmentDistancesKm: number[] = [];
+    let totalKm = 0;
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const segKm = haversineDistanceKm(
+        pts[i].lat,
+        pts[i].lon,
+        pts[i + 1].lat,
+        pts[i + 1].lon,
+      );
+      segmentDistancesKm.push(segKm);
+      totalKm += segKm;
+    }
+
+    features.push({
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: pts.map((p) => [p.lon, p.lat]),
+      },
+      properties: {
+        kind: 'measure-line',
+        distanceLabel: formatMeasureDistanceLabel(totalKm),
+      },
+    });
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [
+            (pts[i].lon + pts[i + 1].lon) / 2,
+            (pts[i].lat + pts[i + 1].lat) / 2,
+          ],
+        },
+        properties: {
+          kind: 'measure-midpoint',
+          segmentIndex: i + 1,
+          distanceLabel: formatMeasureDistanceLabel(segmentDistancesKm[i]),
+        },
+      });
+    }
+
+    if (pts.length >= 3) {
+      const lastPt = pts[pts.length - 1];
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [lastPt.lon, lastPt.lat],
+        },
+        properties: {
+          kind: 'measure-total',
+          distanceLabel: `Total: ${formatMeasureDistanceLabel(totalKm)}`,
+        },
+      });
+    }
+  }
+
+  for (let i = 0; i < pts.length; i++) {
+    features.push({
+      type: 'Feature',
+      geometry: {
+        type: 'Point',
+        coordinates: [pts[i].lon, pts[i].lat],
+      },
+      properties: {
+        kind: 'measure-point',
+        pointTag: String(i + 1),
+      },
+    });
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features,
+  };
+}
 /* oxlint-enable react/only-export-components */
 
 function buildUnclusteredCircleRadiusExpr(
@@ -560,7 +669,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [isDisableClusteringControlled, onToggleDisableClustering]);
 
-  // Soporte híbrido controlado o autónomo para la regla de distancia entre 2 puntos ("Medir en mapa")
+  // Soporte híbrido controlado o autónomo para la regla de distancia multi-punto (0..10 puntos, "Medir en mapa")
   const [internalMeasurePoints, setInternalMeasurePoints] = useState<
     MeasurePoint[]
   >([]);
@@ -594,9 +703,7 @@ export function AntenasMap(props: AntenasMapProps) {
       onToggleMeasureMode();
     } else {
       setInternalMeasureMode((prev) => {
-        if (prev) {
-          setInternalMeasurePoints([]);
-        }
+        setInternalMeasurePoints([]);
         return !prev;
       });
     }
@@ -679,83 +786,13 @@ export function AntenasMap(props: AntenasMapProps) {
       };
     }, [antenas]);
 
-  // Construcción memorizada de la regla de medición entre 2 puntos (Punto A, Punto B, segmento geodésico y etiqueta central)
+  // Construcción memorizada de la polilínea de medición (hasta 10 puntos, tramos intermedios y total acumulado)
   const measureGeoJson = useMemo<
     FeatureCollection<Point | LineString, MeasureFeatureProperties>
-  >(() => {
-    const features: Feature<Point | LineString, MeasureFeatureProperties>[] =
-      [];
-    const pts = effectiveMeasurePoints.filter(
-      (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon),
-    );
-
-    if (pts.length >= 2) {
-      const pA = pts[0];
-      const pB = pts[1];
-      const distKm = haversineDistanceKm(pA.lat, pA.lon, pB.lat, pB.lon);
-      const distanceLabel = formatMeasureDistanceLabel(distKm);
-
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: [
-            [pA.lon, pA.lat],
-            [pB.lon, pB.lat],
-          ],
-        },
-        properties: {
-          kind: 'measure-line',
-          distanceLabel,
-        },
-      });
-
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [(pA.lon + pB.lon) / 2, (pA.lat + pB.lat) / 2],
-        },
-        properties: {
-          kind: 'measure-midpoint',
-          distanceLabel,
-        },
-      });
-    }
-
-    if (pts.length >= 1) {
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [pts[0].lon, pts[0].lat],
-        },
-        properties: {
-          kind: 'measure-point',
-          pointTag: 'A',
-        },
-      });
-    }
-
-    if (pts.length >= 2) {
-      features.push({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [pts[1].lon, pts[1].lat],
-        },
-        properties: {
-          kind: 'measure-point',
-          pointTag: 'B',
-        },
-      });
-    }
-
-    return {
-      type: 'FeatureCollection',
-      features,
-    };
-  }, [effectiveMeasurePoints]);
+  >(
+    () => buildMeasureGeoJson(effectiveMeasurePoints),
+    [effectiveMeasurePoints],
+  );
 
   // Referencias vivas sincronizadas en efectos para acceso estable desde listeners imperativos de MapLibre
   const antenasGeoJsonRef = useRef(antenasGeoJson);
@@ -1124,7 +1161,7 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
 
-    // 2. Capas de la regla de distancia entre 2 puntos (Punto A -> Punto B), aisladas en try/catch
+    // 2. Capas de la regla de distancia multi-punto (Puntos 1..10, tramos y total), aisladas en try/catch
     try {
       if (!map.getSource(MEASURE_SOURCE_ID)) {
         map.addSource(MEASURE_SOURCE_ID, {
@@ -1239,9 +1276,31 @@ export function AntenasMap(props: AntenasMapProps) {
           },
         });
       }
+
+      if (!map.getLayer(LAYER_MEASURE_TOTAL_LABEL)) {
+        map.addLayer({
+          id: LAYER_MEASURE_TOTAL_LABEL,
+          type: 'symbol',
+          source: MEASURE_SOURCE_ID,
+          filter: ['==', ['get', 'kind'], 'measure-total'],
+          layout: {
+            'text-field': ['get', 'distanceLabel'],
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 12.5,
+            'text-offset': [0, 1.45],
+            'text-allow-overlap': true,
+            'text-ignore-placement': true,
+          },
+          paint: {
+            'text-color': isDark ? '#F3E8FF' : '#4C1D95',
+            'text-halo-color': isDark ? '#0F172A' : '#FFFFFF',
+            'text-halo-width': 2.5,
+          },
+        });
+      }
     } catch (err) {
       console.warn(
-        '[AntenasMap] No se pudieron registrar las capas de medición entre 2 puntos:',
+        '[AntenasMap] No se pudieron registrar las capas de medición en el mapa:',
         err,
       );
     }
@@ -1421,8 +1480,13 @@ export function AntenasMap(props: AntenasMapProps) {
       const hasClusterLayer =
         !disableClusteringRef.current && Boolean(map.getLayer(LAYER_CLUSTERS));
 
-      // 0. Modo "Medir en mapa" (distancia entre 2 puntos: Punto A y Punto B)
+      // 0. Modo "Medir en mapa" (hasta 10 puntos: persiste al llegar al límite hasta desactivar la opción)
       if (measureModeActiveRef.current) {
+        const currentPts = measurePointsRef.current;
+        if (currentPts.length >= MAX_MEASURE_POINTS) {
+          return;
+        }
+
         let targetLat = Number(event.lngLat.lat.toFixed(6));
         let targetLon = Number(event.lngLat.lng.toFixed(6));
         let targetLabel: string | undefined;
@@ -1451,18 +1515,19 @@ export function AntenasMap(props: AntenasMapProps) {
           }
         }
 
-        const currentPts = measurePointsRef.current;
         const newPoint: MeasurePoint = {
           lat: targetLat,
           lon: targetLon,
           label: targetLabel,
         };
 
-        if (currentPts.length === 1) {
-          onMeasurePointsChangeRef.current([currentPts[0], newPoint]);
-        } else {
-          onMeasurePointsChangeRef.current([newPoint]);
-        }
+        const nextPts = appendMeasurePointWithLimit(
+          currentPts,
+          newPoint,
+          MAX_MEASURE_POINTS,
+        );
+        measurePointsRef.current = nextPts;
+        onMeasurePointsChangeRef.current(nextPts);
         return;
       }
 
@@ -1554,7 +1619,9 @@ export function AntenasMap(props: AntenasMapProps) {
     };
 
     const handleMouseMove = (event: maplibregl.MapMouseEvent) => {
-      const isCrosshairActive = measureModeActiveRef.current;
+      const isCrosshairActive =
+        measureModeActiveRef.current &&
+        measurePointsRef.current.length < MAX_MEASURE_POINTS;
       const interactiveLayers = getActiveUnclusteredLayers();
       if (!disableClusteringRef.current && map.getLayer(LAYER_CLUSTERS)) {
         interactiveLayers.push(LAYER_CLUSTERS);
@@ -1580,7 +1647,9 @@ export function AntenasMap(props: AntenasMapProps) {
 
       const topHit = hits[0];
       map.getCanvas().style.cursor = measureModeActiveRef.current
-        ? 'crosshair'
+        ? isCrosshairActive
+          ? 'crosshair'
+          : ''
         : 'pointer';
 
       if (
@@ -1704,7 +1773,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [antenasGeoJson, multiIconKeys]);
 
-  // Sincronización reactiva aislada de la regla de distancia entre 2 puntos (Punto A -> Punto B)
+  // Sincronización reactiva aislada de la regla de distancia multi-punto (0..10 puntos)
   useEffect(() => {
     measureGeoJsonRef.current = measureGeoJson;
     const map = mapRef.current;
@@ -1738,16 +1807,18 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [selectedAntenna]);
 
-  // Cursor de retícula al activar/desactivar el modo medición
+  const canAddMoreMeasurePoints =
+    effectiveMeasureModeActive &&
+    effectiveMeasurePoints.length < MAX_MEASURE_POINTS;
+
+  // Cursor de retícula al activar el modo medición mientras queden puntos disponibles (< 10)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) {
       return;
     }
-    map.getCanvas().style.cursor = effectiveMeasureModeActive
-      ? 'crosshair'
-      : '';
-  }, [effectiveMeasureModeActive]);
+    map.getCanvas().style.cursor = canAddMoreMeasurePoints ? 'crosshair' : '';
+  }, [canAddMoreMeasurePoints]);
 
   // Desplazamiento de cámara cuando cambia `flyToTarget.token` (incluidos enlaces directos `#/?gid=...`)
   useEffect(() => {

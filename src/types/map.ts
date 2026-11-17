@@ -18,6 +18,8 @@ export interface RadarPoint {
   radiusKm?: number;
 }
 
+export const MAX_MEASURE_POINTS = 10;
+
 export interface MeasurePoint {
   lat: number;
   lon: number;
@@ -51,11 +53,11 @@ export interface AntenasMapProps {
   radarModeActive?: boolean;
   /** Activar/desactivar modo radar */
   onToggleRadarMode?: () => void;
-  /** Puntos seleccionados (0, 1 o 2) para medir distancia entre 2 puntos en el mapa */
+  /** Puntos seleccionados (0..10 puntos, hasta `MAX_MEASURE_POINTS`) para medir distancia en el mapa */
   measurePoints?: MeasurePoint[];
-  /** Actualizar o limpiar los puntos de medición (Punto A y Punto B) */
+  /** Actualizar o limpiar los puntos de medición (`0..10` puntos) */
   onMeasurePointsChange?: (points: MeasurePoint[]) => void;
-  /** Si está activo el modo "Medir en mapa" (seleccionar 2 puntos) */
+  /** Si está activo el modo "Medir en mapa" (seleccionar `0..10` puntos) */
   measureModeActive?: boolean;
   /** Activar/desactivar el modo "Medir en mapa" */
   onToggleMeasureMode?: () => void;

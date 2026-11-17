@@ -218,7 +218,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const toggleRadarMode = useCallback(() => {
     setRadarModeActive((prev) => {
       const next = !prev;
-      if (next) setMeasureModeActive(false);
+      if (next) {
+        setMeasureModeActive(false);
+        setMeasurePoints([]);
+      }
       return next;
     });
   }, []);
@@ -228,7 +231,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const next = !prev;
       if (next) {
         setRadarModeActive(false);
-        setMeasurePoints((pts) => (pts.length >= 2 ? [] : pts));
+        setMeasurePoints([]);
       } else {
         setMeasurePoints([]);
       }

@@ -196,6 +196,11 @@ code {
   box-shadow: var(--shadow-md);
 }
 
+.page-floating-sections-btn.map-error-sections-btn {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
+
 .sections-backdrop {
   position: fixed;
   inset: 0;
@@ -1069,19 +1074,21 @@ code {
 
 .desktop-floating-controls {
   position: absolute;
-  top: calc(12px + env(safe-area-inset-top, 0px));
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   left: calc(12px + env(safe-area-inset-left, 0px));
-  z-index: 19;
+  z-index: 20;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: 6px;
   pointer-events: none;
 }
 
 .antenas-map-root .map-overlay-top-stack,
 .map-overlay-top-stack {
-  top: calc(12px + env(safe-area-inset-top, 0px));
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   left: calc(12px + env(safe-area-inset-left, 0px));
   right: calc(12px + env(safe-area-inset-right, 0px));
 }
@@ -3543,12 +3550,13 @@ code {
 
   .mobile-controls-bar {
     position: absolute;
-    top: calc(12px + env(safe-area-inset-top, 0px));
+    top: auto;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     left: calc(12px + env(safe-area-inset-left, 0px));
-    z-index: 18;
+    z-index: 20;
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
     gap: 6px;
     pointer-events: none;
   }
@@ -3563,6 +3571,7 @@ code {
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--border-default);
     box-shadow: var(--shadow-md);
+    white-space: nowrap;
   }
 
   .filter-sidebar .sidebar-header,
@@ -3577,6 +3586,7 @@ code {
 
   @media (max-width: 600px) {
     .mobile-controls-bar {
+      bottom: calc(10px + env(safe-area-inset-bottom, 0px));
       left: calc(10px + env(safe-area-inset-left, 0px));
     }
 
@@ -3584,11 +3594,40 @@ code {
       left: calc(10px + env(safe-area-inset-left, 0px));
     }
 
+    .page-floating-sections-btn.map-error-sections-btn {
+      bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+
     .antenas-map-root .map-overlay-top-stack,
     .map-overlay-top-stack {
-      top: calc(12px + env(safe-area-inset-top, 0px));
+      top: auto;
+      bottom: calc(10px + env(safe-area-inset-bottom, 0px));
       left: calc(10px + env(safe-area-inset-left, 0px));
       right: calc(10px + env(safe-area-inset-right, 0px));
+    }
+  }
+
+  @media (max-width: 480px) {
+    .mobile-controls-bar {
+      gap: 5px;
+    }
+
+    .mobile-controls-bar > * {
+      padding: 0 8px;
+      font-size: 11.5px;
+      gap: 4px;
+    }
+  }
+
+  @media (max-width: 375px) {
+    .mobile-controls-bar {
+      gap: 4px;
+    }
+
+    .mobile-controls-bar > * {
+      padding: 0 6.5px;
+      font-size: 11px;
+      gap: 4px;
     }
   }
 

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
-  ChevronDown,
   Layers,
   Loader2,
   LocateFixed,
@@ -160,7 +159,7 @@ export function MapOverlays({
   return (
     <div className="map-overlay-top-stack">
       <div className="map-top-row">
-        {/* Herramientas cartográficas: Ubicación GPS, Medición 2 puntos, Bandas en mapa y Estilo OpenFreeMap + Bloqueo 3D */}
+        {/* Herramientas cartográficas inferiores derechas: Ubicación GPS, Medición hasta 10 puntos, Bandas en mapa y Estilo OpenFreeMap + Bloqueo 3D */}
         <div className="map-tools-cluster">
           <button
             id="map-locate-gps-btn"
@@ -187,8 +186,8 @@ export function MapOverlays({
               aria-pressed={hasActiveMeasurement}
               title={
                 hasActiveMeasurement
-                  ? 'Limpiar medición activa y desactivar regla (Esc)'
-                  : 'Medir distancia seleccionando 2 puntos en el mapa (Punto A y Punto B)'
+                  ? 'Desactivar medición y borrar puntos (Esc)'
+                  : 'Medir distancia seleccionando hasta 10 puntos en el mapa'
               }
             >
               <Ruler size={15} aria-hidden="true" />
@@ -218,7 +217,7 @@ export function MapOverlays({
             <button
               id="map-style-switcher-btn"
               type="button"
-              className={`map-tool-btn${styleMenuOpen ? ' is-active' : ''}`}
+              className={`map-tool-btn map-style-switcher-btn${styleMenuOpen ? ' is-active' : ''}`}
               onClick={() => setStyleMenuOpen((prev) => !prev)}
               aria-haspopup="dialog"
               aria-expanded={styleMenuOpen}
@@ -226,7 +225,6 @@ export function MapOverlays({
             >
               <Layers size={15} aria-hidden="true" />
               <span className="map-tool-btn-label">{currentStyle.label}</span>
-              <ChevronDown size={13} aria-hidden="true" />
             </button>
 
             {styleMenuOpen && (
