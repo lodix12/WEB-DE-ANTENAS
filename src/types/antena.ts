@@ -1,3 +1,5 @@
+import type { StyleSpecification } from 'maplibre-gl';
+
 export type OperatorKey =
   | 'movistar'
   | 'vodafone'
@@ -332,14 +334,109 @@ export function normalizeOperatorKeyInput(
 }
 
 export interface OpenFreeMapStyleOption {
-  id: 'positron' | 'liberty' | 'bright' | 'dark' | 'fiord';
+  id: 'osm' | 'positron' | 'liberty' | 'bright' | 'dark' | 'fiord';
   label: string;
   description: string;
   url: string;
   isDark: boolean;
 }
 
+export const OSM_STANDARD_TILE_URL =
+  'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+export const OPENFREEMAP_GLYPHS_URL =
+  'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
+
+export const OSM_STANDARD_ATTRIBUTION =
+  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+
+/**
+ * Construye la especificación MapLibre GL v8 de máxima nitidez para la capa
+ * oficial OpenStreetMap versión estándar (OSM Carto):
+ * - `tileSize: 256` evita el escalado borroso 2× (512 px por defecto en MapLibre)
+ *   forzando teselas nativas z+1 en relación 1:1 CSS.
+ * - `maxzoom: 19` aprovecha el nivel máximo nativo del CDN oficial de OSM.
+ * - `glyphs` de OpenFreeMap mantiene operativas las capas WebGL `symbol`
+ *   (`Noto Sans Regular`) de conteo exacto de clústeres y mediciones.
+ */
+export function buildOsmStandardStyleSpec(): StyleSpecification {
+  return {
+    version: 8,
+    name: 'OpenStreetMap Estándar',
+    glyphs: OPENFREEMAP_GLYPHS_URL,
+    sources: {
+      'osm-standard-raster': {
+        type: 'raster',
+        tiles: [OSM_STANDARD_TILE_URL],
+        tileSize: 256,
+        minzoom: 0,
+        maxzoom: 19,
+        attribution: OSM_STANDARD_ATTRIBUTION,
+      },
+    },
+    layers: [
+      {
+        id: 'osm-standard-background',
+        type: 'background',
+        paint: {
+          'background-color': '#f2efe9',
+        },
+      },
+      {
+        id: 'osm-standard-layer',
+        type: 'raster',
+        source: 'osm-standard-raster',
+        minzoom: 0,
+        maxzoom: 22,
+        paint: {
+          resampling: 'linear',
+          'raster-resampling': 'linear',
+          'raster-contrast': 0.03,
+          'raster-fade-duration': 150,
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Resuelve la entrada de estilo para `new maplibregl.Map` y `map.setStyle`:
+ * devuelve el `StyleSpecification` de alta nitidez para `'osm'` o la URL JSON vectorial.
+ */
+export function resolveMapStyleInput(
+  option: Pick<OpenFreeMapStyleOption, 'id' | 'url'>,
+): StyleSpecification | string {
+  if (option.id === 'osm') {
+    return buildOsmStandardStyleSpec();
+  }
+  return option.url;
+}
+
+/**
+ * Calcula un `pixelRatio` de alta nitidez para el lienzo WebGL2 de MapLibre:
+ * aplica supermuestreo 2× (SSAA) en monitores estándar 1× y conserva la
+ * densidad nativa Retina/HiDPI hasta 3×.
+ */
+export function computeHighQualityMapPixelRatio(
+  devicePixelRatio?: number,
+): number {
+  const raw =
+    typeof devicePixelRatio === 'number' &&
+    Number.isFinite(devicePixelRatio) &&
+    devicePixelRatio > 0
+      ? devicePixelRatio
+      : 1;
+  return Math.min(Math.max(raw, 2), 3);
+}
+
 export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
+  {
+    id: 'osm',
+    label: 'OSM Estándar',
+    description: 'OpenStreetMap versión estándar en máxima nitidez',
+    url: OSM_STANDARD_TILE_URL,
+    isDark: false,
+  },
   {
     id: 'liberty',
     label: 'Liberty',

@@ -234,13 +234,13 @@ export function MapOverlays({
                 aria-label="Opciones de cartografía y vista del mapa"
               >
                 <div className="map-style-popover-header">
-                  Cartografía OpenFreeMap
+                  Capas cartográficas
                 </div>
 
                 <div
                   className="map-style-options-list"
                   role="listbox"
-                  aria-label="Estilos de mapa OpenFreeMap"
+                  aria-label="Capas cartográficas del mapa"
                 >
                   {OPENFREEMAP_STYLES.map((option) => {
                     const selected = option.id === styleId;

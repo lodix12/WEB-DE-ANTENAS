@@ -19,8 +19,14 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
+  OPENFREEMAP_GLYPHS_URL,
+  OPENFREEMAP_STYLES,
   OPERATOR_META,
   OPERATOR_ORDER,
+  OSM_STANDARD_TILE_URL,
+  buildOsmStandardStyleSpec,
+  computeHighQualityMapPixelRatio,
+  resolveMapStyleInput,
   type AntennaRecord,
   type AntenasDataset,
   type LiveScanDeltaChunk,
@@ -8021,5 +8027,182 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
   });
 });
 
+describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxima nitidez (OSM Carto 256px + WebGL HiDPI)', () => {
+  it('incluye OSM Estándar ("osm") junto con los 5 estilos vectoriales OpenFreeMap con identificadores únicos', () => {
+    const ids = OPENFREEMAP_STYLES.map((style) => style.id);
+    expect(new Set(ids).size).toBe(OPENFREEMAP_STYLES.length);
+    expect(ids).toContain('osm');
+    expect(ids).toContain('liberty');
+    expect(ids).toContain('positron');
+    expect(ids).toContain('bright');
+    expect(ids).toContain('dark');
+    expect(ids).toContain('fiord');
+    expect(OPENFREEMAP_STYLES).toHaveLength(6);
 
+    const osmStyle = OPENFREEMAP_STYLES.find((style) => style.id === 'osm');
+    expect(osmStyle).toBeDefined();
+    expect(osmStyle?.label).toBe('OSM Estándar');
+    expect(osmStyle?.isDark).toBe(false);
+    expect(osmStyle?.url).toBe('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+    expect(osmStyle?.url).toBe(OSM_STANDARD_TILE_URL);
+  });
 
+  it('construye un StyleSpecification MapLibre v8 completo con tileSize: 256, maxzoom: 19, glifos OpenFreeMap y remuestreo lineal de alto contraste', () => {
+    const spec = buildOsmStandardStyleSpec();
+
+    expect(spec.version).toBe(8);
+    expect(spec.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
+    expect(spec.glyphs).toBe(
+      'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+    );
+
+    const rasterSource = spec.sources['osm-standard-raster'];
+    expect(rasterSource).toBeDefined();
+    expect(rasterSource).toMatchObject({
+      type: 'raster',
+      tiles: [OSM_STANDARD_TILE_URL],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 19,
+    });
+    if (rasterSource && 'attribution' in rasterSource) {
+      expect(rasterSource.attribution).toContain('OpenStreetMap');
+      expect(rasterSource.attribution).toContain(
+        'https://www.openstreetmap.org/copyright',
+      );
+    } else {
+      throw new Error('La fuente osm-standard-raster debe incluir atribución');
+    }
+
+    const bgLayer = spec.layers.find(
+      (layer) => layer.id === 'osm-standard-background',
+    );
+    expect(bgLayer).toEqual({
+      id: 'osm-standard-background',
+      type: 'background',
+      paint: {
+        'background-color': '#f2efe9',
+      },
+    });
+
+    const osmRasterLayer = spec.layers.find(
+      (layer) => layer.id === 'osm-standard-layer',
+    );
+    expect(osmRasterLayer).toEqual({
+      id: 'osm-standard-layer',
+      type: 'raster',
+      source: 'osm-standard-raster',
+      minzoom: 0,
+      maxzoom: 22,
+      paint: {
+        resampling: 'linear',
+        'raster-resampling': 'linear',
+        'raster-contrast': 0.03,
+        'raster-fade-duration': 150,
+      },
+    });
+  });
+
+  it('resolveMapStyleInput devuelve un StyleSpecification nuevo para "osm" y la URL directa para los 5 estilos vectoriales', () => {
+    const osmOption = OPENFREEMAP_STYLES.find((opt) => opt.id === 'osm');
+    if (!osmOption) {
+      throw new Error('No se encontró la opción "osm" en OPENFREEMAP_STYLES');
+    }
+
+    const specA = resolveMapStyleInput(osmOption);
+    const specB = resolveMapStyleInput(osmOption);
+    expect(typeof specA).toBe('object');
+    expect(specA).not.toBe(specB);
+    expect(specA).toEqual(buildOsmStandardStyleSpec());
+
+    const vectorIds = ['liberty', 'positron', 'bright', 'dark', 'fiord'] as const;
+    for (const vectorId of vectorIds) {
+      const option = OPENFREEMAP_STYLES.find((opt) => opt.id === vectorId);
+      expect(option).toBeDefined();
+      if (option) {
+        const resolved = resolveMapStyleInput(option);
+        expect(typeof resolved).toBe('string');
+        expect(resolved).toBe(option.url);
+      }
+    }
+  });
+
+  it('computeHighQualityMapPixelRatio aplica supermuestreo 2× SSAA en pantallas estándar/inválidas y preserva HiDPI nativo hasta 3×', () => {
+    expect(computeHighQualityMapPixelRatio(1)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(1.25)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(undefined)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(Number.NaN)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(0)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(-1)).toBe(2);
+
+    expect(computeHighQualityMapPixelRatio(2)).toBe(2);
+    expect(computeHighQualityMapPixelRatio(2.5)).toBe(2.5);
+    expect(computeHighQualityMapPixelRatio(3)).toBe(3);
+    expect(computeHighQualityMapPixelRatio(4)).toBe(3);
+  });
+
+  it('conecta resolveMapStyleInput, computeHighQualityMapPixelRatio, filtrado anisotrópico desde 0°, maxCanvasSize 8192 y antialias en AntenasMap.tsx', () => {
+    expect(antenasMapRawSource).toMatch(
+      /new\s+maplibregl\.Map\(\{[\s\S]*?style:\s*resolveMapStyleInput\(/,
+    );
+    expect(antenasMapRawSource).toMatch(
+      /anisotropicFilterPitch:\s*0\b/,
+    );
+    expect(antenasMapRawSource).toMatch(
+      /pixelRatio:\s*computeHighQualityMapPixelRatio\(/,
+    );
+    expect(antenasMapRawSource).toMatch(
+      /maxCanvasSize:\s*\[\s*8192\s*,\s*8192\s*\]/,
+    );
+    expect(antenasMapRawSource).toMatch(
+      /canvasContextAttributes:\s*\{[\s\S]*?antialias:\s*true[\s\S]*?\}/,
+    );
+    expect(antenasMapRawSource).toMatch(
+      /map\.setStyle\(\s*resolveMapStyleInput\(/,
+    );
+  });
+
+  it('renderiza "OSM Estándar" en #map-style-switcher-btn de MapOverlays (SSR) y define la muestra cromática .map-style-swatch[data-style="osm"] en map.css', async () => {
+    const overlaysHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'osm',
+        onStyleChange: () => {},
+        onFlyToRegion: () => {},
+        measurePoints: [],
+        onMeasurePointsChange: () => {},
+        measureModeActive: false,
+        onToggleMeasureMode: () => {},
+        lock3dPitch: true,
+        onToggleLock3dPitch: () => {},
+        disableClustering: false,
+        onToggleDisableClustering: () => {},
+        showBandsOnMap: false,
+        onToggleShowBandsOnMap: () => {},
+      }),
+    );
+
+    expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
+    expect(overlaysHtml).toContain('>OSM Estándar<');
+
+    expect(mapOverlaysRawSource).toContain('Capas cartográficas');
+    expect(mapOverlaysRawSource).toContain(
+      'aria-label="Capas cartográficas del mapa"',
+    );
+    expect(mapOverlaysRawSource).toContain('id={`map-style-option-${option.id}`}');
+    expect(mapOverlaysRawSource).toContain('id="map-disable-clustering-option"');
+    expect(mapOverlaysRawSource).toContain('id="map-lock-3d-option"');
+
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapCssSource = readFileSync(
+      new URL('../styles/map.css', import.meta.url),
+      'utf-8',
+    );
+    expect(mapCssSource).toContain(".map-style-swatch[data-style='osm']");
+    expect(mapCssSource).toMatch(
+      /\.map-style-swatch\[data-style='osm'\]\s*\{[\s\S]*?#f2efe9[\s\S]*?#add19e[\s\S]*?#f9b29c[\s\S]*?#aad3df[\s\S]*?\}/i,
+    );
+  });
+});

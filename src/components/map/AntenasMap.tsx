@@ -11,6 +11,8 @@ import type {
 import {
   OPENFREEMAP_STYLES,
   OPERATOR_META,
+  computeHighQualityMapPixelRatio,
+  resolveMapStyleInput,
   type AntennaRecord,
   type OperatorKey,
 } from '../../types/antena';
@@ -1341,7 +1343,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const map = new maplibregl.Map({
       container,
-      style: initialStyle.url,
+      style: resolveMapStyleInput(initialStyle),
       center: initialCenter,
       zoom: initialZoom,
       pitch: 0,
@@ -1349,6 +1351,14 @@ export function AntenasMap(props: AntenasMapProps) {
       pitchWithRotate: true,
       minZoom: 0,
       maxZoom: 22,
+      anisotropicFilterPitch: 0,
+      pixelRatio: computeHighQualityMapPixelRatio(
+        typeof window !== 'undefined' ? window.devicePixelRatio : 1,
+      ),
+      maxCanvasSize: [8192, 8192],
+      canvasContextAttributes: {
+        antialias: true,
+      },
       attributionControl: false,
     });
 
@@ -1736,7 +1746,7 @@ export function AntenasMap(props: AntenasMapProps) {
     };
   }, [ensureCustomSourcesAndLayers]);
 
-  // Cambio resiliente de estilo OpenFreeMap preservando todas las fuentes y capas
+  // Cambio resiliente de estilo OpenFreeMap / OSM Estándar preservando todas las fuentes y capas
   useEffect(() => {
     isDarkStyleRef.current = currentStyleOption.isDark;
     const map = mapRef.current;
@@ -1749,8 +1759,8 @@ export function AntenasMap(props: AntenasMapProps) {
     lastAppliedGeoJsonRef.current = null;
     popupRef.current?.remove();
 
-    map.setStyle(currentStyleOption.url, { diff: false });
-  }, [styleId, currentStyleOption.url, currentStyleOption.isDark]);
+    map.setStyle(resolveMapStyleInput(currentStyleOption), { diff: false });
+  }, [styleId, currentStyleOption]);
 
   // Sincronización reactiva en memoria del dataset filtrado de antenas y sprites multicolor hacia WebGL
   useEffect(() => {

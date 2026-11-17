@@ -286,6 +286,16 @@
   overflow: hidden;
 }
 
+.map-style-swatch[data-style='osm'] {
+  background: linear-gradient(
+    135deg,
+    #f2efe9 0%,
+    #add19e 38%,
+    #f9b29c 68%,
+    #aad3df 100%
+  );
+}
+
 .map-style-swatch[data-style='liberty'] {
   background: linear-gradient(135deg, #f1f5f9 0%, #dcfce7 52%, #bae6fd 100%);
 }
