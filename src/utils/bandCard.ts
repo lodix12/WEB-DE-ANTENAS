@@ -205,7 +205,6 @@ function isValidOperatorKey(value: string): value is OperatorKey {
     value === 'movistar' ||
     value === 'vodafone' ||
     value === 'orange' ||
-    value === 'masmovil' ||
     value === 'digi' ||
     value === 'otros'
   );

@@ -49,13 +49,16 @@ import {
   compareFrequencyRanges,
   filterAntenas,
   fuseVodafoneAntennasInDataset,
+  fuseXferaIntoOrangeInDataset,
   getCanonicalSpanishProvince,
   getComunidadAutonomaByProvince,
   importAntenasJsonDataset,
+  isXferaLegalEntity,
   matchesAntennaBandsFilter,
   mergeLiveDeltaIntoAntenasDataset,
   normalizeAntennaBandsList,
   normalizeCommercialBandLabel,
+  normalizeOperatorKeyInput,
   parseCustomAntenasJson,
   useFilteredAntenas,
 } from './useAntenasData';
@@ -129,12 +132,6 @@ function createSampleCustomDataset(): AntenasDataset {
       vodafone: {
         key: 'vodafone',
         name: 'Vodafone España',
-        count: 0,
-        legalEntities: [],
-      },
-      masmovil: {
-        key: 'masmovil',
-        name: 'Yoigo / Grupo MásMóvil',
         count: 0,
         legalEntities: [],
       },
@@ -1062,9 +1059,6 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(getOperatorRowBackground('movistar')).toBe('rgba(0, 102, 204, 0.5)');
     expect(getOperatorRowBackground('orange')).toBe('rgba(234, 88, 12, 0.5)');
     expect(getOperatorRowBackground('vodafone')).toBe('rgba(220, 38, 38, 0.5)');
-    expect(getOperatorRowBackground('masmovil')).toBe(
-      'rgba(13, 148, 136, 0.5)',
-    );
     expect(getOperatorRowBackground('digi')).toBe('rgba(124, 58, 237, 0.5)');
     expect(getOperatorRowBackground('otros')).toBe('rgba(100, 116, 139, 0.5)');
   });
@@ -1960,7 +1954,7 @@ describe('Filtro territorial de 2 desplegables (Comunidad Autónoma + Provincia)
         { provincia: 'A CORUÑA', count: 1, byOperator: { movistar: 1 } },
         { provincia: 'LUGO', count: 1, byOperator: { orange: 1 } },
         { provincia: 'OURENSE', count: 1, byOperator: { digi: 1 } },
-        { provincia: 'PONTEVEDRA', count: 1, byOperator: { masmovil: 1 } },
+        { provincia: 'PONTEVEDRA', count: 1, byOperator: { orange: 1 } },
       ],
       antenas: [
         ...base.antenas,
@@ -2000,7 +1994,7 @@ describe('Filtro territorial de 2 desplegables (Comunidad Autónoma + Provincia)
         {
           id: 'XFERA MOVILES, S.A.U. - 3600001',
           gid: '3600001',
-          op: 'masmovil',
+          op: 'orange',
           opRaw: 'XFERA MOVILES, S.A.U.',
           lat: 42.2406,
           lon: -8.7207,
@@ -2198,7 +2192,7 @@ describe('Filtro multifrecuencia ilimitado y casilla "Exclusivamente"', () => {
         {
           id: 'XFERA MOVILES, S.A.U. - 2801005',
           gid: '2801005',
-          op: 'masmovil',
+          op: 'orange',
           opRaw: 'XFERA MOVILES, S.A.U.',
           lat: 40.44,
           lon: -3.68,
@@ -3267,7 +3261,7 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
         {
           id: 'XFERA MOVILES, S.A.U. - MADR2600F',
           gid: 'MADR2600F',
-          op: 'masmovil',
+          op: 'orange',
           opRaw: 'XFERA MOVILES, S.A.U.',
           lat: 40.44,
           lon: -3.68,
@@ -5063,9 +5057,9 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       mixedAntenas.push(
         makeStation(`BI-VOD-${i}`, `0801${i}`, 'vodafone', baseLat, baseLon),
         makeStation(
-          `BI-MAS-${i}`,
+          `BI-ORA-${i}`,
           `0802${i}`,
-          'masmovil',
+          'orange',
           baseLat + 0.00004,
           baseLon - 0.00004,
         ),
@@ -5084,7 +5078,6 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       'movistar',
       'orange',
       'vodafone',
-      'masmovil',
       'digi',
       'otros',
     ];
@@ -6228,8 +6221,10 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
     expect(getNovedadesOperatorLabel('movistar')).toBe('Telefonica');
     expect(getNovedadesOperatorLabel('vodafone')).toBe('Vodafone');
     expect(getNovedadesOperatorLabel('orange')).toBe('Orange');
+    expect(getNovedadesOperatorLabel('orange', 'XFERA MÓVILES, S.A.U.')).toBe(
+      'Orange',
+    );
     expect(getNovedadesOperatorLabel('digi')).toBe('DIGI');
-    expect(getNovedadesOperatorLabel('masmovil')).toBe('MásMóvil');
     expect(getNovedadesOperatorLabel('otros', 'EUSKALTEL, S.A.')).toBe(
       'EUSKALTEL, S.A.',
     );
@@ -6612,7 +6607,6 @@ describe('Novedades — Contadores del último escaneo, encabezado simplificado,
         movistar: 0,
         orange: 0,
         vodafone: 0,
-        masmovil: 0,
         digi: 0,
         otros: 0,
       },
@@ -6675,7 +6669,6 @@ describe('Novedades — Contadores del último escaneo, encabezado simplificado,
         movistar: 0,
         orange: 2,
         vodafone: 0,
-        masmovil: 0,
         digi: 0,
         otros: 0,
       },
@@ -6902,3 +6895,483 @@ describe('Novedades — Contadores del último escaneo, encabezado simplificado,
     );
   });
 });
+
+describe('Unificación total de XFERA MÓVILES, S.A.U. (Yoigo y MásMóvil) dentro de Orange', () => {
+  it('elimina masmovil de OPERATOR_ORDER y OPERATOR_META y normaliza cualquier entidad Xfera/Yoigo/MásMóvil a orange', () => {
+    expect(OPERATOR_ORDER).toEqual([
+      'movistar',
+      'orange',
+      'vodafone',
+      'digi',
+      'otros',
+    ]);
+    expect('masmovil' in OPERATOR_META).toBe(false);
+    expect(OPERATOR_META.orange.description).toContain('Xfera Móviles');
+
+    expect(isXferaLegalEntity('XFERA MÓVILES, S.A.U.')).toBe(true);
+    expect(isXferaLegalEntity('XFERA MOVILES, S.A.')).toBe(true);
+    expect(isXferaLegalEntity('YOIGO')).toBe(true);
+    expect(isXferaLegalEntity('MASMOVIL IBERCOM, S.A.')).toBe(true);
+    expect(isXferaLegalEntity('EUSKALTEL, S.A.')).toBe(true);
+    expect(isXferaLegalEntity('R CABLE Y TELECABLE TELECOMUNICACIONES')).toBe(
+      true,
+    );
+    expect(isXferaLegalEntity('ORANGE ESPAGNE, S.A.U.')).toBe(false);
+    expect(isXferaLegalEntity('VODAFONE ESPAÑA, S.A.U.')).toBe(false);
+
+    expect(normalizeOperatorKeyInput('masmovil')).toBe('orange');
+    expect(
+      normalizeOperatorKeyInput('otros', 'XFERA MÓVILES, S.A.U.'),
+    ).toBe('orange');
+    expect(
+      normalizeOperatorKeyInput(undefined, 'XFERA MOVILES, S.A.'),
+    ).toBe('orange');
+    expect(normalizeOperatorKeyInput('orange', 'ORANGE ESPAGNE, S.A.U.')).toBe(
+      'orange',
+    );
+    expect(normalizeOperatorKeyInput('invalid-op', 'DESCONOCIDA SL')).toBeNull();
+  });
+
+  it('fusiona Xfera en Orange por mismo GID y a < 30 m sin fusionar jamás dos estaciones nativas ORANGE ESPAGNE distintas y contabiliza Xfera aisladas en Orange', () => {
+    const legacyRawPayload = {
+      updatedAt: '2026-11-17T07:53:32Z',
+      sourceUrl: 'https://geoportal.minetur.gob.es/VCTEL/vcne.do',
+      total: 9,
+      crawlStats: {
+        requestsCount: 10,
+        durationSeconds: 1,
+        gridBoxesVisited: 2,
+        subdividedBoxes: 0,
+        zoomParam: 7,
+        delaySeconds: 0.02,
+      },
+      operators: {
+        movistar: {
+          key: 'movistar',
+          name: 'Movistar (Telefónica)',
+          count: 1,
+          legalEntities: ['TELEFONICA MOVILES ESPAÑA, S.A.U.'],
+        },
+        orange: {
+          key: 'orange',
+          name: 'Orange (MasOrange)',
+          count: 4,
+          legalEntities: ['ORANGE ESPAGNE, S.A.U.'],
+        },
+        vodafone: {
+          key: 'vodafone',
+          name: 'Vodafone España',
+          count: 0,
+          legalEntities: [],
+        },
+        masmovil: {
+          key: 'masmovil',
+          name: 'Yoigo / Grupo MásMóvil',
+          count: 4,
+          legalEntities: ['XFERA MÓVILES, S.A.U.', 'XFERA MOVILES, S.A.'],
+        },
+        digi: {
+          key: 'digi',
+          name: 'DIGI Spain',
+          count: 0,
+          legalEntities: [],
+        },
+        otros: {
+          key: 'otros',
+          name: 'Otros Operadores',
+          count: 0,
+          legalEntities: [],
+        },
+      },
+      provinces: [
+        {
+          provincia: 'SEVILLA',
+          count: 2,
+          byOperator: { orange: 1, masmovil: 1 },
+        },
+        {
+          provincia: 'BADAJOZ',
+          count: 3,
+          byOperator: { orange: 1, masmovil: 2 },
+        },
+        {
+          provincia: 'MADRID',
+          count: 4,
+          byOperator: { movistar: 1, orange: 2, masmovil: 1 },
+        },
+      ],
+      antenas: [
+        // 1. Mismo GID exacto (ANDR9085A): Orange + Xfera -> 1 estación Orange con las 6 bandas y 0 mergedGids redundantes
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - ANDR9085A',
+          gid: 'ANDR9085A',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 37.3891,
+          lon: -5.9845,
+          dir: 'AV CONSTITUCION 10',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['800 MHz', '900 MHz', '1800 MHz', '2100 MHz'],
+          frecuencias: ['801.00 - 811.00', '935.10 - 949.90'],
+          concesiones: [
+            { ref: 'ORA-800', freq: '801.00 - 811.00' },
+            { ref: 'ORA-900', freq: '935.10 - 949.90' },
+          ],
+          bandsScannedAt: '2026-11-16T18:00:00Z',
+        },
+        {
+          id: 'XFERA MÓVILES, S.A.U. - ANDR9085A',
+          gid: 'ANDR9085A',
+          op: 'masmovil',
+          opRaw: 'XFERA MÓVILES, S.A.U.',
+          lat: 37.3891,
+          lon: -5.9845,
+          dir: 'AV CONSTITUCION 10',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['700 MHz', '1800 MHz', '3500 MHz'],
+          frecuencias: [
+            '758.00 - 768.00',
+            '1805.00 - 1825.00',
+            '3400.00 - 3480.00',
+          ],
+          concesiones: [
+            { ref: 'XFE-700', freq: '758.00 - 768.00' },
+            { ref: 'XFE-3500', freq: '3400.00 - 3480.00' },
+          ],
+          bandsScannedAt: '2026-11-17T06:00:00Z',
+        },
+        // 2. Co-ubicadas a < 30 m (~4.5 m) con GID hermano (EXTR6353E + EXTR6353A) -> 1 estación Orange con mergedGids
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - EXTR6353E',
+          gid: 'EXTR6353E',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 38.8794,
+          lon: -6.9707,
+          dir: 'AV COLON 5',
+          mun: 'BADAJOZ',
+          prov: 'BADAJOZ',
+          bandas: ['800 MHz', '900 MHz', '1800 MHz', '2100 MHz'],
+          frecuencias: ['801.00 - 811.00'],
+          concesiones: [{ ref: 'ORA-EXT-800', freq: '801.00 - 811.00' }],
+        },
+        {
+          id: 'XFERA MÓVILES, S.A.U. - EXTR6353A',
+          gid: 'EXTR6353A',
+          op: 'masmovil',
+          opRaw: 'XFERA MÓVILES, S.A.U.',
+          lat: 38.87944,
+          lon: -6.9707,
+          dir: 'AV COLON 5',
+          mun: 'BADAJOZ',
+          prov: 'BADAJOZ',
+          bandas: ['700 MHz', '3500 MHz'],
+          frecuencias: ['758.00 - 768.00', '3400.00 - 3480.00'],
+          concesiones: [{ ref: 'XFE-EXT-3500', freq: '3400.00 - 3480.00' }],
+        },
+        // 3. Estación Xfera aislada (>= 30 m: > 5 km) -> se mantiene como emplazamiento independiente bajo op: 'orange'
+        {
+          id: 'XFERA MOVILES, S.A. - EXTR6566A',
+          gid: 'EXTR6566A',
+          op: 'masmovil',
+          opRaw: 'XFERA MOVILES, S.A.',
+          lat: 38.94,
+          lon: -7.02,
+          dir: 'POLIGONO EL NEVERO 12',
+          mun: 'BADAJOZ',
+          prov: 'BADAJOZ',
+          bandas: ['1800 MHz', '2100 MHz', '2600 MHz'],
+          frecuencias: ['2595.00 - 2605.00'],
+          concesiones: [{ ref: 'XFE-B38', freq: '2595.00 - 2605.00' }],
+        },
+        // 4. Guardia nativa Orange: dos ORANGE ESPAGNE con GID distinto a ~10 m con un Xfera intermedio a ~4 m / ~6 m
+        //    -> ORA-NAT-1 absorbe XFE-BRIDGE, pero ORA-NAT-2 NUNCA se fusiona con ORA-NAT-1
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - ORA-NAT-1',
+          gid: 'ORA-NAT-1',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.42,
+          lon: -3.7,
+          dir: 'FUENCARRAL 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['800 MHz'],
+        },
+        {
+          id: 'XFERA MÓVILES, S.A.U. - XFE-BRIDGE',
+          gid: 'XFE-BRIDGE',
+          op: 'masmovil',
+          opRaw: 'XFERA MÓVILES, S.A.U.',
+          lat: 40.420035,
+          lon: -3.7,
+          dir: 'FUENCARRAL 10',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['3500 MHz'],
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - ORA-NAT-2',
+          gid: 'ORA-NAT-2',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.42009,
+          lon: -3.7,
+          dir: 'FUENCARRAL 12',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['2100 MHz'],
+        },
+        // 5. Testigo Movistar
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800099',
+          gid: '2800099',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.45,
+          lon: -3.69,
+          dir: 'CASTELLANA 99',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz'],
+        },
+      ],
+    };
+
+    const parsed = parseCustomAntenasJson(legacyRawPayload);
+    expect('masmovil' in parsed.operators).toBe(false);
+    expect(Object.keys(parsed.operators)).toEqual([
+      'movistar',
+      'orange',
+      'vodafone',
+      'digi',
+      'otros',
+    ]);
+    // De 9 registros iniciales: 3 declaraciones Xfera co-ubicadas fusionadas -> 6 estaciones totales (1 movistar + 5 orange)
+    expect(parsed.total).toBe(6);
+    expect(parsed.antenas).toHaveLength(6);
+    expect(parsed.operators.movistar.count).toBe(1);
+    expect(parsed.operators.orange.count).toBe(5);
+    expect(parsed.operators.orange.legalEntities).toEqual([
+      'ORANGE ESPAGNE, S.A.U.',
+      'XFERA MOVILES, S.A.',
+      'XFERA MÓVILES, S.A.U.',
+    ]);
+    expect(parsed.crawlStats.xferaFusedIntoOrange).toBe(3);
+
+    // Idempotencia al volver a ejecutar fuseXferaIntoOrangeInDataset
+    expect(fuseXferaIntoOrangeInDataset(parsed)).toBe(parsed);
+
+    const byGid = new Map(parsed.antenas.map((a) => [a.gid, a]));
+    const andr = byGid.get('ANDR9085A');
+    expect(andr?.op).toBe('orange');
+    expect(andr?.id).toBe('ORANGE ESPAGNE, S.A.U. - ANDR9085A');
+    expect(andr?.mergedGids).toBeUndefined();
+    expect(andr?.bandas).toEqual([
+      '700 MHz',
+      '800 MHz',
+      '900 MHz',
+      '1800 MHz',
+      '2100 MHz',
+      '3500 MHz',
+    ]);
+    expect(andr?.concesiones).toHaveLength(4);
+    expect(andr?.bandsScannedAt).toBe('2026-11-17T06:00:00Z');
+
+    const extrFused = byGid.get('EXTR6353E');
+    expect(extrFused?.op).toBe('orange');
+    expect(extrFused?.mergedGids).toEqual(['EXTR6353E', 'EXTR6353A']);
+    expect(extrFused?.bandas).toEqual([
+      '700 MHz',
+      '800 MHz',
+      '900 MHz',
+      '1800 MHz',
+      '2100 MHz',
+      '3500 MHz',
+    ]);
+    expect(byGid.has('EXTR6353A')).toBe(false);
+
+    const extrStandalone = byGid.get('EXTR6566A');
+    expect(extrStandalone?.op).toBe('orange');
+    expect(extrStandalone?.opRaw).toBe('XFERA MOVILES, S.A.');
+    expect(extrStandalone?.bandas).toEqual([
+      '1800 MHz',
+      '2100 MHz',
+      '2600 MHz',
+    ]);
+
+    expect(byGid.get('ORA-NAT-1')?.bandas).toEqual(['800 MHz', '3500 MHz']);
+    expect(byGid.get('ORA-NAT-1')?.mergedGids).toEqual([
+      'ORA-NAT-1',
+      'XFE-BRIDGE',
+    ]);
+    expect(byGid.get('ORA-NAT-2')?.bandas).toEqual(['2100 MHz']);
+    expect(byGid.get('ORA-NAT-2')?.mergedGids).toBeUndefined();
+
+    // Estructuras derivadas indexan GIDs absorbidos (EXTR6353A y XFE-BRIDGE) tanto en byGid como en el buscador
+    const derived = buildDerivedAntenasStructures(parsed);
+    expect(derived.byGid.get('EXTR6353A')?.gid).toBe('EXTR6353E');
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: 'EXTR6353A',
+        selectedComunidad: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+      }).map((a) => a.gid),
+    ).toEqual(['EXTR6353E']);
+  });
+
+  it('normaliza novedades heredadas de Xfera a Orange, verifica las vistas SSR sin rastro separado de MásMóvil/Yoigo y valida public/data/antenas.json', async () => {
+    const legacyNov = parseCustomNovedadesJson({
+      updatedAt: '2026-11-17T18:00:00Z',
+      previousScanAt: '2026-11-16T18:00:00Z',
+      scanId: 'scan-xfera-test',
+      isBaselineScan: false,
+      total: 1,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 1,
+      novedades: [
+        {
+          id: 'freq:xfe:EXTR6566A:3500',
+          tipo: 'frecuencia',
+          op: 'masmovil',
+          opRaw: 'XFERA MÓVILES, S.A.U.',
+          codigo: 'EXTR6566A',
+          antennaId: 'XFERA MÓVILES, S.A.U. - EXTR6566A',
+          codigoBanda: 'X-3500',
+          frecuencia: '3400.00 - 3480.00 MHz',
+          ubicacion: 'BADAJOZ (BADAJOZ)',
+          prov: 'BADAJOZ',
+          scannedAt: '2026-11-17T18:00:00Z',
+          fecha: '17/11/2026 19:00:00',
+          scanId: 'scan-xfera-test',
+        },
+      ],
+    });
+    expect(legacyNov.novedades[0]?.op).toBe('orange');
+
+    const sampleAntenas = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures(sampleAntenas);
+
+    const filterHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterHtml).not.toContain('MásMóvil');
+    expect(filterHtml).not.toContain('Yoigo');
+    expect(filterHtml).toContain('Orange');
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], sampleAntenas);
+    queryClient.setQueryData(['novedades-dataset'], legacyNov);
+    queryClient.setQueryData(['scan-status'], null);
+
+    const root = createRootRoute({
+      component: () =>
+        createElement(WorkspaceProvider, null, createElement(Outlet)),
+    });
+    const novR = createRoute({
+      getParentRoute: () => root,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+    const statsR = createRoute({
+      getParentRoute: () => root,
+      path: '/estadisticas',
+      component: EstadisticasView,
+    });
+    const novRouter = createRouter({
+      routeTree: root.addChildren([novR, statsR]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await novRouter.load();
+    const novHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: novRouter }),
+      ),
+    );
+    expect(novHtml).not.toContain('novedades-op-chip-masmovil');
+    expect(novHtml).not.toContain('MásMóvil');
+    expect(novHtml).toContain('id="novedades-op-chip-orange"');
+    expect(novHtml).toContain('>Orange</span>');
+
+    const statsRouter = createRouter({
+      routeTree: root.addChildren([novR, statsR]),
+      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    });
+    await statsRouter.load();
+    const statsHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: statsRouter }),
+      ),
+    );
+    expect(statsHtml).not.toContain('Yoigo / Grupo MásMóvil');
+    expect(statsHtml).toContain('Orange (MasOrange)');
+
+    // Verificación directa del dataset real public/data/antenas.json
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const rawStaticAntenas = JSON.parse(
+      readFileSync(
+        new URL('../../public/data/antenas.json', import.meta.url),
+        'utf-8',
+      ),
+    ) as AntenasDataset & { operators: Record<string, unknown> };
+    expect('masmovil' in rawStaticAntenas.operators).toBe(false);
+    expect(Object.keys(rawStaticAntenas.operators)).toEqual([
+      'movistar',
+      'orange',
+      'vodafone',
+      'digi',
+      'otros',
+    ]);
+    expect(rawStaticAntenas.total).toBe(rawStaticAntenas.antenas.length);
+    expect(rawStaticAntenas.operators.orange.count).toBe(19049);
+    expect(
+      rawStaticAntenas.antenas.some(
+        (a) => (a as unknown as { op: string }).op === 'masmovil',
+      ),
+    ).toBe(false);
+    expect(
+      rawStaticAntenas.provinces.some(
+        (p) => 'masmovil' in (p.byOperator as Record<string, unknown>),
+      ),
+    ).toBe(false);
+  });
+});
+

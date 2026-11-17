@@ -2,7 +2,6 @@ export type OperatorKey =
   | 'movistar'
   | 'vodafone'
   | 'orange'
-  | 'masmovil'
   | 'digi'
   | 'otros';
 
@@ -67,6 +66,8 @@ export interface CrawlStats {
   isPartialSeed?: boolean;
   /** Declaraciones duplicadas de Vodafone (< 35 m) fusionadas en una única antena */
   vodafoneFusedDuplicates?: number;
+  /** Declaraciones colocalizadas o de idéntico Gis_ID de Xfera fusionadas en Orange */
+  xferaFusedIntoOrange?: number;
   /** Número de antenas del JSON que ya disponen de sus bandas/frecuencias extraídas */
   bandsPopulatedCount?: number;
   /** Peticiones a detalleEstacion.do realizadas en la última sincronización de bandas */
@@ -234,7 +235,6 @@ export const OPERATOR_ORDER: OperatorKey[] = [
   'movistar',
   'orange',
   'vodafone',
-  'masmovil',
   'digi',
   'otros',
 ];
@@ -254,7 +254,7 @@ export const OPERATOR_META: Record<OperatorKey, OperatorMeta> = {
     shortName: 'Orange',
     color: '#EA580C',
     softBg: 'rgba(234, 88, 12, 0.12)',
-    description: 'Orange Espagne, S.A.U.',
+    description: 'Orange Espagne, S.A.U. · Xfera Móviles, S.A.U.',
   },
   vodafone: {
     key: 'vodafone',
@@ -263,14 +263,6 @@ export const OPERATOR_META: Record<OperatorKey, OperatorMeta> = {
     color: '#DC2626',
     softBg: 'rgba(220, 38, 38, 0.12)',
     description: 'Vodafone España, S.A.U.',
-  },
-  masmovil: {
-    key: 'masmovil',
-    name: 'Yoigo / Grupo MásMóvil',
-    shortName: 'Yoigo / MásMóvil',
-    color: '#0D9488',
-    softBg: 'rgba(13, 148, 136, 0.12)',
-    description: 'Xfera Móviles, S.A.U.',
   },
   digi: {
     key: 'digi',
@@ -289,6 +281,55 @@ export const OPERATOR_META: Record<OperatorKey, OperatorMeta> = {
     description: 'Operadores regionales e infraestructuras especiales',
   },
 };
+
+const XFERA_LEGAL_ENTITY_TOKENS = [
+  'XFERA',
+  'MASMOVIL',
+  'YOIGO',
+  'EUSKALTEL',
+  'R CABLE',
+  'TELECABLE',
+] as const;
+
+const VALID_OPERATOR_KEYS = new Set<string>(OPERATOR_ORDER);
+
+/**
+ * Determina si una razón social declarada en MINETUR pertenece a XFERA MÓVILES, S.A.U.
+ * (Yoigo / Grupo MásMóvil / Euskaltel / R Cable / Telecable), integrada en Orange (MasOrange).
+ */
+export function isXferaLegalEntity(opRaw: string): boolean {
+  if (typeof opRaw !== 'string' || !opRaw) return false;
+  const upperAscii = opRaw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  for (let i = 0; i < XFERA_LEGAL_ENTITY_TOKENS.length; i++) {
+    if (upperAscii.includes(XFERA_LEGAL_ENTITY_TOKENS[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Normaliza cualquier clave de operador (incluyendo el valor heredado `'masmovil'` o razones
+ * sociales de Xfera) al conjunto canónico de 5 operadores (`OperatorKey`), o `null` si es inválida.
+ */
+export function normalizeOperatorKeyInput(
+  op: unknown,
+  opRaw?: unknown,
+): OperatorKey | null {
+  if (
+    op === 'masmovil' ||
+    (typeof opRaw === 'string' && isXferaLegalEntity(opRaw))
+  ) {
+    return 'orange';
+  }
+  if (typeof op === 'string' && VALID_OPERATOR_KEYS.has(op)) {
+    return op as OperatorKey;
+  }
+  return null;
+}
 
 export interface OpenFreeMapStyleOption {
   id: 'positron' | 'liberty' | 'bright' | 'dark' | 'fiord';

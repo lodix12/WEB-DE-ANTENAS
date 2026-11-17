@@ -57,12 +57,6 @@ function createMinimalDataset(): AntenasDataset {
         count: 0,
         legalEntities: [],
       },
-      masmovil: {
-        key: 'masmovil',
-        name: 'Yoigo / Grupo MásMóvil',
-        count: 0,
-        legalEntities: [],
-      },
       digi: {
         key: 'digi',
         name: 'DIGI Spain',

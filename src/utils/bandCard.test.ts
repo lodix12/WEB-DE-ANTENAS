@@ -689,9 +689,9 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
           bandas: [],
         }),
         makeAntenna({
-          id: 'MAS-1',
+          id: 'DIG-1',
           gid: '2800203',
-          op: 'masmovil',
+          op: 'digi',
           bandas: ['2100 MHz', '1800 MHz'],
         }),
       ],
@@ -700,10 +700,10 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
     const rows = buildSiteBandCardRows(site);
     expect(rows).toEqual([
       { op: 'movistar', color: '#0066CC', text: 'B3 B20' },
-      { op: 'masmovil', color: '#0D9488', text: 'B1 B3' },
+      { op: 'digi', color: '#7C3AED', text: 'B1 B3' },
     ]);
     expect(buildSiteBandCardKey(site)).toBe(
-      'bandcard:movistar:B3 B20|masmovil:B1 B3',
+      'bandcard:movistar:B3 B20|digi:B1 B3',
     );
   });
 

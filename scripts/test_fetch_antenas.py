@@ -77,25 +77,33 @@ class FetchAntenasUnitTests(unittest.TestCase):
         self.assertEqual(fa.decode_infoantenas_payload(b""), [])
 
     def test_operator_classification_all_groups(self) -> None:
+        self.assertEqual(
+            fa.OPERATOR_ORDER,
+            ("movistar", "orange", "vodafone", "digi", "otros"),
+        )
+        self.assertNotIn("masmovil", fa.OPERATOR_NAMES)
         cases = [
-            ("TELEFONICA MOVILES ESPAÑA, S.A.U.", "movistar"),
-            ("MOVISTAR INFRAESTRUCTURAS", "movistar"),
-            ("ORANGE ESPAGNE, S.A.U.", "orange"),
-            ("VODAFONE ESPAÑA, S.A.U.", "vodafone"),
-            ("XFERA MOVILES, S.A.U.", "masmovil"),
-            ("GRUPO MÁSMÓVIL TELECOM", "masmovil"),
-            ("YOIGO RED", "masmovil"),
-            ("EUSKALTEL, S.A.", "masmovil"),
-            ("R CABLE Y TELECOMUNICACIONES GALICIA, S.A.", "masmovil"),
-            ("TELECABLE DE ASTURIAS, S.A.", "masmovil"),
-            ("DS MOBILE NETWORKS, S.L.", "digi"),
-            ("DIGI SPAIN TELECOM, S.L.U.", "digi"),
-            ("TELEAST DIGITAL, SL", "otros"),
-            ("TRADIA TELECOM, S.A.", "otros"),
+            ("TELEFONICA MOVILES ESPAÑA, S.A.U.", "movistar", False),
+            ("MOVISTAR INFRAESTRUCTURAS", "movistar", False),
+            ("ORANGE ESPAGNE, S.A.U.", "orange", False),
+            ("MASORANGE, S.L.", "orange", False),
+            ("VODAFONE ESPAÑA, S.A.U.", "vodafone", False),
+            ("XFERA MOVILES, S.A.U.", "orange", True),
+            ("XFERA MÓVILES, S.A.U.", "orange", True),
+            ("GRUPO MÁSMÓVIL TELECOM", "orange", True),
+            ("YOIGO RED", "orange", True),
+            ("EUSKALTEL, S.A.", "orange", True),
+            ("R CABLE Y TELECOMUNICACIONES GALICIA, S.A.", "orange", True),
+            ("TELECABLE DE ASTURIAS, S.A.", "orange", True),
+            ("DS MOBILE NETWORKS, S.L.", "digi", False),
+            ("DIGI SPAIN TELECOM, S.L.U.", "digi", False),
+            ("TELEAST DIGITAL, SL", "otros", False),
+            ("TRADIA TELECOM, S.A.", "otros", False),
         ]
-        for raw, expected in cases:
+        for raw, expected, expected_xfera in cases:
             with self.subTest(raw=raw):
                 self.assertEqual(fa.classify_operator(raw), expected)
+                self.assertEqual(fa.is_xfera_entity(raw), expected_xfera)
 
     def test_parse_direccion_with_dots_commas_and_ine_fallback(self) -> None:
         self.assertEqual(len(fa.INE_PROVINCES), 52)
@@ -996,8 +1004,11 @@ class FetchAntenasUnitTests(unittest.TestCase):
             self.assertEqual(ora["bandas"], ["700 MHz"])
             self.assertEqual(ora["frecuencias"], ["758.00 - 768.00"])
 
-            # Emplazamiento sin filas guarda [] (clave presente)
+            # Emplazamiento independiente de Xfera sin filas guarda [] y se contabiliza en Orange
+            self.assertNotIn("masmovil", dataset["operators"])
+            self.assertEqual(dataset["operators"]["orange"]["count"], 2)
             masm = by_id["XFERA MOVILES, S.A.U. - 4108888"]
+            self.assertEqual(masm["op"], "orange")
             self.assertEqual(masm["bandas"], [])
             self.assertEqual(masm["frecuencias"], [])
 
@@ -3943,6 +3954,301 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 ],
                 day1_snapshot,
             )
+
+    def test_fuse_xfera_into_orange_same_gid_colocated_standalone_and_native_guard(
+        self,
+    ) -> None:
+        # 1) Mismo GID exacto (ANDR9085A): Orange + Xfera se unifican en 1 registro Orange
+        #    combinando bandas, frecuencias y las 8 concesiones sin mergedGids redundante.
+        andr_orange = {
+            "id": "ORANGE ESPAGNE, S.A.U. - ANDR9085A",
+            "gid": "ANDR9085A",
+            "op": "orange",
+            "opRaw": "ORANGE ESPAGNE, S.A.U.",
+            "lat": 36.972167,
+            "lon": -2.955278,
+            "dir": "VP POLÍGONO 2 PARCELA 240, S/N",
+            "mun": "ALCOLEA",
+            "prov": "ALMERÍA",
+            "bandas": ["800 MHz", "900 MHz", "1800 MHz", "2100 MHz"],
+            "frecuencias": [
+                "832.00 - 842.00",
+                "925.10 - 935.10",
+                "1855.10 - 1879.90",
+                "2120.00 - 2140.00",
+            ],
+            "concesiones": [
+                {"ref": "ALAL-1603890", "freq": "832.00 - 842.00"},
+                {"ref": "ALAL-2400087", "freq": "925.10 - 935.10"},
+                {"ref": "ALAL-2400089", "freq": "925.10 - 935.10"},
+                {"ref": "ALAL-2200033", "freq": "1855.10 - 1879.90"},
+                {"ref": "ALAL-2200035", "freq": "2120.00 - 2140.00"},
+            ],
+            "bandsScannedAt": "2026-11-17T07:53:00Z",
+        }
+        andr_xfera = {
+            "id": "XFERA MÓVILES, S.A.U. - ANDR9085A",
+            "gid": "ANDR9085A",
+            "op": "masmovil",
+            "opRaw": "XFERA MÓVILES, S.A.U.",
+            "lat": 36.972167,
+            "lon": -2.955278,
+            "dir": "VP POLÍGONO 2 PARCELA 240, S/N",
+            "mun": "ALCOLEA",
+            "prov": "ALMERÍA",
+            "bandas": ["700 MHz", "1800 MHz", "3500 MHz"],
+            "frecuencias": [
+                "758.00 - 768.00",
+                "1855.10 - 1879.90",
+                "3600.00 - 3700.00",
+            ],
+            "concesiones": [
+                {"ref": "ALAL-2500474", "freq": "758.00 - 768.00"},
+                {"ref": "ALAL-2500468", "freq": "1855.10 - 1879.90"},
+                {"ref": "ALAL-2500471", "freq": "3600.00 - 3700.00"},
+            ],
+            "bandsScannedAt": "2026-11-17T07:52:12Z",
+        }
+
+        # 2) Co-ubicación < 30 m con GID distinto (EXTR6353A aparece incluso antes que EXTR6353E):
+        #    ORANGE ESPAGNE debe ganar como registro canónico y poblar mergedGids=["EXTR6353E", "EXTR6353A"].
+        extr_xfera_0m = {
+            "id": "XFERA MÓVILES, S.A.U. - EXTR6353A",
+            "gid": "EXTR6353A",
+            "op": "masmovil",
+            "opRaw": "XFERA MÓVILES, S.A.U.",
+            "lat": 39.650528,
+            "lon": -7.495919,
+            "dir": "CL CASARES, 7",
+            "mun": "CEDILLO",
+            "prov": "CÁCERES",
+            "bandas": ["700 MHz", "1800 MHz", "3500 MHz"],
+            "frecuencias": [
+                "758.00 - 768.00",
+                "1855.10 - 1879.90",
+                "3600.00 - 3700.00",
+            ],
+            "concesiones": [
+                {"ref": "CCCC-2501106", "freq": "758.00 - 768.00"},
+                {"ref": "CCCC-2501102", "freq": "1855.10 - 1879.90"},
+                {"ref": "CCCC-2501104", "freq": "3600.00 - 3700.00"},
+            ],
+            "bandsScannedAt": "2026-11-17T07:45:14Z",
+        }
+        extr_orange_0m = {
+            "id": "ORANGE ESPAGNE, S.A.U. - EXTR6353E",
+            "gid": "EXTR6353E",
+            "op": "orange",
+            "opRaw": "ORANGE ESPAGNE, S.A.U.",
+            "lat": 39.650528,
+            "lon": -7.495919,
+            "dir": "",
+            "mun": "CEDILLO",
+            "prov": "SIN PROVINCIA",
+            "bandas": ["800 MHz", "900 MHz", "2100 MHz"],
+            "frecuencias": [
+                "832.00 - 842.00",
+                "925.10 - 935.10",
+                "2120.00 - 2140.00",
+            ],
+            "concesiones": [
+                {"ref": "CCCC-2501118", "freq": "832.00 - 842.00"},
+                {"ref": "CCCC-2501116", "freq": "925.10 - 935.10"},
+                {"ref": "CCCC-2501117", "freq": "925.10 - 935.10"},
+                {"ref": "CCCC-2501120", "freq": "2120.00 - 2140.00"},
+            ],
+            "bandsScannedAt": "2026-11-17T07:46:00Z",
+        }
+
+        # 3) Guardia crítica: dos estaciones nativas ORANGE ESPAGNE con GID distinto a ~10 m
+        #    JAMÁS deben fusionarse entre sí, ni siquiera con una estación Xfera en medio (~4 m y ~6 m).
+        base_lat, base_lon = 40.420000, -3.700000
+        lat_4m = 40.420036   # ~4.0 m respecto a base_lat
+        lat_10m = 40.420090  # ~10.0 m respecto a base_lat (~6.0 m respecto a lat_4m)
+        self.assertLess(fa.haversine_m(base_lat, base_lon, lat_10m, base_lon), 11.0)
+        ora_native_a = {
+            "id": "ORANGE ESPAGNE, S.A.U. - MADR1001A",
+            "gid": "MADR1001A",
+            "op": "orange",
+            "opRaw": "ORANGE ESPAGNE, S.A.U.",
+            "lat": base_lat,
+            "lon": base_lon,
+            "dir": "CL ALCALÁ, 10",
+            "mun": "MADRID",
+            "prov": "MADRID",
+            "bandas": ["800 MHz"],
+            "frecuencias": ["832.00 - 842.00"],
+            "concesiones": [{"ref": "M-1001", "freq": "832.00 - 842.00"}],
+            "bandsScannedAt": "2026-11-17T07:00:00Z",
+        }
+        ora_native_b = {
+            "id": "ORANGE ESPAGNE, S.A.U. - MADR1002B",
+            "gid": "MADR1002B",
+            "op": "orange",
+            "opRaw": "ORANGE ESPAGNE, S.A.U.",
+            "lat": lat_10m,
+            "lon": base_lon,
+            "dir": "CL ALCALÁ, 12",
+            "mun": "MADRID",
+            "prov": "MADRID",
+            "bandas": ["2600 MHz"],
+            "frecuencias": ["2620.00 - 2640.00"],
+            "concesiones": [{"ref": "M-1002", "freq": "2620.00 - 2640.00"}],
+            "bandsScannedAt": "2026-11-17T07:00:00Z",
+        }
+        xfera_between = {
+            "id": "XFERA MÓVILES, S.A.U. - TRMADR99",
+            "gid": "TRMADR99",
+            "op": "orange",
+            "opRaw": "XFERA MÓVILES, S.A.U.",
+            "lat": lat_4m,
+            "lon": base_lon,
+            "dir": "CL ALCALÁ, 10",
+            "mun": "MADRID",
+            "prov": "MADRID",
+            "bandas": ["3500 MHz"],
+            "frecuencias": ["3600.00 - 3700.00"],
+            "concesiones": [{"ref": "M-9999", "freq": "3600.00 - 3700.00"}],
+            "bandsScannedAt": "2026-11-17T07:00:00Z",
+        }
+
+        # 4) Estación independiente de Xfera a >= 30 m (~150 m) conservada con op == "orange".
+        lat_150m = 40.421350  # ~150.1 m respecto a base_lat
+        self.assertGreater(fa.haversine_m(lat_10m, base_lon, lat_150m, base_lon), 130.0)
+        xfera_standalone = {
+            "id": "XFERA MÓVILES, S.A.U. - EXTR6566A",
+            "gid": "EXTR6566A",
+            "op": "masmovil",
+            "opRaw": "XFERA MÓVILES, S.A.U.",
+            "lat": lat_150m,
+            "lon": base_lon,
+            "dir": "CL LAS HABAZAS, 2(A)",
+            "mun": "MALPARTIDA DE PLASENCIA",
+            "prov": "CÁCERES",
+            "bandas": ["700 MHz", "1800 MHz", "3500 MHz"],
+            "frecuencias": [
+                "758.00 - 768.00",
+                "1855.10 - 1879.90",
+                "3600.00 - 3700.00",
+            ],
+            "concesiones": [
+                {"ref": "CCCC-2501268", "freq": "758.00 - 768.00"},
+                {"ref": "CCCC-2501266", "freq": "1855.10 - 1879.90"},
+                {"ref": "CCCC-2501267", "freq": "3600.00 - 3700.00"},
+            ],
+            "bandsScannedAt": "2026-11-17T07:45:15Z",
+        }
+
+        dataset = fa.build_dataset(
+            [
+                andr_xfera,
+                andr_orange,
+                extr_xfera_0m,
+                extr_orange_0m,
+                ora_native_a,
+                ora_native_b,
+                xfera_between,
+                xfera_standalone,
+            ],
+            crawl_stats={"requestsCount": 1, "durationSeconds": 0.1},
+        )
+        self.assertNotIn("masmovil", dataset["operators"])
+        self.assertEqual(
+            list(dataset["operators"].keys()),
+            ["movistar", "orange", "vodafone", "digi", "otros"],
+        )
+        # De 8 registros de entrada -> 5 estaciones únicas de Orange:
+        # ANDR9085A (1), EXTR6353E+EXTR6353A (1), MADR1001A+TRMADR99 (1), MADR1002B (1), EXTR6566A (1)
+        self.assertEqual(dataset["total"], 5)
+        self.assertEqual(dataset["operators"]["orange"]["count"], 5)
+        self.assertTrue(all(a["op"] == "orange" for a in dataset["antenas"]))
+
+        by_id = {a["id"]: a for a in dataset["antenas"]}
+        self.assertIn("ORANGE ESPAGNE, S.A.U. - ANDR9085A", by_id)
+        self.assertNotIn("XFERA MÓVILES, S.A.U. - ANDR9085A", by_id)
+        andr_merged = by_id["ORANGE ESPAGNE, S.A.U. - ANDR9085A"]
+        self.assertNotIn("mergedGids", andr_merged)
+        self.assertEqual(
+            andr_merged["bandas"],
+            ["700 MHz", "800 MHz", "900 MHz", "1800 MHz", "2100 MHz", "3500 MHz"],
+        )
+        self.assertEqual(len(andr_merged["concesiones"]), 8)
+        self.assertEqual(andr_merged["bandsScannedAt"], "2026-11-17T07:52:12Z")
+
+        extr_merged = by_id["ORANGE ESPAGNE, S.A.U. - EXTR6353E"]
+        self.assertEqual(extr_merged["mergedGids"], ["EXTR6353E", "EXTR6353A"])
+        self.assertEqual(extr_merged["dir"], "CL CASARES, 7")
+        self.assertEqual(extr_merged["prov"], "CÁCERES")
+        self.assertEqual(
+            extr_merged["bandas"],
+            ["700 MHz", "800 MHz", "900 MHz", "1800 MHz", "2100 MHz", "3500 MHz"],
+        )
+        self.assertEqual(len(extr_merged["concesiones"]), 7)
+
+        # Ambas nativas de Madrid siguen separadas; Xfera intermedia (~4 m vs ~6 m) se une a MADR1001A
+        madr_a = by_id["ORANGE ESPAGNE, S.A.U. - MADR1001A"]
+        madr_b = by_id["ORANGE ESPAGNE, S.A.U. - MADR1002B"]
+        self.assertEqual(madr_a["mergedGids"], ["MADR1001A", "TRMADR99"])
+        self.assertEqual(madr_a["bandas"], ["800 MHz", "3500 MHz"])
+        self.assertNotIn("mergedGids", madr_b)
+        self.assertEqual(madr_b["bandas"], ["2600 MHz"])
+
+        # Estación independiente Xfera a >= 30 m conservada en Orange con su espectro íntegro
+        standalone_out = by_id["XFERA MÓVILES, S.A.U. - EXTR6566A"]
+        self.assertEqual(standalone_out["op"], "orange")
+        self.assertEqual(standalone_out["bandas"], ["700 MHz", "1800 MHz", "3500 MHz"])
+        self.assertEqual(len(standalone_out["concesiones"]), 3)
+
+        # Verificar además que parse_detalle_estacion_html + _extract_record_concessions_for_gid
+        # unifican concesiones de ORANGE ESPAGNE y XFERA MÓVILES bajo la misma estación Orange.
+        sample_html = """
+        <h2>CARACTERISTICAS TÉCNICAS</h2>
+        <table>
+          <tr><th>Operador</th><th>Referencia</th><th>Banda asignada (MHz)</th></tr>
+          <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>ALAL-1603890</td><td>832.00 - 842.00</td></tr>
+          <tr><td>XFERA MÓVILES, S.A.U.</td><td>ALAL-2500471</td><td>3600.00 - 3700.00</td></tr>
+          <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>ALAL-0000001</td><td>768.00 - 778.00</td></tr>
+        </table>
+        """
+        entries = fa.parse_detalle_estacion_html(sample_html)
+        ora_concs = fa._extract_record_concessions_for_gid(
+            andr_merged, entries, [andr_merged]
+        )
+        self.assertEqual(
+            [c["referencia"] for c in ora_concs],
+            ["ALAL-1603890", "ALAL-2500471"],
+        )
+
+        # Verificar normalización de legado "masmovil" en load_novedades_dataset
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nov_file = Path(tmpdir) / "novedades.json"
+            nov_file.write_text(
+                json.dumps(
+                    {
+                        "updatedAt": "2026-11-17T08:00:00Z",
+                        "novedades": [
+                            {
+                                "id": "ant:XFERA MÓVILES, S.A.U. - EXTR6566A",
+                                "tipo": "antena",
+                                "op": "masmovil",
+                                "opRaw": "XFERA MÓVILES, S.A.U.",
+                                "codigo": "EXTR6566A",
+                                "antennaId": "XFERA MÓVILES, S.A.U. - EXTR6566A",
+                                "codigoBanda": "",
+                                "frecuencia": "",
+                                "ubicacion": "MALPARTIDA DE PLASENCIA",
+                                "prov": "CÁCERES",
+                                "scannedAt": "2026-11-17T08:00:00Z",
+                                "fecha": "17/11/2026 09:00",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded_nov = fa.load_novedades_dataset(nov_file)
+            assert loaded_nov is not None
+            self.assertEqual(loaded_nov["novedades"][0]["op"], "orange")
 
 
 class ScheduleGateUnitTests(unittest.TestCase):

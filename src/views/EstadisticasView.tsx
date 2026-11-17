@@ -129,7 +129,6 @@ export function EstadisticasView() {
         movistar: 0,
         orange: 0,
         vodafone: 0,
-        masmovil: 0,
         digi: 0,
         otros: 0,
       });
@@ -156,7 +155,6 @@ export function EstadisticasView() {
         movistar: 0,
         orange: 0,
         vodafone: 0,
-        masmovil: 0,
         digi: 0,
         otros: 0,
       },

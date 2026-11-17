@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
+  isXferaLegalEntity,
+  normalizeOperatorKeyInput,
   type AntenasDataset,
   type AntennaRecord,
   type ConcesionBanda,
@@ -19,6 +21,8 @@ import {
   useLiveScanDelta,
   type LiveScanMergedDelta,
 } from './useScanProgress';
+
+export { isXferaLegalEntity, normalizeOperatorKeyInput };
 
 export interface MunicipalityOption {
   mun: string;
@@ -66,8 +70,6 @@ export interface DerivedAntenasStructures {
   /** Índice pre-normalizado sin tildes alineado con dataset.antenas */
   searchIndex: string[];
 }
-
-const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
 
 export const CANONICAL_COMUNIDAD_PROVINCES: ReadonlyArray<
   readonly [comunidad: string, canonicalProvinces: readonly string[]]
@@ -619,6 +621,7 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
     );
   }
 
+  let anyAntennaOpNormalized = false;
   const antenasList = raw.antenas;
   for (let i = 0; i < antenasList.length; i++) {
     const item: unknown = antenasList[i];
@@ -632,11 +635,14 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
         `Entidad GeoJSON detectada en antenas[${i}]: RadioMapa exige registros compactos del JSON propio ({ id, gid, op, lat, lon, ... }) y no admite GeoJSON.`,
       );
     }
+    const normalizedOp =
+      typeof item.op === 'string'
+        ? normalizeOperatorKeyInput(item.op, item.opRaw)
+        : null;
     if (
       typeof item.id !== 'string' ||
       typeof item.gid !== 'string' ||
-      typeof item.op !== 'string' ||
-      !VALID_OPERATORS.has(item.op) ||
+      normalizedOp === null ||
       typeof item.opRaw !== 'string' ||
       typeof item.lat !== 'number' ||
       !Number.isFinite(item.lat) ||
@@ -649,6 +655,10 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
       throw new Error(
         `Registro incompleto en antenas[${i}]: debe cumplir el esquema compacto propio { id, gid, op, opRaw, lat, lon, dir, mun, prov }.`,
       );
+    }
+    if (item.op !== normalizedOp) {
+      item.op = normalizedOp;
+      anyAntennaOpNormalized = true;
     }
     if (
       item.mergedGids !== undefined &&
@@ -705,7 +715,102 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
     }
   }
 
-  return raw as unknown as AntenasDataset;
+  const rawOperators = raw.operators;
+  const hadLegacyMasmovilOp = 'masmovil' in rawOperators;
+  const legacyMasmovilSummary =
+    hadLegacyMasmovilOp && isPlainRecord(rawOperators.masmovil)
+      ? rawOperators.masmovil
+      : null;
+  if (hadLegacyMasmovilOp) {
+    delete rawOperators.masmovil;
+  }
+
+  for (let i = 0; i < OPERATOR_ORDER.length; i++) {
+    const opKey = OPERATOR_ORDER[i];
+    if (!isPlainRecord(rawOperators[opKey])) {
+      rawOperators[opKey] = {
+        key: opKey,
+        name: OPERATOR_META[opKey].name,
+        count: 0,
+        legalEntities: [],
+      };
+    }
+  }
+
+  if (legacyMasmovilSummary) {
+    const orangeSummary = rawOperators.orange as Record<string, unknown>;
+    const prevCount =
+      typeof orangeSummary.count === 'number' &&
+      Number.isFinite(orangeSummary.count)
+        ? orangeSummary.count
+        : 0;
+    const addCount =
+      typeof legacyMasmovilSummary.count === 'number' &&
+      Number.isFinite(legacyMasmovilSummary.count)
+        ? legacyMasmovilSummary.count
+        : 0;
+    const mergedEntities = new Set<string>();
+    if (Array.isArray(orangeSummary.legalEntities)) {
+      for (let i = 0; i < orangeSummary.legalEntities.length; i++) {
+        const ent = orangeSummary.legalEntities[i];
+        if (typeof ent === 'string' && ent.trim()) {
+          mergedEntities.add(ent);
+        }
+      }
+    }
+    if (Array.isArray(legacyMasmovilSummary.legalEntities)) {
+      for (let i = 0; i < legacyMasmovilSummary.legalEntities.length; i++) {
+        const ent = legacyMasmovilSummary.legalEntities[i];
+        if (typeof ent === 'string' && ent.trim()) {
+          mergedEntities.add(ent);
+        }
+      }
+    }
+    orangeSummary.key = 'orange';
+    orangeSummary.name = OPERATOR_META.orange.name;
+    orangeSummary.count = prevCount + addCount;
+    orangeSummary.legalEntities = Array.from(mergedEntities).sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+  }
+
+  const rawProvinces = raw.provinces;
+  for (let i = 0; i < rawProvinces.length; i++) {
+    const provItem: unknown = rawProvinces[i];
+    if (!isPlainRecord(provItem) || !isPlainRecord(provItem.byOperator)) {
+      continue;
+    }
+    const byOp = provItem.byOperator;
+    if ('masmovil' in byOp) {
+      const legacyCount =
+        typeof byOp.masmovil === 'number' && Number.isFinite(byOp.masmovil)
+          ? byOp.masmovil
+          : 0;
+      if (legacyCount > 0) {
+        const prevOrange =
+          typeof byOp.orange === 'number' && Number.isFinite(byOp.orange)
+            ? byOp.orange
+            : 0;
+        byOp.orange = prevOrange + legacyCount;
+      }
+      delete byOp.masmovil;
+    }
+  }
+
+  const parsedDataset = raw as unknown as AntenasDataset;
+  const fusedDataset = fuseXferaIntoOrangeInDataset(parsedDataset);
+  if (
+    anyAntennaOpNormalized &&
+    fusedDataset === parsedDataset &&
+    parsedDataset.antenas.length > 0
+  ) {
+    return rebuildDatasetSummariesWithAntenas(
+      parsedDataset,
+      parsedDataset.antenas,
+      parsedDataset.updatedAt,
+    );
+  }
+  return fusedDataset;
 }
 
 /**
@@ -773,6 +878,635 @@ function compareVodafoneCanonical(a: AntennaRecord, b: AntennaRecord): number {
   const bId = b.id.trim();
   if (aId !== bId) return aId < bId ? -1 : 1;
   return 0;
+}
+
+function compareOrangeXferaCanonical(
+  a: AntennaRecord,
+  b: AntennaRecord,
+): number {
+  const aXfera = isXferaLegalEntity(a.opRaw) ? 1 : 0;
+  const bXfera = isXferaLegalEntity(b.opRaw) ? 1 : 0;
+  if (aXfera !== bXfera) return aXfera - bXfera;
+  return compareVodafoneCanonical(a, b);
+}
+
+function mergeAntennaComponentMembers(
+  sortedMembers: readonly AntennaRecord[],
+  forceMergedGids: boolean,
+  overrideOp?: OperatorKey,
+): AntennaRecord {
+  const merged: AntennaRecord = {
+    ...sortedMembers[0],
+    ...(overrideOp !== undefined ? { op: overrideOp } : {}),
+  };
+
+  for (let m = 1; m < sortedMembers.length; m++) {
+    const cand = sortedMembers[m];
+    if (!merged.gid.trim() && cand.gid.trim()) {
+      merged.gid = cand.gid;
+    }
+    if (!merged.dir.trim() && cand.dir.trim()) {
+      merged.dir = cand.dir;
+    }
+    if (!merged.mun.trim() && cand.mun.trim()) {
+      merged.mun = cand.mun;
+    }
+    const curProv = merged.prov.trim();
+    const candProv = cand.prov.trim();
+    if (
+      (!curProv || curProv === 'SIN PROVINCIA') &&
+      candProv &&
+      candProv !== 'SIN PROVINCIA'
+    ) {
+      merged.prov = cand.prov;
+    } else if (!curProv && candProv) {
+      merged.prov = cand.prov;
+    }
+  }
+
+  const seenGids = new Set<string>();
+  const mergedGids: string[] = [];
+  let anyMemberHadMergedGids = false;
+  let anyHasBandas = false;
+  const seenBandas = new Set<string>();
+  let anyHasFrecuencias = false;
+  const seenFrecuencias = new Set<string>();
+  let anyHasConcesiones = false;
+  const seenConcesionKeys = new Set<string>();
+  const mergedConcesiones: ConcesionBanda[] = [];
+  let latestScannedAt: string | undefined;
+  let latestScannedMs = Number.NEGATIVE_INFINITY;
+
+  for (let m = 0; m < sortedMembers.length; m++) {
+    const member = sortedMembers[m];
+    const mgid = member.gid.trim();
+    if (mgid && !seenGids.has(mgid)) {
+      seenGids.add(mgid);
+      mergedGids.push(mgid);
+    }
+    if (member.mergedGids !== undefined) {
+      anyMemberHadMergedGids = true;
+      for (let g = 0; g < member.mergedGids.length; g++) {
+        const eg = member.mergedGids[g].trim();
+        if (eg && !seenGids.has(eg)) {
+          seenGids.add(eg);
+          mergedGids.push(eg);
+        }
+      }
+    }
+    if (Array.isArray(member.bandas)) {
+      anyHasBandas = true;
+      for (let b = 0; b < member.bandas.length; b++) {
+        const bLabel = normalizeCommercialBandLabel(member.bandas[b]);
+        if (bLabel) {
+          seenBandas.add(bLabel);
+        }
+      }
+    }
+    if (Array.isArray(member.frecuencias)) {
+      anyHasFrecuencias = true;
+      for (let f = 0; f < member.frecuencias.length; f++) {
+        const fLabel = member.frecuencias[f].trim();
+        if (fLabel) {
+          seenFrecuencias.add(fLabel);
+        }
+      }
+    }
+    if (Array.isArray(member.concesiones)) {
+      anyHasConcesiones = true;
+      for (let c = 0; c < member.concesiones.length; c++) {
+        const item = member.concesiones[c];
+        const ref = item.ref.trim();
+        const freq = item.freq.trim();
+        if (!ref && !freq) continue;
+        const key = `${ref}|${freq}`;
+        if (!seenConcesionKeys.has(key)) {
+          seenConcesionKeys.add(key);
+          mergedConcesiones.push({ ref, freq });
+        }
+      }
+    }
+    if (typeof member.bandsScannedAt === 'string') {
+      const candidate = member.bandsScannedAt.trim();
+      if (candidate) {
+        const ms = Date.parse(candidate);
+        if (Number.isFinite(ms)) {
+          if (ms > latestScannedMs) {
+            latestScannedMs = ms;
+            latestScannedAt = candidate;
+          }
+        } else if (
+          latestScannedAt === undefined ||
+          (latestScannedMs === Number.NEGATIVE_INFINITY &&
+            candidate > latestScannedAt)
+        ) {
+          latestScannedAt = candidate;
+        }
+      }
+    }
+  }
+
+  if (
+    forceMergedGids
+      ? mergedGids.length > 0
+      : mergedGids.length > 1 ||
+        (anyMemberHadMergedGids && mergedGids.length > 0)
+  ) {
+    merged.mergedGids = mergedGids;
+  } else {
+    delete merged.mergedGids;
+  }
+  if (anyHasBandas) {
+    merged.bandas = normalizeAntennaBandsList(Array.from(seenBandas));
+  }
+  if (anyHasFrecuencias) {
+    merged.frecuencias = Array.from(seenFrecuencias).sort(
+      compareFrequencyRanges,
+    );
+  }
+  if (anyHasConcesiones) {
+    merged.concesiones = mergedConcesiones.sort(
+      (a, b) =>
+        compareFrequencyRanges(a.freq, b.freq) ||
+        a.ref.localeCompare(b.ref, 'es', { numeric: true }),
+    );
+  }
+  if (latestScannedAt !== undefined) {
+    merged.bandsScannedAt = latestScannedAt;
+  }
+  return merged;
+}
+
+/**
+ * Unifica de forma pura e idempotente todas las antenas y frecuencias de
+ * XFERA MÓVILES, S.A.U. (Yoigo / Grupo MásMóvil) dentro de Orange (`op: 'orange'`):
+ * - Normaliza cualquier registro heredado `'masmovil'` o entidad de Xfera a `op: 'orange'`.
+ * - Fusiona pares con el mismo `gid` no vacío exacto.
+ * - Fusiona emplazamientos colocalizados a `< maxDistanceMeters` (por defecto 30 m)
+ *   cuando al menos un extremo procede de Xfera, prohibiendo unir dos estaciones
+ *   nativas de `ORANGE ESPAGNE` con distinto `gid` y exigiendo enlace completo (`complete-linkage`).
+ */
+export function fuseXferaIntoOrangeInDataset(
+  dataset: AntenasDataset,
+  maxDistanceMeters = 30,
+): AntenasDataset {
+  const { antenas } = dataset;
+
+  const rawOpsRecord = dataset.operators as unknown as
+    | Record<string, unknown>
+    | undefined;
+  let hasLegacySummaryKeys = Boolean(
+    rawOpsRecord && 'masmovil' in rawOpsRecord,
+  );
+  if (!hasLegacySummaryKeys && rawOpsRecord) {
+    for (let i = 0; i < OPERATOR_ORDER.length; i++) {
+      if (!(OPERATOR_ORDER[i] in rawOpsRecord)) {
+        hasLegacySummaryKeys = true;
+        break;
+      }
+    }
+  }
+  if (!hasLegacySummaryKeys && Array.isArray(dataset.provinces)) {
+    for (let i = 0; i < dataset.provinces.length; i++) {
+      const byOp = dataset.provinces[i]?.byOperator as
+        | Record<string, unknown>
+        | undefined;
+      if (byOp && 'masmovil' in byOp) {
+        hasLegacySummaryKeys = true;
+        break;
+      }
+    }
+  }
+
+  let hasLegacyAntennaOp = false;
+  const orangeIndices: number[] = [];
+  const orangeRecords: AntennaRecord[] = [];
+  const isNativeOrange: boolean[] = [];
+
+  for (let i = 0; i < antenas.length; i++) {
+    const rawAnt = antenas[i];
+    const rawOp = rawAnt.op as string;
+    const xferaEntity = isXferaLegalEntity(rawAnt.opRaw);
+    const isLegacyMasmovil = rawOp === 'masmovil';
+    if (rawOp === 'orange' || isLegacyMasmovil || xferaEntity) {
+      const normalizedAnt =
+        rawOp === 'orange' ? rawAnt : { ...rawAnt, op: 'orange' as const };
+      if (rawOp !== 'orange') {
+        hasLegacyAntennaOp = true;
+      }
+      orangeIndices.push(i);
+      orangeRecords.push(normalizedAnt);
+      isNativeOrange.push(!xferaEntity && !isLegacyMasmovil);
+    }
+  }
+
+  const n = orangeRecords.length;
+  const parent = new Int32Array(n);
+  const hasNativeOrange = new Uint8Array(n);
+  const clusterMembers: number[][] = new Array<number[]>(n);
+  for (let k = 0; k < n; k++) {
+    parent[k] = k;
+    hasNativeOrange[k] = isNativeOrange[k] ? 1 : 0;
+    clusterMembers[k] = [k];
+  }
+
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) {
+      root = parent[root];
+    }
+    let cur = x;
+    while (cur !== root) {
+      const next = parent[cur];
+      parent[cur] = root;
+      cur = next;
+    }
+    return root;
+  };
+
+  let fusionsCount = 0;
+  const unionClusters = (rootA: number, rootB: number): boolean => {
+    if (rootA === rootB) return false;
+    const [keep, absorb] =
+      clusterMembers[rootA].length >= clusterMembers[rootB].length
+        ? [rootA, rootB]
+        : [rootB, rootA];
+    parent[absorb] = keep;
+    if (hasNativeOrange[absorb]) {
+      hasNativeOrange[keep] = 1;
+    }
+    const targetList = clusterMembers[keep];
+    const sourceList = clusterMembers[absorb];
+    for (let i = 0; i < sourceList.length; i++) {
+      targetList.push(sourceList[i]);
+    }
+    sourceList.length = 0;
+    fusionsCount++;
+    return true;
+  };
+
+  // 1) Unión exacta por mismo Gis_ID no vacío
+  if (n > 1) {
+    const firstByGid = new Map<string, number>();
+    for (let k = 0; k < n; k++) {
+      const ant = orangeRecords[k];
+      const gid = ant.gid.trim();
+      if (gid) {
+        const existingK = firstByGid.get(gid);
+        if (existingK !== undefined) {
+          unionClusters(find(existingK), find(k));
+        } else {
+          firstByGid.set(gid, k);
+        }
+      }
+      if (ant.mergedGids) {
+        for (let g = 0; g < ant.mergedGids.length; g++) {
+          const mg = ant.mergedGids[g].trim();
+          if (!mg) continue;
+          const existingK = firstByGid.get(mg);
+          if (existingK !== undefined) {
+            unionClusters(find(existingK), find(k));
+          } else {
+            firstByGid.set(mg, k);
+          }
+        }
+      }
+    }
+  }
+
+  // 2) Unión espacial a < maxDistanceMeters cuando al menos un extremo es Xfera
+  if (maxDistanceMeters > 0 && n > 1) {
+    interface CandidateEdge {
+      u: number;
+      v: number;
+      distKm: number;
+      minId: string;
+      maxId: string;
+    }
+
+    const cellDeg = Math.max(0.0006, maxDistanceMeters / 111320 / 0.65);
+    const maxDistKm = maxDistanceMeters / 1000;
+    const grid = new Map<number, number[]>();
+    const candidateEdges: CandidateEdge[] = [];
+
+    for (let k = 0; k < n; k++) {
+      const ant = orangeRecords[k];
+      const cx = Math.floor(ant.lat / cellDeg);
+      const cy = Math.floor(ant.lon / cellDeg);
+
+      for (let dx = -1; dx <= 1; dx++) {
+        const rowBase = (cx + dx) * 4_000_000;
+        for (let dy = -1; dy <= 1; dy++) {
+          const bucket = grid.get(rowBase + (cy + dy));
+          if (!bucket) continue;
+          for (let b = 0; b < bucket.length; b++) {
+            const otherK = bucket[b];
+            if (isNativeOrange[otherK] && isNativeOrange[k]) {
+              continue;
+            }
+            if (find(otherK) === find(k)) {
+              continue;
+            }
+            const otherAnt = orangeRecords[otherK];
+            const distKm = haversineDistanceKm(
+              ant.lat,
+              ant.lon,
+              otherAnt.lat,
+              otherAnt.lon,
+            );
+            if (distKm < maxDistKm) {
+              const idU = otherAnt.id;
+              const idV = ant.id;
+              const [minId, maxId] = idU <= idV ? [idU, idV] : [idV, idU];
+              candidateEdges.push({
+                u: otherK,
+                v: k,
+                distKm,
+                minId,
+                maxId,
+              });
+            }
+          }
+        }
+      }
+
+      const cellKey = cx * 4_000_000 + cy;
+      const existing = grid.get(cellKey);
+      if (existing) {
+        existing.push(k);
+      } else {
+        grid.set(cellKey, [k]);
+      }
+    }
+
+    if (candidateEdges.length > 1) {
+      candidateEdges.sort((a, b) => {
+        if (a.distKm !== b.distKm) return a.distKm - b.distKm;
+        if (a.minId !== b.minId) return a.minId < b.minId ? -1 : 1;
+        if (a.maxId !== b.maxId) return a.maxId < b.maxId ? -1 : 1;
+        return a.u - b.u || a.v - b.v;
+      });
+    }
+
+    for (let e = 0; e < candidateEdges.length; e++) {
+      const edge = candidateEdges[e];
+      const rootA = find(edge.u);
+      const rootB = find(edge.v);
+      if (rootA === rootB) continue;
+      if (hasNativeOrange[rootA] && hasNativeOrange[rootB]) {
+        continue;
+      }
+      const membersA = clusterMembers[rootA];
+      const membersB = clusterMembers[rootB];
+      let allWithinMaxDist = true;
+      for (let ia = 0; ia < membersA.length && allWithinMaxDist; ia++) {
+        const antA = orangeRecords[membersA[ia]];
+        for (let ib = 0; ib < membersB.length; ib++) {
+          const antB = orangeRecords[membersB[ib]];
+          if (
+            haversineDistanceKm(antA.lat, antA.lon, antB.lat, antB.lon) >=
+            maxDistKm
+          ) {
+            allWithinMaxDist = false;
+            break;
+          }
+        }
+      }
+      if (allWithinMaxDist) {
+        unionClusters(rootA, rootB);
+      }
+    }
+  }
+
+  if (!hasLegacyAntennaOp && !hasLegacySummaryKeys && fusionsCount === 0) {
+    return dataset;
+  }
+
+  if (antenas.length === 0) {
+    const legacyMasmovil = isPlainRecord(rawOpsRecord?.masmovil)
+      ? rawOpsRecord.masmovil
+      : null;
+    const updatedEmptyOps = {} as Record<OperatorKey, OperatorSummary>;
+    for (const opKey of OPERATOR_ORDER) {
+      const prev = dataset.operators?.[opKey];
+      updatedEmptyOps[opKey] = {
+        key: opKey,
+        name: prev?.name ?? OPERATOR_META[opKey].name,
+        count: prev?.count ?? 0,
+        legalEntities: prev?.legalEntities ? [...prev.legalEntities] : [],
+      };
+    }
+    if (legacyMasmovil) {
+      const addCount =
+        typeof legacyMasmovil.count === 'number' &&
+        Number.isFinite(legacyMasmovil.count)
+          ? legacyMasmovil.count
+          : 0;
+      const entitiesSet = new Set<string>(updatedEmptyOps.orange.legalEntities);
+      if (Array.isArray(legacyMasmovil.legalEntities)) {
+        for (let i = 0; i < legacyMasmovil.legalEntities.length; i++) {
+          const ent = legacyMasmovil.legalEntities[i];
+          if (typeof ent === 'string' && ent.trim()) {
+            entitiesSet.add(ent);
+          }
+        }
+      }
+      updatedEmptyOps.orange = {
+        key: 'orange',
+        name: OPERATOR_META.orange.name,
+        count: updatedEmptyOps.orange.count + addCount,
+        legalEntities: Array.from(entitiesSet).sort((a, b) =>
+          a.localeCompare(b, 'es'),
+        ),
+      };
+    }
+    const cleanedProvinces: ProvinceSummary[] = (dataset.provinces ?? []).map(
+      (p) => {
+        const rawByOp = (p.byOperator ?? {}) as Record<string, number | undefined>;
+        const legacyProvCount =
+          typeof rawByOp.masmovil === 'number' && Number.isFinite(rawByOp.masmovil)
+            ? rawByOp.masmovil
+            : 0;
+        const orderedByOp: Partial<Record<OperatorKey, number>> = {};
+        for (const opKey of OPERATOR_ORDER) {
+          const baseCount = rawByOp[opKey] ?? 0;
+          const totalCount =
+            opKey === 'orange' ? baseCount + legacyProvCount : baseCount;
+          if (totalCount > 0) {
+            orderedByOp[opKey] = totalCount;
+          }
+        }
+        return {
+          provincia: p.provincia,
+          count: p.count,
+          byOperator: orderedByOp,
+        };
+      },
+    );
+    return {
+      ...dataset,
+      operators: updatedEmptyOps,
+      provinces: cleanedProvinces,
+    };
+  }
+
+  const components = new Map<number, AntennaRecord[]>();
+  for (let k = 0; k < n; k++) {
+    const root = find(k);
+    const ant = orangeRecords[k];
+    const list = components.get(root);
+    if (list) {
+      list.push(ant);
+    } else {
+      components.set(root, [ant]);
+    }
+  }
+
+  const mergedByRoot = new Map<number, AntennaRecord>();
+  for (const [root, members] of components.entries()) {
+    if (members.length === 1) {
+      mergedByRoot.set(root, members[0]);
+      continue;
+    }
+    const sortedMembers = [...members].sort(compareOrangeXferaCanonical);
+    mergedByRoot.set(
+      root,
+      mergeAntennaComponentMembers(sortedMembers, false, 'orange'),
+    );
+  }
+
+  const orangeIndexSet =
+    n > 0 ? new Set<number>(orangeIndices) : new Set<number>();
+  const emittedRoots = new Set<number>();
+  const fusedAntenas: AntennaRecord[] = [];
+  let orangeCursor = 0;
+
+  for (let i = 0; i < antenas.length; i++) {
+    if (!orangeIndexSet.has(i)) {
+      fusedAntenas.push(antenas[i]);
+      continue;
+    }
+    const root = find(orangeCursor++);
+    if (!emittedRoots.has(root)) {
+      emittedRoots.add(root);
+      const mergedRec = mergedByRoot.get(root);
+      if (mergedRec) {
+        fusedAntenas.push(mergedRec);
+      }
+    }
+  }
+
+  const opCounts: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    digi: 0,
+    otros: 0,
+  };
+  const opEntities: Record<OperatorKey, Set<string>> = {
+    movistar: new Set<string>(),
+    orange: new Set<string>(),
+    vodafone: new Set<string>(),
+    digi: new Set<string>(),
+    otros: new Set<string>(),
+  };
+  for (let k = 0; k < n; k++) {
+    if (orangeRecords[k].opRaw) {
+      opEntities.orange.add(orangeRecords[k].opRaw);
+    }
+  }
+
+  const provMap = new Map<
+    string,
+    { count: number; byOperator: Partial<Record<OperatorKey, number>> }
+  >();
+  let fusedBandsPopulated = 0;
+
+  for (let i = 0; i < fusedAntenas.length; i++) {
+    const ant = fusedAntenas[i];
+    opCounts[ant.op] = (opCounts[ant.op] ?? 0) + 1;
+    if (ant.opRaw) {
+      opEntities[ant.op].add(ant.opRaw);
+    }
+    if (Array.isArray(ant.bandas)) {
+      fusedBandsPopulated += 1;
+    }
+    if (ant.prov) {
+      let provEntry = provMap.get(ant.prov);
+      if (!provEntry) {
+        provEntry = { count: 0, byOperator: {} };
+        provMap.set(ant.prov, provEntry);
+      }
+      provEntry.count += 1;
+      provEntry.byOperator[ant.op] = (provEntry.byOperator[ant.op] ?? 0) + 1;
+    }
+  }
+
+  const updatedOperators = {} as Record<OperatorKey, OperatorSummary>;
+  for (const opKey of OPERATOR_ORDER) {
+    const prev = dataset.operators?.[opKey];
+    const entities = Array.from(opEntities[opKey]).sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+    const resolvedName =
+      opKey === 'orange' &&
+      (!prev?.name || prev.name === 'Orange España')
+        ? OPERATOR_META.orange.name
+        : prev?.name ?? OPERATOR_META[opKey].name;
+    updatedOperators[opKey] = {
+      key: opKey,
+      name: resolvedName,
+      count: opCounts[opKey],
+      legalEntities:
+        entities.length > 0
+          ? entities
+          : opCounts[opKey] > 0 && prev?.legalEntities
+            ? prev.legalEntities
+            : [],
+    };
+  }
+
+  const updatedProvinces: ProvinceSummary[] = Array.from(provMap.entries())
+    .map(([provincia, stats]) => {
+      const orderedByOp: Partial<Record<OperatorKey, number>> = {};
+      for (const opKey of OPERATOR_ORDER) {
+        const count = stats.byOperator[opKey] ?? 0;
+        if (count > 0) {
+          orderedByOp[opKey] = count;
+        }
+      }
+      return {
+        provincia,
+        count: stats.count,
+        byOperator: orderedByOp,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.provincia.localeCompare(b.provincia, 'es'),
+    );
+
+  return {
+    ...dataset,
+    total: fusedAntenas.length,
+    crawlStats: {
+      ...dataset.crawlStats,
+      ...(fusionsCount > 0 ||
+      dataset.crawlStats.xferaFusedIntoOrange !== undefined
+        ? {
+            xferaFusedIntoOrange:
+              (dataset.crawlStats.xferaFusedIntoOrange ?? 0) + fusionsCount,
+          }
+        : {}),
+      ...(dataset.crawlStats.bandsPopulatedCount !== undefined ||
+      fusedBandsPopulated > 0
+        ? { bandsPopulatedCount: fusedBandsPopulated }
+        : {}),
+    },
+    operators: updatedOperators,
+    provinces: updatedProvinces,
+    antenas: fusedAntenas,
+  };
 }
 
 /**
@@ -886,131 +1620,7 @@ export function fuseVodafoneAntennasInDataset(
     }
 
     const sortedMembers = [...members].sort(compareVodafoneCanonical);
-    const merged: AntennaRecord = { ...sortedMembers[0] };
-
-    for (let m = 1; m < sortedMembers.length; m++) {
-      const cand = sortedMembers[m];
-      if (!merged.dir.trim() && cand.dir.trim()) {
-        merged.dir = cand.dir;
-      }
-      if (!merged.mun.trim() && cand.mun.trim()) {
-        merged.mun = cand.mun;
-      }
-      const curProv = merged.prov.trim();
-      const candProv = cand.prov.trim();
-      if (
-        (!curProv || curProv === 'SIN PROVINCIA') &&
-        candProv &&
-        candProv !== 'SIN PROVINCIA'
-      ) {
-        merged.prov = cand.prov;
-      } else if (!curProv && candProv) {
-        merged.prov = cand.prov;
-      }
-    }
-
-    const seenGids = new Set<string>();
-    const mergedGids: string[] = [];
-    let anyHasBandas = false;
-    const seenBandas = new Set<string>();
-    let anyHasFrecuencias = false;
-    const seenFrecuencias = new Set<string>();
-    let anyHasConcesiones = false;
-    const seenConcesionKeys = new Set<string>();
-    const mergedConcesiones: ConcesionBanda[] = [];
-    let latestScannedAt: string | undefined;
-    let latestScannedMs = Number.NEGATIVE_INFINITY;
-
-    for (let m = 0; m < sortedMembers.length; m++) {
-      const member = sortedMembers[m];
-      const mgid = member.gid.trim();
-      if (mgid && !seenGids.has(mgid)) {
-        seenGids.add(mgid);
-        mergedGids.push(mgid);
-      }
-      if (member.mergedGids) {
-        for (let g = 0; g < member.mergedGids.length; g++) {
-          const eg = member.mergedGids[g].trim();
-          if (eg && !seenGids.has(eg)) {
-            seenGids.add(eg);
-            mergedGids.push(eg);
-          }
-        }
-      }
-      if (Array.isArray(member.bandas)) {
-        anyHasBandas = true;
-        for (let b = 0; b < member.bandas.length; b++) {
-          const bLabel = normalizeCommercialBandLabel(member.bandas[b]);
-          if (bLabel) {
-            seenBandas.add(bLabel);
-          }
-        }
-      }
-      if (Array.isArray(member.frecuencias)) {
-        anyHasFrecuencias = true;
-        for (let f = 0; f < member.frecuencias.length; f++) {
-          const fLabel = member.frecuencias[f].trim();
-          if (fLabel) {
-            seenFrecuencias.add(fLabel);
-          }
-        }
-      }
-      if (Array.isArray(member.concesiones)) {
-        anyHasConcesiones = true;
-        for (let c = 0; c < member.concesiones.length; c++) {
-          const item = member.concesiones[c];
-          const ref = item.ref.trim();
-          const freq = item.freq.trim();
-          if (!ref && !freq) continue;
-          const key = `${ref}|${freq}`;
-          if (!seenConcesionKeys.has(key)) {
-            seenConcesionKeys.add(key);
-            mergedConcesiones.push({ ref, freq });
-          }
-        }
-      }
-      if (typeof member.bandsScannedAt === 'string') {
-        const candidate = member.bandsScannedAt.trim();
-        if (candidate) {
-          const ms = Date.parse(candidate);
-          if (Number.isFinite(ms)) {
-            if (ms > latestScannedMs) {
-              latestScannedMs = ms;
-              latestScannedAt = candidate;
-            }
-          } else if (
-            latestScannedAt === undefined ||
-            (latestScannedMs === Number.NEGATIVE_INFINITY &&
-              candidate > latestScannedAt)
-          ) {
-            latestScannedAt = candidate;
-          }
-        }
-      }
-    }
-
-    if (mergedGids.length > 0) {
-      merged.mergedGids = mergedGids;
-    }
-    if (anyHasBandas) {
-      merged.bandas = normalizeAntennaBandsList(Array.from(seenBandas));
-    }
-    if (anyHasFrecuencias) {
-      merged.frecuencias = Array.from(seenFrecuencias).sort(
-        compareFrequencyRanges,
-      );
-    }
-    if (anyHasConcesiones) {
-      merged.concesiones = mergedConcesiones.sort(
-        (a, b) =>
-          compareFrequencyRanges(a.freq, b.freq) ||
-          a.ref.localeCompare(b.ref, 'es', { numeric: true }),
-      );
-    }
-    if (latestScannedAt !== undefined) {
-      merged.bandsScannedAt = latestScannedAt;
-    }
-    mergedByRoot.set(root, merged);
+    mergedByRoot.set(root, mergeAntennaComponentMembers(sortedMembers, true));
   }
 
   const emittedRoots = new Set<number>();
@@ -1037,7 +1647,6 @@ export function fuseVodafoneAntennasInDataset(
     movistar: 0,
     orange: 0,
     vodafone: 0,
-    masmovil: 0,
     digi: 0,
     otros: 0,
   };
@@ -1045,7 +1654,6 @@ export function fuseVodafoneAntennasInDataset(
     movistar: new Set<string>(),
     orange: new Set<string>(),
     vodafone: new Set<string>(),
-    masmovil: new Set<string>(),
     digi: new Set<string>(),
     otros: new Set<string>(),
   };
@@ -1328,7 +1936,9 @@ function deriveAntennaBandCodesText(ant: AntennaRecord): string {
 export function buildDerivedAntenasStructures(
   inputDataset: AntenasDataset,
 ): DerivedAntenasStructures {
-  const fusedDataset = fuseVodafoneAntennasInDataset(inputDataset);
+  const fusedDataset = fuseVodafoneAntennasInDataset(
+    fuseXferaIntoOrangeInDataset(inputDataset),
+  );
   let normalizedAntenas: AntennaRecord[] | null = null;
   for (let i = 0; i < fusedDataset.antenas.length; i++) {
     const candidate = fusedDataset.antenas[i];
@@ -1355,7 +1965,6 @@ export function buildDerivedAntenasStructures(
     movistar: 0,
     orange: 0,
     vodafone: 0,
-    masmovil: 0,
     digi: 0,
     otros: 0,
   };
@@ -1597,7 +2206,6 @@ function rebuildDatasetSummariesWithAntenas(
     movistar: 0,
     orange: 0,
     vodafone: 0,
-    masmovil: 0,
     digi: 0,
     otros: 0,
   };
@@ -1605,7 +2213,6 @@ function rebuildDatasetSummariesWithAntenas(
     movistar: new Set<string>(),
     orange: new Set<string>(),
     vodafone: new Set<string>(),
-    masmovil: new Set<string>(),
     digi: new Set<string>(),
     otros: new Set<string>(),
   };
@@ -1721,9 +2328,22 @@ export function mergeLiveDeltaIntoAntenasDataset(
   const existingIndexById = new Map<string, number>();
   const existingIndexByOpGid = new Map<string, number>();
   let anyChanged = false;
+  let normalizedBaseLegacyOp = false;
 
   for (let i = 0; i < baseAntenas.length; i++) {
-    const ant = baseAntenas[i];
+    const rawBaseAnt = baseAntenas[i];
+    const normBaseOp =
+      normalizeOperatorKeyInput(rawBaseAnt.op, rawBaseAnt.opRaw) ??
+      rawBaseAnt.op;
+    const ant =
+      normBaseOp !== rawBaseAnt.op
+        ? { ...rawBaseAnt, op: normBaseOp }
+        : rawBaseAnt;
+    if (ant !== rawBaseAnt) {
+      anyChanged = true;
+      normalizedBaseLegacyOp = true;
+    }
+
     existingIndexById.set(ant.id, i);
     if (ant.gid) {
       existingIndexByOpGid.set(`${ant.op}::${ant.gid}`, i);
@@ -1738,7 +2358,11 @@ export function mergeLiveDeltaIntoAntenasDataset(
     }
 
     let patch = delta.bandPatchesById.get(ant.id);
-    if (!patch && ant.op === 'vodafone' && ant.mergedGids) {
+    if (
+      !patch &&
+      (ant.op === 'vodafone' || ant.op === 'orange') &&
+      ant.mergedGids
+    ) {
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const candidatePatch = delta.bandPatchesByGid.get(ant.mergedGids[g]);
         if (candidatePatch) {
@@ -1765,10 +2389,13 @@ export function mergeLiveDeltaIntoAntenasDataset(
   }
 
   let addedCount = 0;
+  let addedOrange = false;
   let addedVodafone = false;
 
   for (let i = 0; i < delta.newAntennas.length; i++) {
     const rawNew = delta.newAntennas[i];
+    const normalizedNewOp =
+      normalizeOperatorKeyInput(rawNew.op, rawNew.opRaw) ?? rawNew.op;
     const newPatch = delta.bandPatchesById.get(rawNew.id);
     const nextNewMergedGids = newPatch?.mergedGids ?? rawNew.mergedGids;
     const candidate: AntennaRecord =
@@ -1776,6 +2403,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
       isPatchNewerOrEqual(newPatch.bandsScannedAt, rawNew.bandsScannedAt)
         ? {
             ...rawNew,
+            op: normalizedNewOp,
             ...(nextNewMergedGids !== undefined
               ? { mergedGids: nextNewMergedGids }
               : {}),
@@ -1785,14 +2413,31 @@ export function mergeLiveDeltaIntoAntenasDataset(
             bandsScannedAt: newPatch.bandsScannedAt,
           }
         : rawNew.bandas !== undefined
-          ? { ...rawNew, bandas: normalizeAntennaBandsList(rawNew.bandas) }
-          : { ...rawNew };
+          ? {
+              ...rawNew,
+              op: normalizedNewOp,
+              bandas: normalizeAntennaBandsList(rawNew.bandas),
+            }
+          : { ...rawNew, op: normalizedNewOp };
 
     let existingIdx = existingIndexById.get(candidate.id);
+    const canReuseOpGidIndex = (idx: number | undefined): boolean => {
+      if (idx === undefined) return false;
+      if (candidate.op !== 'orange') return true;
+      const existing = mergedAntenas[idx];
+      return (
+        isXferaLegalEntity(existing.opRaw) ===
+        isXferaLegalEntity(candidate.opRaw)
+      );
+    };
+
     if (existingIdx === undefined && candidate.gid) {
-      existingIdx = existingIndexByOpGid.get(
+      const foundByGid = existingIndexByOpGid.get(
         `${candidate.op}::${candidate.gid}`,
       );
+      if (canReuseOpGidIndex(foundByGid)) {
+        existingIdx = foundByGid;
+      }
     }
     if (existingIdx === undefined && candidate.mergedGids) {
       for (let g = 0; g < candidate.mergedGids.length; g++) {
@@ -1801,7 +2446,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
           const foundIdx = existingIndexByOpGid.get(
             `${candidate.op}::${mgid}`,
           );
-          if (foundIdx !== undefined) {
+          if (canReuseOpGidIndex(foundIdx)) {
             existingIdx = foundIdx;
             break;
           }
@@ -1853,7 +2498,9 @@ export function mergeLiveDeltaIntoAntenasDataset(
       }
     }
     addedCount += 1;
-    if (candidate.op === 'vodafone') {
+    if (candidate.op === 'orange') {
+      addedOrange = true;
+    } else if (candidate.op === 'vodafone') {
       addedVodafone = true;
     }
     anyChanged = true;
@@ -1868,7 +2515,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
     delta.updatedAt,
   );
 
-  if (addedCount === 0) {
+  if (addedCount === 0 && !normalizedBaseLegacyOp) {
     let bandsPopulatedCount = 0;
     for (let i = 0; i < mergedAntenas.length; i++) {
       if (Array.isArray(mergedAntenas[i].bandas)) {
@@ -1887,12 +2534,18 @@ export function mergeLiveDeltaIntoAntenasDataset(
     };
   }
 
-  const rebuilt = rebuildDatasetSummariesWithAntenas(
+  let result = rebuildDatasetSummariesWithAntenas(
     baseDataset,
     mergedAntenas,
     nextUpdatedAt,
   );
-  return addedVodafone ? fuseVodafoneAntennasInDataset(rebuilt, 35) : rebuilt;
+  if (addedOrange || normalizedBaseLegacyOp) {
+    result = fuseXferaIntoOrangeInDataset(result, 30);
+  }
+  if (addedVodafone) {
+    result = fuseVodafoneAntennasInDataset(result, 35);
+  }
+  return result;
 }
 
 export function useAntenasData() {
@@ -1909,7 +2562,12 @@ export function useAntenasData() {
   const mergedData = useMemo(
     () =>
       query.data
-        ? mergeLiveDeltaIntoAntenasDataset(query.data, liveDelta)
+        ? mergeLiveDeltaIntoAntenasDataset(
+            fuseVodafoneAntennasInDataset(
+              fuseXferaIntoOrangeInDataset(query.data),
+            ),
+            liveDelta,
+          )
         : undefined,
     [query.data, liveDelta],
   );

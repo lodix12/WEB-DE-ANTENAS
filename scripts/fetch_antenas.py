@@ -117,7 +117,6 @@ OPERATOR_ORDER: tuple[str, ...] = (
     "movistar",
     "orange",
     "vodafone",
-    "masmovil",
     "digi",
     "otros",
 )
@@ -126,7 +125,6 @@ OPERATOR_NAMES: dict[str, str] = {
     "movistar": "Movistar (Telefónica)",
     "orange": "Orange (MasOrange)",
     "vodafone": "Vodafone España",
-    "masmovil": "Yoigo / Grupo MásMóvil",
     "digi": "DIGI Spain",
     "otros": "Otros Operadores",
 }
@@ -285,16 +283,10 @@ def decode_infoantenas_payload(raw_bytes: bytes) -> list[dict[str, Any]]:
     return features
 
 
-def classify_operator(op_raw: str) -> str:
-    """Clasifica la razón social de Infoantenas en un `OperatorKey` normalizado."""
+def is_xfera_entity(op_raw: str) -> bool:
+    """Indica si la razón social pertenece al antiguo grupo Xfera / MásMóvil / Yoigo (integrado en MasOrange)."""
     upper_ascii = _strip_accents((op_raw or "").upper())
-    if "TELEFONICA" in upper_ascii or "MOVISTAR" in upper_ascii:
-        return "movistar"
-    if "ORANGE" in upper_ascii:
-        return "orange"
-    if "VODAFONE" in upper_ascii:
-        return "vodafone"
-    if any(
+    return any(
         token in upper_ascii
         for token in (
             "XFERA",
@@ -304,11 +296,36 @@ def classify_operator(op_raw: str) -> str:
             "R CABLE",
             "TELECABLE",
         )
+    )
+
+
+def classify_operator(op_raw: str) -> str:
+    """Clasifica la razón social de Infoantenas en un `OperatorKey` normalizado."""
+    upper_ascii = _strip_accents((op_raw or "").upper())
+    if "TELEFONICA" in upper_ascii or "MOVISTAR" in upper_ascii:
+        return "movistar"
+    if (
+        "ORANGE" in upper_ascii
+        or "MASORANGE" in upper_ascii
+        or is_xfera_entity(op_raw)
     ):
-        return "masmovil"
+        return "orange"
+    if "VODAFONE" in upper_ascii:
+        return "vodafone"
     if "DS MOBILE" in upper_ascii or re.search(r"\bDIGI\b", upper_ascii):
         return "digi"
     return "otros"
+
+
+def _normalize_operator_key(op_val: Any, op_raw_val: Any = "") -> str:
+    """Normaliza cualquier clave heredada `'masmovil'` o entidad Xfera a `'orange'`."""
+    op_str = str(op_val or "").strip()
+    op_raw_str = str(op_raw_val or "")
+    if op_str == "masmovil" or is_xfera_entity(op_raw_str):
+        return "orange"
+    if not op_str and op_raw_str:
+        return classify_operator(op_raw_str)
+    return op_str
 
 
 def normalize_province(
@@ -627,6 +644,7 @@ def build_bbox_url(bbox: BBox, zoom: int = DEFAULT_ZOOM) -> str:
 EARTH_RADIUS_M = 6_371_008.8
 DEFAULT_VODAFONE_FUSION_M = 35.0
 VODAFONE_DEDUP_DISTANCE_M = DEFAULT_VODAFONE_FUSION_M
+DEFAULT_XFERA_ORANGE_FUSION_M = 30.0
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -918,14 +936,15 @@ class _ThreadLocalKeepAliveClient:
                 pass
 
 
-def _build_vodafone_spatial_grid(
+def _build_operator_spatial_grid(
     records: list[dict[str, Any]],
-    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
+    op: str,
+    max_distance_m: float,
 ) -> tuple[dict[tuple[int, int], list[tuple[float, float]]], float]:
     cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)
     grid: dict[tuple[int, int], list[tuple[float, float]]] = {}
     for rec in records:
-        if rec.get("op") != "vodafone":
+        if _normalize_operator_key(rec.get("op"), rec.get("opRaw")) != op:
             continue
         try:
             lat = float(rec["lat"])
@@ -936,6 +955,13 @@ def _build_vodafone_spatial_grid(
         cy = math.floor(lon / cell_deg)
         grid.setdefault((cx, cy), []).append((lat, lon))
     return grid, cell_deg
+
+
+def _build_vodafone_spatial_grid(
+    records: list[dict[str, Any]],
+    max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
+) -> tuple[dict[tuple[int, int], list[tuple[float, float]]], float]:
+    return _build_operator_spatial_grid(records, op="vodafone", max_distance_m=max_distance_m)
 
 
 def _is_near_vodafone_grid(
@@ -1009,14 +1035,27 @@ class InfoantenasCrawler:
         self._last_request_ts: float | None = None
         self._unsaved_requests: int = 0
 
-        prior_voda_records = (
+        prior_records = (
             list((prior_index.get("by_id") or {}).values())
             if isinstance(prior_index, dict)
             else []
         )
         self._provisional_voda_grid, self._provisional_voda_cell_deg = (
-            _build_vodafone_spatial_grid(prior_voda_records)
+            _build_vodafone_spatial_grid(prior_records)
         )
+        self._provisional_orange_grid, self._provisional_orange_cell_deg = (
+            _build_operator_spatial_grid(
+                prior_records,
+                op="orange",
+                max_distance_m=DEFAULT_XFERA_ORANGE_FUSION_M,
+            )
+        )
+        self._provisional_orange_gids: set[str] = {
+            g
+            for r in prior_records
+            if _normalize_operator_key(r.get("op"), r.get("opRaw")) == "orange"
+            for g in get_record_gids(r)
+        }
 
     def load_checkpoint(self) -> bool:
         if not self.checkpoint_path or not self.checkpoint_path.exists():
@@ -1025,7 +1064,24 @@ class InfoantenasCrawler:
             raw = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             for rec in raw.get("records", []):
                 if isinstance(rec, dict) and "id" in rec:
-                    self.records_by_id[rec["id"]] = rec
+                    norm_rec = dict(rec)
+                    norm_rec["op"] = _normalize_operator_key(
+                        norm_rec.get("op"), norm_rec.get("opRaw")
+                    )
+                    self.records_by_id[norm_rec["id"]] = norm_rec
+                    if norm_rec["op"] == "orange":
+                        for g in get_record_gids(norm_rec):
+                            self._provisional_orange_gids.add(g)
+                        try:
+                            lat_f = float(norm_rec["lat"])
+                            lon_f = float(norm_rec["lon"])
+                            cx = math.floor(lat_f / self._provisional_orange_cell_deg)
+                            cy = math.floor(lon_f / self._provisional_orange_cell_deg)
+                            self._provisional_orange_grid.setdefault((cx, cy), []).append(
+                                (lat_f, lon_f)
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            pass
             self.completed_leaf_boxes = set(raw.get("completedLeafBoxes", []))
             self.cached_box_counts = {
                 str(k): int(v) for k, v in (raw.get("cachedBoxCounts") or {}).items()
@@ -1206,6 +1262,30 @@ class InfoantenasCrawler:
                     self._provisional_voda_grid.setdefault((cx, cy), []).append(
                         (lat_f, lon_f)
                     )
+                elif rec["op"] == "orange":
+                    lat_f = float(rec["lat"])
+                    lon_f = float(rec["lon"])
+                    gid_str = str(rec.get("gid") or "").strip()
+                    if is_xfera_entity(rec["opRaw"]):
+                        if (
+                            gid_str and gid_str in self._provisional_orange_gids
+                        ) or _is_near_vodafone_grid(
+                            lat_f,
+                            lon_f,
+                            self._provisional_orange_grid,
+                            self._provisional_orange_cell_deg,
+                            max_distance_m=DEFAULT_XFERA_ORANGE_FUSION_M,
+                        ):
+                            continue
+                    elif gid_str and gid_str in self._provisional_orange_gids:
+                        continue
+                    cx = math.floor(lat_f / self._provisional_orange_cell_deg)
+                    cy = math.floor(lon_f / self._provisional_orange_cell_deg)
+                    self._provisional_orange_grid.setdefault((cx, cy), []).append(
+                        (lat_f, lon_f)
+                    )
+                    if gid_str:
+                        self._provisional_orange_gids.add(gid_str)
 
                 provisional_antennas.append(dict(rec))
                 if self._record_novedades:
@@ -1704,6 +1784,289 @@ def fuse_vodafone_duplicates(
     return output_records, fused_duplicates
 
 
+def fuse_xfera_into_orange(
+    records: list[dict[str, Any]],
+    max_distance_m: float = DEFAULT_XFERA_ORANGE_FUSION_M,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Integra todas las declaraciones de Xfera Móviles / Grupo MásMóvil / Yoigo dentro de Orange:
+    1) Normaliza cualquier registro con `op == "masmovil"` o `is_xfera_entity(opRaw)` a `op = "orange"`.
+    2) Fase A (mismo `gid` exacto): fusiona siempre cualquier par de registros `op == "orange"` que
+       compartan el mismo `gid` no vacío (ej. `ANDR9085A`).
+    3) Fase B (`< max_distance_m`, por defecto 30.0 m): une por enlace completo (`complete-linkage`)
+       registros co-ubicados donde al menos un extremo sea Xfera (`is_xfera_entity(opRaw)`), impidiendo
+       estrictamente unir dos componentes que ya contengan estaciones nativas `ORANGE ESPAGNE` con
+       `gid` distinto (ni siquiera de forma transitiva a través de un nodo Xfera).
+    4) Conserva los emplazamientos independientes de Xfera (`>= 30 m` de cualquier estación Orange)
+       como estaciones `op = "orange"` con todas sus bandas, frecuencias y concesiones intactas.
+    """
+    def _is_xfera_origin(item: dict[str, Any]) -> bool:
+        return str(item.get("op") or "").strip() == "masmovil" or is_xfera_entity(
+            str(item.get("opRaw") or "")
+        )
+
+    def _copy_normalized(item: dict[str, Any]) -> dict[str, Any]:
+        copied = dict(item)
+        copied["op"] = _normalize_operator_key(copied.get("op"), copied.get("opRaw"))
+        if isinstance(copied.get("mergedGids"), list):
+            copied["mergedGids"] = list(copied["mergedGids"])
+        if isinstance(copied.get("bandas"), list):
+            copied["bandas"] = normalize_band_labels(copied["bandas"])
+        if isinstance(copied.get("frecuencias"), list):
+            copied["frecuencias"] = list(copied["frecuencias"])
+        if isinstance(copied.get("concesiones"), list):
+            copied["concesiones"] = [
+                dict(c) for c in copied["concesiones"] if isinstance(c, dict)
+            ]
+        return copied
+
+    if len(records) <= 1:
+        return [_copy_normalized(r) for r in records], 0
+
+    orange_records: list[dict[str, Any]] = []
+    is_native_list: list[bool] = []
+    orange_pos_by_record_idx: dict[int, int] = {}
+    for rec_idx, rec in enumerate(records):
+        eff_op = _normalize_operator_key(rec.get("op"), rec.get("opRaw"))
+        if eff_op == "orange":
+            orange_pos_by_record_idx[rec_idx] = len(orange_records)
+            is_native_list.append(not _is_xfera_origin(rec))
+            orange_records.append(rec)
+
+    n_orange = len(orange_records)
+    if n_orange <= 1:
+        return [_copy_normalized(r) for r in records], 0
+
+    parent = list(range(n_orange))
+    comp_members_idx: dict[int, list[int]] = {i: [i] for i in range(n_orange)}
+    comp_has_native_orange: dict[int, bool] = {
+        i: is_native_list[i] for i in range(n_orange)
+    }
+
+    def find(x: int) -> int:
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        cur = x
+        while cur != root:
+            nxt = parent[cur]
+            parent[cur] = root
+            cur = nxt
+        return root
+
+    def union_roots(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra == rb:
+            return
+        if ra > rb:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        comp_members_idx[ra].extend(comp_members_idx.pop(rb))
+        comp_has_native_orange[ra] = (
+            comp_has_native_orange[ra] or comp_has_native_orange.pop(rb)
+        )
+
+    # Fase A — Unión exacta por mismo GID no vacío
+    first_idx_by_gid: dict[str, int] = {}
+    for k, rec in enumerate(orange_records):
+        for g in get_record_gids(rec):
+            if g in first_idx_by_gid:
+                union_roots(first_idx_by_gid[g], k)
+            else:
+                first_idx_by_gid[g] = k
+
+    # Fase B — Unión espacial < max_distance_m (30.0 m) para co-ubicaciones Xfera
+    if max_distance_m > 0.0 and not all(is_native_list):
+        lats = [float(r["lat"]) for r in orange_records]
+        lons = [float(r["lon"]) for r in orange_records]
+        ids = [str(r.get("id") or "").strip() for r in orange_records]
+        cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)
+        grid: dict[tuple[int, int], list[int]] = {}
+        for k in range(n_orange):
+            cx = math.floor(lats[k] / cell_deg)
+            cy = math.floor(lons[k] / cell_deg)
+            grid.setdefault((cx, cy), []).append(k)
+
+        seen_pairs: set[tuple[int, int]] = set()
+        candidate_edges: list[tuple[float, str, str, int, int]] = []
+        for k in range(n_orange):
+            if is_native_list[k]:
+                continue
+            lat_k = lats[k]
+            lon_k = lons[k]
+            cx = math.floor(lat_k / cell_deg)
+            cy = math.floor(lon_k / cell_deg)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    bucket = grid.get((cx + dx, cy + dy))
+                    if not bucket:
+                        continue
+                    for other_k in bucket:
+                        if other_k == k:
+                            continue
+                        a, b = (k, other_k) if k < other_k else (other_k, k)
+                        if (a, b) in seen_pairs:
+                            continue
+                        seen_pairs.add((a, b))
+                        if find(a) == find(b):
+                            continue
+                        dist = haversine_m(lats[a], lons[a], lats[b], lons[b])
+                        if dist < max_distance_m:
+                            id_lo, id_hi = (
+                                (ids[a], ids[b])
+                                if ids[a] <= ids[b]
+                                else (ids[b], ids[a])
+                            )
+                            candidate_edges.append((dist, id_lo, id_hi, a, b))
+
+        candidate_edges.sort()
+        for _, _, _, a, b in candidate_edges:
+            ra = find(a)
+            rb = find(b)
+            if ra == rb:
+                continue
+            if comp_has_native_orange[ra] and comp_has_native_orange[rb]:
+                continue
+            members_a = comp_members_idx[ra]
+            members_b = comp_members_idx[rb]
+            if all(
+                haversine_m(lats[u], lons[u], lats[v], lons[v]) < max_distance_m
+                for u in members_a
+                for v in members_b
+            ):
+                union_roots(ra, rb)
+
+    merged_by_root: dict[int, dict[str, Any]] = {}
+    fused_duplicates = 0
+
+    for root, member_indices in comp_members_idx.items():
+        if len(member_indices) == 1:
+            merged_by_root[root] = _copy_normalized(orange_records[member_indices[0]])
+            continue
+
+        fused_duplicates += len(member_indices) - 1
+        sorted_indices = sorted(
+            member_indices,
+            key=lambda idx: (
+                0 if is_native_list[idx] else 1,
+                _vodafone_canonical_sort_key(orange_records[idx]),
+            ),
+        )
+        sorted_members = [orange_records[idx] for idx in sorted_indices]
+        merged_rec = dict(sorted_members[0])
+        merged_rec["op"] = "orange"
+
+        for member in sorted_members[1:]:
+            if not str(merged_rec.get("gid") or "").strip() and str(
+                member.get("gid") or ""
+            ).strip():
+                merged_rec["gid"] = str(member["gid"]).strip()
+            if not str(merged_rec.get("dir") or "").strip() and str(
+                member.get("dir") or ""
+            ).strip():
+                merged_rec["dir"] = member["dir"]
+            if not str(merged_rec.get("mun") or "").strip() and str(
+                member.get("mun") or ""
+            ).strip():
+                merged_rec["mun"] = member["mun"]
+            cur_prov = str(merged_rec.get("prov") or "").strip()
+            cand_prov = str(member.get("prov") or "").strip()
+            if (
+                (not cur_prov or cur_prov == "SIN PROVINCIA")
+                and cand_prov
+                and cand_prov != "SIN PROVINCIA"
+            ):
+                merged_rec["prov"] = member["prov"]
+            elif not cur_prov and cand_prov:
+                merged_rec["prov"] = member["prov"]
+
+        seen_gids: set[str] = set()
+        merged_gids: list[str] = []
+        for member in sorted_members:
+            mgid = str(member.get("gid") or "").strip()
+            if mgid and mgid not in seen_gids:
+                seen_gids.add(mgid)
+                merged_gids.append(mgid)
+            extra = member.get("mergedGids")
+            if isinstance(extra, list):
+                for eg in extra:
+                    eg_str = str(eg or "").strip()
+                    if eg_str and eg_str not in seen_gids:
+                        seen_gids.add(eg_str)
+                        merged_gids.append(eg_str)
+
+        if len(merged_gids) > 1:
+            merged_rec["mergedGids"] = merged_gids
+        else:
+            merged_rec.pop("mergedGids", None)
+
+        if all(isinstance(m.get("bandas"), list) for m in sorted_members):
+            combined_freqs: list[str] = []
+            for member in sorted_members:
+                for freq_item in member.get("frecuencias") or []:
+                    if isinstance(freq_item, str):
+                        combined_freqs.append(freq_item)
+            bandas_from_freqs, freqs_u = summarize_frequency_ranges(combined_freqs)
+            extra_bands = {
+                str(b).strip()
+                for member in sorted_members
+                for b in (member.get("bandas") or [])
+                if str(b).strip()
+            }
+            merged_rec["bandas"] = normalize_band_labels(
+                set(bandas_from_freqs) | extra_bands
+            )
+            merged_rec["frecuencias"] = freqs_u
+        else:
+            merged_rec.pop("bandas", None)
+            merged_rec.pop("frecuencias", None)
+
+        if all(isinstance(m.get("concesiones"), list) for m in sorted_members):
+            combined_concs: list[dict[str, Any]] = []
+            for member in sorted_members:
+                for conc_item in member.get("concesiones") or []:
+                    if isinstance(conc_item, dict):
+                        combined_concs.append(conc_item)
+            merged_rec["concesiones"] = summarize_concessions(combined_concs)
+        else:
+            merged_rec.pop("concesiones", None)
+
+        has_all_bands = isinstance(merged_rec.get("bandas"), list)
+        has_partial_concs = any(
+            isinstance(m.get("concesiones"), list) for m in sorted_members
+        ) and not isinstance(merged_rec.get("concesiones"), list)
+        if (
+            has_all_bands
+            and not has_partial_concs
+            and all(
+                isinstance(m.get("bandsScannedAt"), str) and m.get("bandsScannedAt")
+                for m in sorted_members
+            )
+        ):
+            merged_rec["bandsScannedAt"] = min(
+                _normalize_iso_utc(str(m["bandsScannedAt"])) for m in sorted_members
+            )
+        else:
+            merged_rec.pop("bandsScannedAt", None)
+
+        merged_by_root[root] = merged_rec
+
+    emitted_roots: set[int] = set()
+    output_records: list[dict[str, Any]] = []
+    for rec_idx, rec in enumerate(records):
+        ora_k = orange_pos_by_record_idx.get(rec_idx)
+        if ora_k is None:
+            output_records.append(_copy_normalized(rec))
+            continue
+        root = find(ora_k)
+        if root not in emitted_roots:
+            emitted_roots.add(root)
+            output_records.append(merged_by_root[root])
+
+    return output_records, fused_duplicates
+
+
 def build_detalle_estacion_url(gid: str) -> str:
     """Construye la URL oficial `detalleEstacion.do?emplazamiento=<gid>`."""
     encoded_gid = urllib.parse.quote(str(gid).strip(), safe="")
@@ -2073,6 +2436,7 @@ def count_bands_populated(records: list[dict[str, Any]]) -> int:
 def _load_records_from_preserve_source(
     preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
 ) -> list[dict[str, Any]]:
+    raw_list: list[dict[str, Any]] = []
     if preserve_from is None:
         return []
     if isinstance(preserve_from, (str, Path)):
@@ -2085,16 +2449,33 @@ def _load_records_from_preserve_source(
             logging.warning("No se pudo leer preserve_from=%s: %s", path, exc)
             return []
         if isinstance(loaded, dict) and isinstance(loaded.get("antenas"), list):
-            return [r for r in loaded["antenas"] if isinstance(r, dict)]
-        return []
-    if isinstance(preserve_from, dict):
+            raw_list = [r for r in loaded["antenas"] if isinstance(r, dict)]
+    elif isinstance(preserve_from, dict):
         antenas = preserve_from.get("antenas")
         if isinstance(antenas, list):
-            return [r for r in antenas if isinstance(r, dict)]
+            raw_list = [r for r in antenas if isinstance(r, dict)]
+    elif isinstance(preserve_from, list):
+        raw_list = [r for r in preserve_from if isinstance(r, dict)]
+
+    if not raw_list:
         return []
-    if isinstance(preserve_from, list):
-        return [r for r in preserve_from if isinstance(r, dict)]
-    return []
+    if any(
+        str(r.get("op") or "").strip() == "masmovil"
+        or is_xfera_entity(str(r.get("opRaw") or ""))
+        for r in raw_list
+    ):
+        fused, _ = fuse_xfera_into_orange(raw_list)
+        return fused
+    normalized: list[dict[str, Any]] = []
+    for r in raw_list:
+        eff_op = _normalize_operator_key(r.get("op"), r.get("opRaw"))
+        if eff_op != r.get("op"):
+            rcopy = dict(r)
+            rcopy["op"] = eff_op
+            normalized.append(rcopy)
+        else:
+            normalized.append(r)
+    return normalized
 
 
 def build_prior_antenna_index(
@@ -2722,6 +3103,10 @@ def sort_novedades_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not nov_id:
             continue
         candidate = dict(item)
+        if "op" in candidate or "opRaw" in candidate:
+            candidate["op"] = _normalize_operator_key(
+                candidate.get("op"), candidate.get("opRaw")
+            )
         existing = deduped_by_id.get(nov_id)
         if existing is None:
             deduped_by_id[nov_id] = candidate
@@ -2768,6 +3153,15 @@ def load_novedades_dataset(path: Path | str | None) -> dict[str, Any] | None:
     try:
         loaded = json.loads(target.read_text(encoding="utf-8"))
         if isinstance(loaded, dict) and isinstance(loaded.get("novedades"), list):
+            normalized_items: list[dict[str, Any]] = []
+            for item in loaded["novedades"]:
+                if isinstance(item, dict):
+                    item_copy = dict(item)
+                    item_copy["op"] = _normalize_operator_key(
+                        item_copy.get("op"), item_copy.get("opRaw")
+                    )
+                    normalized_items.append(item_copy)
+            loaded["novedades"] = normalized_items
             return loaded
     except Exception as exc:
         logging.warning("No se pudo leer novedades previas en %s: %s", target, exc)
@@ -2845,6 +3239,7 @@ def _extract_stamped_items_from_doc(doc: dict[str, Any] | None) -> list[dict[str
     doc_scan_id = str(doc.get("scanId") or "").strip()
     can_stamp = bool(doc_scan_id and not doc_scan_id.startswith("baseline"))
     for item in raw_items:
+        item["op"] = _normalize_operator_key(item.get("op"), item.get("opRaw"))
         if can_stamp and not str(item.get("scanId") or "").strip():
             item["scanId"] = doc_scan_id
     return raw_items
@@ -3080,14 +3475,22 @@ class LiveDeltaStreamWriter:
                 self._tail_replaces_new_antennas = bool(tdoc.get("replacesNewAntennas"))
                 for ant in tdoc.get("newAntennas") or ():
                     if isinstance(ant, dict) and ant.get("id"):
-                        self._tail_new_antennas[str(ant["id"])] = dict(ant)
+                        ant_copy = dict(ant)
+                        ant_copy["op"] = _normalize_operator_key(
+                            ant_copy.get("op"), ant_copy.get("opRaw")
+                        )
+                        self._tail_new_antennas[str(ant["id"])] = ant_copy
                 for patch in tdoc.get("bandPatches") or ():
                     if isinstance(patch, dict) and patch.get("id"):
                         self._tail_band_patches[str(patch["id"])] = dict(patch)
                 if self.record_novedades:
                     for nov in tdoc.get("novedades") or ():
                         if isinstance(nov, dict) and nov.get("id"):
-                            self._tail_novedades[str(nov["id"])] = dict(nov)
+                            nov_copy = dict(nov)
+                            nov_copy["op"] = _normalize_operator_key(
+                                nov_copy.get("op"), nov_copy.get("opRaw")
+                            )
+                            self._tail_novedades[str(nov["id"])] = nov_copy
 
         status_path = self.live_dir / "scan-status.json"
         if status_path.exists():
@@ -3169,8 +3572,13 @@ class LiveDeltaStreamWriter:
         ant_id = str(ant.get("id") or "").strip()
         if not ant_id:
             return
+        ant_copy = dict(ant)
+        if "op" in ant_copy or "opRaw" in ant_copy:
+            ant_copy["op"] = _normalize_operator_key(
+                ant_copy.get("op"), ant_copy.get("opRaw")
+            )
         self._seen_new_antenna_ids.add(ant_id)
-        self._tail_new_antennas[ant_id] = dict(ant)
+        self._tail_new_antennas[ant_id] = ant_copy
         self._dirty = True
         if self._tail_item_count() >= self.chunk_capacity:
             self._seal_current_tail_as_chunk()
@@ -3192,6 +3600,9 @@ class LiveDeltaStreamWriter:
         if not nov_id:
             return
         nov_copy = dict(nov)
+        nov_copy["op"] = _normalize_operator_key(
+            nov_copy.get("op"), nov_copy.get("opRaw")
+        )
         if self.scan_id and not str(nov_copy.get("scanId") or "").strip():
             nov_copy["scanId"] = self.scan_id
         self._seen_novedad_ids.add(nov_id)
@@ -4307,6 +4718,9 @@ def build_dataset(
     fused_records, fused_count = fuse_vodafone_duplicates(
         raw_records, max_distance_m=max_distance_m
     )
+    fused_records, _ = fuse_xfera_into_orange(
+        fused_records, max_distance_m=DEFAULT_XFERA_ORANGE_FUSION_M
+    )
 
     if preserve_from is not None:
         preserve_bands_in_records(fused_records, preserve_from)
@@ -4829,6 +5243,17 @@ def main(argv: list[str] | None = None) -> int:
             logging.error("No existe el archivo de entrada: %s", input_path)
             return 1
         dataset = json.loads(input_path.read_text(encoding="utf-8"))
+        migrated_legacy_masmovil = False
+        if "masmovil" in (dataset.get("operators") or {}) or any(
+            isinstance(r, dict) and r.get("op") == "masmovil"
+            for r in (dataset.get("antenas") or [])
+        ):
+            dataset = build_dataset(
+                dataset.get("antenas") or [],
+                crawl_stats=dataset.get("crawlStats") or {},
+                updated_at=dataset.get("updatedAt"),
+            )
+            migrated_legacy_masmovil = True
         prev_updated_at = (
             dataset.get("updatedAt")
             if isinstance(dataset.get("updatedAt"), str)
@@ -4872,7 +5297,11 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
-        if enricher.requests_count > 0 or output_path.resolve() != input_path.resolve():
+        if (
+            enricher.requests_count > 0
+            or migrated_legacy_masmovil
+            or output_path.resolve() != input_path.resolve()
+        ):
             write_compact_dataset(dataset, output_path)
         if nov_writer is not None:
             nov_writer(enricher.discovered_novedades)

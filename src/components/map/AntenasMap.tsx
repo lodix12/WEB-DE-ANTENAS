@@ -132,7 +132,6 @@ function isValidOperatorKey(value: unknown): value is OperatorKey {
     value === 'movistar' ||
     value === 'orange' ||
     value === 'vodafone' ||
-    value === 'masmovil' ||
     value === 'digi' ||
     value === 'otros'
   );
@@ -990,8 +989,6 @@ export function AntenasMap(props: AntenasMapProps) {
             OPERATOR_META.orange.color,
             'vodafone',
             OPERATOR_META.vodafone.color,
-            'masmovil',
-            OPERATOR_META.masmovil.color,
             'digi',
             OPERATOR_META.digi.color,
             OPERATOR_META.otros.color,

@@ -5,14 +5,13 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 import {
-  OPERATOR_ORDER,
+  normalizeOperatorKeyInput,
   type AntennaRecord,
   type ConcesionBanda,
   type LiveBandPatch,
   type LiveScanDeltaChunk,
   type NovedadRecord,
   type NovedadTipo,
-  type OperatorKey,
   type ScanLifecycleState,
   type ScanPhase,
   type ScanStatusPayload,
@@ -73,7 +72,6 @@ const VALID_STATES = new Set<string>([
 ]);
 
 const VALID_PHASES = new Set<string>(['censo', 'frecuencias']);
-const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
 const VALID_NOVEDAD_TIPOS = new Set<string>(['antena', 'frecuencia']);
 
 const PERCENT_FORMATTER_ES = new Intl.NumberFormat('es-ES', {
@@ -422,11 +420,16 @@ function validateLiveAntennaRecord(item: unknown): AntennaRecord | null {
   }
   assertNotGeoJson(item);
 
+  const normalizedOp =
+    typeof item.op === 'string'
+      ? normalizeOperatorKeyInput(item.op, item.opRaw)
+      : null;
+
   if (
     typeof item.id !== 'string' ||
     typeof item.gid !== 'string' ||
     typeof item.op !== 'string' ||
-    !VALID_OPERATORS.has(item.op) ||
+    normalizedOp === null ||
     typeof item.opRaw !== 'string' ||
     typeof item.lat !== 'number' ||
     !Number.isFinite(item.lat) ||
@@ -484,7 +487,7 @@ function validateLiveAntennaRecord(item: unknown): AntennaRecord | null {
   return {
     id: item.id,
     gid: item.gid,
-    op: item.op as OperatorKey,
+    op: normalizedOp,
     opRaw: item.opRaw,
     lat: item.lat,
     lon: item.lon,
@@ -573,12 +576,17 @@ function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
   }
   assertNotGeoJson(item);
 
+  const normalizedOp =
+    typeof item.op === 'string'
+      ? normalizeOperatorKeyInput(item.op, item.opRaw)
+      : null;
+
   if (
     typeof item.id !== 'string' ||
     typeof item.tipo !== 'string' ||
     !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
     typeof item.op !== 'string' ||
-    !VALID_OPERATORS.has(item.op) ||
+    normalizedOp === null ||
     typeof item.opRaw !== 'string' ||
     typeof item.codigo !== 'string' ||
     typeof item.antennaId !== 'string' ||
@@ -596,7 +604,7 @@ function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
   return {
     id: item.id,
     tipo: item.tipo as NovedadTipo,
-    op: item.op as OperatorKey,
+    op: normalizedOp,
     opRaw: item.opRaw,
     codigo: item.codigo,
     antennaId: item.antennaId,
@@ -765,7 +773,10 @@ export function accumulateLiveDeltaChunks(
     }
 
     for (let a = 0; a < chunk.newAntennas.length; a++) {
-      const ant = chunk.newAntennas[a];
+      const rawAnt = chunk.newAntennas[a];
+      const normOp = normalizeOperatorKeyInput(rawAnt.op, rawAnt.opRaw);
+      const ant =
+        normOp && normOp !== rawAnt.op ? { ...rawAnt, op: normOp } : rawAnt;
       newAntennasMap.set(ant.id, ant);
     }
 
@@ -786,7 +797,12 @@ export function accumulateLiveDeltaChunks(
     }
 
     for (let n = 0; n < chunk.novedades.length; n++) {
-      const nov = chunk.novedades[n];
+      const rawNov = chunk.novedades[n];
+      const normNovOp = normalizeOperatorKeyInput(rawNov.op, rawNov.opRaw);
+      const nov =
+        normNovOp && normNovOp !== rawNov.op
+          ? { ...rawNov, op: normNovOp }
+          : rawNov;
       const stampedNov =
         !nov.scanId && chunk.scanId ? { ...nov, scanId: chunk.scanId } : nov;
       novedadesMap.set(stampedNov.id, stampedNov);
@@ -796,7 +812,11 @@ export function accumulateLiveDeltaChunks(
   const newAntennas: AntennaRecord[] = [];
   for (const ant of newAntennasMap.values()) {
     let patch = bandPatchesById.get(ant.id);
-    if (!patch && ant.op === 'vodafone' && ant.mergedGids) {
+    if (
+      !patch &&
+      (ant.op === 'vodafone' || ant.op === 'orange') &&
+      ant.mergedGids
+    ) {
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const candidatePatch = bandPatchesByGid.get(ant.mergedGids[g]);
         if (candidatePatch) {

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   OPERATOR_META,
-  OPERATOR_ORDER,
+  normalizeOperatorKeyInput,
   type NovedadRecord,
   type NovedadTipo,
   type NovedadesDataset,
@@ -20,7 +20,6 @@ import {
   type LiveScanMergedDelta,
 } from './useScanProgress';
 
-const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
 const VALID_NOVEDAD_TIPOS = new Set<string>(['antena', 'frecuencia']);
 const DMY_HMS_REGEX = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}:\d{2}$/;
 
@@ -178,12 +177,17 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
 function validateNovedadRecord(
   item: Record<string, unknown>,
 ): NovedadRecord | null {
+  const normalizedOp =
+    typeof item.op === 'string'
+      ? normalizeOperatorKeyInput(item.op, item.opRaw)
+      : null;
+
   if (
     typeof item.id !== 'string' ||
     typeof item.tipo !== 'string' ||
     !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
     typeof item.op !== 'string' ||
-    !VALID_OPERATORS.has(item.op) ||
+    normalizedOp === null ||
     typeof item.opRaw !== 'string' ||
     typeof item.codigo !== 'string' ||
     typeof item.antennaId !== 'string' ||
@@ -201,7 +205,7 @@ function validateNovedadRecord(
   return {
     id: item.id,
     tipo: item.tipo as NovedadTipo,
-    op: item.op as OperatorKey,
+    op: normalizedOp,
     opRaw: item.opRaw,
     codigo: item.codigo,
     antennaId: item.antennaId,
@@ -459,8 +463,6 @@ export function getNovedadesOperatorLabel(
       return 'Orange';
     case 'digi':
       return 'DIGI';
-    case 'masmovil':
-      return 'MásMóvil';
     case 'otros':
     default:
       return opRaw?.trim() || 'Otros';
@@ -548,8 +550,9 @@ export function filterNovedades({
   const result: NovedadRecord[] = [];
   for (let i = 0; i < novedades.length; i++) {
     const row = novedades[i];
+    const rowOp = normalizeOperatorKeyInput(row.op, row.opRaw) ?? row.op;
     if (tipoFilter !== 'all' && row.tipo !== tipoFilter) continue;
-    if (operatorFilter !== 'all' && row.op !== operatorFilter) continue;
+    if (operatorFilter !== 'all' && rowOp !== operatorFilter) continue;
 
     if (activeBand) {
       if (row.tipo !== 'frecuencia') continue;
@@ -591,8 +594,8 @@ export function filterNovedades({
     }
 
     if (tokens.length > 0) {
-      const meta = OPERATOR_META[row.op];
-      const opLabel = getNovedadesOperatorLabel(row.op, row.opRaw);
+      const meta = OPERATOR_META[rowOp] ?? OPERATOR_META.otros;
+      const opLabel = getNovedadesOperatorLabel(rowOp, row.opRaw);
       const tipoLabel =
         row.tipo === 'antena' ? 'antena nueva' : 'frecuencia nueva';
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia) ?? '';
@@ -601,7 +604,7 @@ export function filterNovedades({
       const resolvedProv = resolveNovedadProvince(row);
       const resolvedComunidad = resolveNovedadComunidad(row);
       const haystack = normalizeSearchText(
-        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${row.op} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
+        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${rowOp} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
       );
       let matchesAll = true;
       for (let t = 0; t < tokens.length; t++) {
@@ -993,7 +996,11 @@ export function orderNovedadesGroupedByNewAntenna(
 function deduplicateAndSortNovedades(
   rows: readonly NovedadRecord[],
 ): NovedadRecord[] {
-  return orderNovedadesGroupedByNewAntenna(rows);
+  const normalizedRows = rows.map((r) => {
+    const normOp = normalizeOperatorKeyInput(r.op, r.opRaw);
+    return normOp && normOp !== r.op ? { ...r, op: normOp } : r;
+  });
+  return orderNovedadesGroupedByNewAntenna(normalizedRows);
 }
 
 function stampHistoricalBaseRows(
@@ -1222,7 +1229,6 @@ export function computeLatestScanNovedadesCounts(
     movistar: 0,
     orange: 0,
     vodafone: 0,
-    masmovil: 0,
     digi: 0,
     otros: 0,
   };
@@ -1259,8 +1265,9 @@ export function computeLatestScanNovedadesCounts(
     } else if (row.tipo === 'frecuencia') {
       frecuencia += 1;
     }
-    if (row.op in byOp) {
-      byOp[row.op] += 1;
+    const rowOp = normalizeOperatorKeyInput(row.op, row.opRaw) ?? row.op;
+    if (rowOp in byOp) {
+      byOp[rowOp] += 1;
     }
   }
 
