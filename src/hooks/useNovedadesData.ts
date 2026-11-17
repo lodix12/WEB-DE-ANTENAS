@@ -1175,6 +1175,103 @@ export function mergeLiveDeltaIntoNovedadesDataset(
   };
 }
 
+export interface LatestScanNovedadesCounts {
+  total: number;
+  antena: number;
+  frecuencia: number;
+  byOp: Record<OperatorKey, number>;
+}
+
+/**
+ * Determina si una fila de novedad pertenece estrictamente al último escaneo realizado
+ * (`dataset.scanId`), excluyendo las filas históricas conservadas de escaneos previos.
+ */
+export function isLatestScanNovedad(
+  row: NovedadRecord,
+  dataset: Pick<
+    NovedadesDataset,
+    'scanId' | 'previousScanAt' | 'isBaselineScan'
+  >,
+): boolean {
+  if (dataset.isBaselineScan) {
+    return false;
+  }
+  const targetScanId = dataset.scanId?.trim() ?? '';
+  const rowScanId = row.scanId?.trim() ?? '';
+  if (rowScanId.length > 0 && targetScanId.length > 0) {
+    return rowScanId === targetScanId;
+  }
+  const prevCutoffMs = dataset.previousScanAt
+    ? safeScanTimestampMs(dataset.previousScanAt)
+    : 0;
+  const rowMs = row.scannedAt ? safeScanTimestampMs(row.scannedAt) : 0;
+  if (prevCutoffMs > 0 && rowMs > 0) {
+    return rowMs > prevCutoffMs;
+  }
+  return true;
+}
+
+/**
+ * Calcula los contadores de novedades contabilizando únicamente las novedades detectadas
+ * en el último escaneo realizado (`dataset.scanId`), nunca el acumulado histórico.
+ */
+export function computeLatestScanNovedadesCounts(
+  dataset: NovedadesDataset | null | undefined,
+): LatestScanNovedadesCounts {
+  const byOp: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    masmovil: 0,
+    digi: 0,
+    otros: 0,
+  };
+
+  if (!dataset || dataset.isBaselineScan) {
+    return {
+      total: 0,
+      antena: 0,
+      frecuencia: 0,
+      byOp,
+    };
+  }
+
+  const rows = Array.isArray(dataset.novedades) ? dataset.novedades : [];
+  if (rows.length === 0) {
+    return {
+      total: Math.max(0, dataset.total ?? 0),
+      antena: Math.max(0, dataset.antenasNuevas ?? 0),
+      frecuencia: Math.max(0, dataset.frecuenciasNuevas ?? 0),
+      byOp,
+    };
+  }
+
+  let antena = 0;
+  let frecuencia = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!isLatestScanNovedad(row, dataset)) {
+      continue;
+    }
+    if (row.tipo === 'antena') {
+      antena += 1;
+    } else if (row.tipo === 'frecuencia') {
+      frecuencia += 1;
+    }
+    if (row.op in byOp) {
+      byOp[row.op] += 1;
+    }
+  }
+
+  return {
+    total: antena + frecuencia,
+    antena,
+    frecuencia,
+    byOp,
+  };
+}
+
 export function useNovedadesData() {
   const query = useQuery({
     queryKey: ['novedades-dataset'],

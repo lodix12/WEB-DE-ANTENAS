@@ -15,7 +15,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Clock,
-  Radio,
   RadioTower,
   RefreshCw,
   RotateCcw,
@@ -31,6 +30,7 @@ import {
   NOVEDADES_SPANISH_COMUNIDADES,
   STANDARD_NOVEDADES_BANDS,
   buildPaginationTokens,
+  computeLatestScanNovedadesCounts,
   extractScanDayDmy,
   filterNovedades,
   formatScanDateTimeDmyHms,
@@ -164,38 +164,10 @@ export function NovedadesView() {
   const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${comunidadFilter}|${provinceFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
   const requestedPage = pageState.key === filterKey ? pageState.page : 1;
 
-  const summaryCounts = useMemo(() => {
-    const byOp: Record<OperatorKey, number> = {
-      movistar: 0,
-      orange: 0,
-      vodafone: 0,
-      masmovil: 0,
-      digi: 0,
-      otros: 0,
-    };
-    if (!dataset) {
-      return { all: 0, antena: 0, frecuencia: 0, byOp };
-    }
-    let antena = 0;
-    let frecuencia = 0;
-    for (let i = 0; i < dataset.novedades.length; i++) {
-      const item = dataset.novedades[i];
-      if (item.tipo === 'antena') {
-        antena += 1;
-      } else {
-        frecuencia += 1;
-      }
-      if (item.op in byOp) {
-        byOp[item.op] += 1;
-      }
-    }
-    return {
-      all: dataset.novedades.length,
-      antena: dataset.antenasNuevas ?? antena,
-      frecuencia: dataset.frecuenciasNuevas ?? frecuencia,
-      byOp,
-    };
-  }, [dataset]);
+  const latestScanCounts = useMemo(
+    () => computeLatestScanNovedadesCounts(dataset),
+    [dataset],
+  );
 
   const orderedNovedades = useMemo(
     () => (dataset ? orderNovedadesGroupedByNewAntenna(dataset.novedades) : []),
@@ -520,16 +492,8 @@ export function NovedadesView() {
 
   return (
     <main className="page-container novedades-page">
-      <header className="page-hero">
-        <span className="page-eyebrow">
-          Monitorización Diaria del Espectro · 18:00 h
-        </span>
-        <h1 className="page-h1">Novedades de Antenas y Frecuencias</h1>
-        <p className="page-lead">
-          Registro permanente y acumulativo de nuevas antenas y concesiones de
-          frecuencia detectadas en cada escaneo (programado todos los días a las
-          18:00 h).
-        </p>
+      <header className="page-hero novedades-hero">
+        <h1 className="page-h1">Novedades</h1>
       </header>
 
       <section
@@ -622,20 +586,14 @@ export function NovedadesView() {
         <div className="metric-cell">
           <span className="metric-label">Antenas nuevas</span>
           <span className="metric-value">
-            {dataset.antenasNuevas.toLocaleString('es-ES')}
-          </span>
-          <span className="metric-sub">
-            Nuevos emplazamientos incorporados al censo
+            {latestScanCounts.antena.toLocaleString('es-ES')}
           </span>
         </div>
 
         <div className="metric-cell">
           <span className="metric-label">Frecuencias nuevas</span>
           <span className="metric-value">
-            {dataset.frecuenciasNuevas.toLocaleString('es-ES')}
-          </span>
-          <span className="metric-sub">
-            Nuevas concesiones de banda asignadas en MINETUR
+            {latestScanCounts.frecuencia.toLocaleString('es-ES')}
           </span>
         </div>
 
@@ -672,59 +630,6 @@ export function NovedadesView() {
               <span>Filtros</span>
             </div>
 
-            <div
-              className="novedades-type-pills"
-              role="group"
-              aria-label="Filtrar por tipo de novedad"
-            >
-              <button
-                type="button"
-                id="novedades-filter-all"
-                className={`novedades-filter-pill${
-                  tipoFilter === 'all' ? ' is-active' : ''
-                }`}
-                onClick={() => setTipoFilter('all')}
-                aria-pressed={tipoFilter === 'all'}
-              >
-                <span>Todas</span>
-                <span className="novedades-pill-count mono">
-                  {summaryCounts.all.toLocaleString('es-ES')}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                id="novedades-filter-antenas"
-                className={`novedades-filter-pill${
-                  tipoFilter === 'antena' ? ' is-active' : ''
-                }`}
-                onClick={() => setTipoFilter('antena')}
-                aria-pressed={tipoFilter === 'antena'}
-              >
-                <RadioTower size={13} aria-hidden="true" />
-                <span>Antenas nuevas</span>
-                <span className="novedades-pill-count mono">
-                  {summaryCounts.antena.toLocaleString('es-ES')}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                id="novedades-filter-frecuencias"
-                className={`novedades-filter-pill${
-                  tipoFilter === 'frecuencia' ? ' is-active' : ''
-                }`}
-                onClick={() => setTipoFilter('frecuencia')}
-                aria-pressed={tipoFilter === 'frecuencia'}
-              >
-                <Radio size={13} aria-hidden="true" />
-                <span>Frecuencias nuevas</span>
-                <span className="novedades-pill-count mono">
-                  {summaryCounts.frecuencia.toLocaleString('es-ES')}
-                </span>
-              </button>
-            </div>
-
             {hasActiveFilters && (
               <button
                 type="button"
@@ -736,6 +641,49 @@ export function NovedadesView() {
                 <span>Limpiar filtros</span>
               </button>
             )}
+          </div>
+
+          <div
+            className="novedades-type-pills"
+            role="group"
+            aria-label="Filtrar por tipo de novedad"
+          >
+            <button
+              type="button"
+              id="novedades-filter-antenas"
+              className={`novedades-filter-pill${
+                tipoFilter === 'antena' ? ' is-active' : ''
+              }`}
+              onClick={() =>
+                setTipoFilter(tipoFilter === 'antena' ? 'all' : 'antena')
+              }
+              aria-pressed={tipoFilter === 'antena'}
+            >
+              <RadioTower size={13} aria-hidden="true" />
+              <span>Antenas Nuevas</span>
+              <span className="novedades-pill-count mono">
+                {latestScanCounts.antena.toLocaleString('es-ES')}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              id="novedades-filter-frecuencias"
+              className={`novedades-filter-pill${
+                tipoFilter === 'frecuencia' ? ' is-active' : ''
+              }`}
+              onClick={() =>
+                setTipoFilter(
+                  tipoFilter === 'frecuencia' ? 'all' : 'frecuencia',
+                )
+              }
+              aria-pressed={tipoFilter === 'frecuencia'}
+            >
+              <span>Frecuencias Nuevas</span>
+              <span className="novedades-pill-count mono">
+                {latestScanCounts.frecuencia.toLocaleString('es-ES')}
+              </span>
+            </button>
           </div>
 
           <div
@@ -782,9 +730,9 @@ export function NovedadesView() {
                     aria-hidden="true"
                   />
                   <span>{getNovedadesOperatorLabel(opKey)}</span>
-                  {summaryCounts.byOp[opKey] > 0 && (
+                  {latestScanCounts.byOp[opKey] > 0 && (
                     <span className="novedades-pill-count mono">
-                      {summaryCounts.byOp[opKey].toLocaleString('es-ES')}
+                      {latestScanCounts.byOp[opKey].toLocaleString('es-ES')}
                     </span>
                   )}
                 </button>
@@ -945,10 +893,10 @@ export function NovedadesView() {
           <table className="novedades-table" id="novedades-table">
             <thead>
               <tr>
-                <th scope="col">Novedad</th>
-                <th scope="col" className="novedades-col-codigo">
-                  Código
+                <th scope="col" className="novedades-col-novedad">
+                  Novedad
                 </th>
+                <th scope="col">Código</th>
                 <th scope="col">Código Banda</th>
                 <th scope="col">Frecuencia</th>
                 <th scope="col">Ubicación</th>
@@ -988,16 +936,14 @@ export function NovedadesView() {
                       data-operator={row.op}
                       style={{ backgroundColor: rowBgColor }}
                     >
-                      <td>
+                      <td className="novedades-col-novedad">
                         <div className="novedades-cell-novedad">
                           <span
                             className={`novedades-badge ${
                               isFrecuencia ? 'is-frecuencia' : 'is-antena'
                             }`}
                           >
-                            {isFrecuencia ? (
-                              <Radio size={11} aria-hidden="true" />
-                            ) : (
+                            {!isFrecuencia && (
                               <RadioTower size={11} aria-hidden="true" />
                             )}
                             <span>{isFrecuencia ? 'Frecuencia' : 'Antena'}</span>
@@ -1014,7 +960,7 @@ export function NovedadesView() {
                         </div>
                       </td>
 
-                      <td className="novedades-col-codigo">
+                      <td>
                         <Link
                           to="/"
                           search={{

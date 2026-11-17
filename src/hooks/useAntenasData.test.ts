@@ -14,6 +14,7 @@ import * as AntenasMapModule from '../components/map/AntenasMap';
 import antenasMapRawSource from '../components/map/AntenasMap.tsx?raw';
 import { MapOverlays } from '../components/map/MapOverlays';
 import mapOverlaysRawSource from '../components/map/MapOverlays.tsx?raw';
+import { AppHeader } from '../components/ui/AppHeader';
 import { FilterPanel } from '../components/ui/FilterPanel';
 import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
@@ -63,6 +64,7 @@ import {
   NOVEDADES_SPANISH_COMUNIDADES,
   buildPaginationTokens,
   classifyFrequencyBandMhz,
+  computeLatestScanNovedadesCounts,
   filterNovedades,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
@@ -71,6 +73,7 @@ import {
   getNovedadesProvincesForComunidad,
   getOperatorRowBackground,
   importNovedadesJsonDataset,
+  isLatestScanNovedad,
   isValidNovedadesPageSize,
   mergeLiveDeltaIntoNovedadesDataset,
   orderNovedadesGroupedByNewAntenna,
@@ -6505,9 +6508,10 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
     expect(tableHtml).toContain(
       '<span class="novedades-operator-name">DIGI</span>',
     );
-    expect(tableHtml).toContain('class="novedades-col-codigo"');
+    expect(tableHtml).not.toContain('novedades-col-codigo');
+    expect(tableHtml).toContain('class="novedades-col-novedad"');
 
-    // 4. Verificación CSS: contenedor y tabla más estrechos, columna Código 20% más estrecha (width: 72px) y pares 50%/50%
+    // 4. Verificación CSS: contenedor y tabla compactos, columna Código devuelta a su tamaño original, columna Novedad estrechada y pares 50%/50%
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -6522,8 +6526,12 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
     expect(indexCssSource).toMatch(
       /\.novedades-table\s*\{[^}]*min-width:\s*460px;/,
     );
+    expect(indexCssSource).not.toContain('novedades-col-codigo');
     expect(indexCssSource).toMatch(
-      /\.novedades-table td\.novedades-col-codigo\s*\{[^}]*width:\s*72px;[^}]*max-width:\s*74px;/,
+      /\.novedades-code-link\s*\{[^}]*padding:\s*2px 6px;[^}]*font-size:\s*11\.5px;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table td\.novedades-col-novedad\s*\{[^}]*width:\s*74px;[^}]*max-width:\s*82px;/,
     );
     expect(indexCssSource).toMatch(
       /\.novedades-filter-pair\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/,
@@ -6531,3 +6539,349 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
   });
 });
 
+describe('Novedades — Contadores del último escaneo, encabezado simplificado, 2 bloques de filtro en paralelo, badge Frecuencia sin icono y tabla móvil a ancho completo', () => {
+  it('computeLatestScanNovedadesCounts e isLatestScanNovedad cuentan únicamente las novedades del último escaneo realizado y nunca el acumulado histórico', () => {
+    const emptyLatestScanDataset: NovedadesDataset = {
+      updatedAt: '2026-11-17T07:53:33Z',
+      previousScanAt: '2026-11-17T06:06:16Z',
+      scanId: '44039933369',
+      isBaselineScan: false,
+      total: 3,
+      antenasNuevas: 1,
+      frecuenciasNuevas: 2,
+      novedades: [
+        {
+          id: 'ant:digi:2809991',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-17T06:06:16Z',
+          fecha: '17/11/2026 07:06:16',
+          scanId: '43978102518',
+        },
+        {
+          id: 'freq:mov:2800001:3500',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-17T06:06:16Z',
+          fecha: '17/11/2026 07:06:16',
+          scanId: '43978102518',
+        },
+        {
+          id: 'freq:vod:0800002:3500',
+          tipo: 'frecuencia',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '0800002',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800002',
+          codigoBanda: 'B-3500',
+          frecuencia: '3710.00 - 3800.00 MHz',
+          ubicacion: 'BARCELONA',
+          prov: 'BARCELONA',
+          scannedAt: '2026-11-17T06:06:16Z',
+          fecha: '17/11/2026 07:06:16',
+          scanId: '43978102518',
+        },
+      ],
+    };
+
+    expect(
+      isLatestScanNovedad(
+        emptyLatestScanDataset.novedades[0]!,
+        emptyLatestScanDataset,
+      ),
+    ).toBe(false);
+    expect(computeLatestScanNovedadesCounts(emptyLatestScanDataset)).toEqual({
+      total: 0,
+      antena: 0,
+      frecuencia: 0,
+      byOp: {
+        movistar: 0,
+        orange: 0,
+        vodafone: 0,
+        masmovil: 0,
+        digi: 0,
+        otros: 0,
+      },
+    });
+
+    const mixedScanDataset: NovedadesDataset = {
+      ...emptyLatestScanDataset,
+      updatedAt: '2026-11-17T18:05:00Z',
+      previousScanAt: '2026-11-17T07:53:33Z',
+      scanId: 'scan-latest-99',
+      total: 5,
+      antenasNuevas: 2,
+      frecuenciasNuevas: 3,
+      novedades: [
+        {
+          id: 'ant:ora:4609001',
+          tipo: 'antena',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          codigo: '4609001',
+          antennaId: 'ORANGE ESPAGNE, S.A.U. - 4609001',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'VALENCIA',
+          prov: 'VALENCIA',
+          scannedAt: '2026-11-17T18:04:00Z',
+          fecha: '17/11/2026 19:04:00',
+          scanId: 'scan-latest-99',
+        },
+        {
+          id: 'freq:ora:4609001:700',
+          tipo: 'frecuencia',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          codigo: '4609001',
+          antennaId: 'ORANGE ESPAGNE, S.A.U. - 4609001',
+          codigoBanda: 'V-700',
+          frecuencia: '758.00 - 768.00 MHz',
+          ubicacion: 'VALENCIA',
+          prov: 'VALENCIA',
+          scannedAt: '2026-11-17T18:04:00Z',
+          fecha: '17/11/2026 19:04:00',
+          scanId: 'scan-latest-99',
+        },
+        ...emptyLatestScanDataset.novedades,
+      ],
+    };
+
+    expect(
+      isLatestScanNovedad(mixedScanDataset.novedades[0]!, mixedScanDataset),
+    ).toBe(true);
+    expect(
+      isLatestScanNovedad(mixedScanDataset.novedades[2]!, mixedScanDataset),
+    ).toBe(false);
+    expect(computeLatestScanNovedadesCounts(mixedScanDataset)).toEqual({
+      total: 2,
+      antena: 1,
+      frecuencia: 1,
+      byOp: {
+        movistar: 0,
+        orange: 2,
+        vodafone: 0,
+        masmovil: 0,
+        digi: 0,
+        otros: 0,
+      },
+    });
+  });
+
+  it('renderiza encabezado solo con "Novedades", métricas sin frases descriptivas, 2 bloques paralelos de tipo, contadores solo del último escaneo, badge Frecuencia sin icono y tabla móvil sin bordes laterales', async () => {
+    const dataset: NovedadesDataset = {
+      updatedAt: '2026-11-17T18:05:00Z',
+      previousScanAt: '2026-11-17T07:53:33Z',
+      scanId: 'scan-latest-99',
+      isBaselineScan: false,
+      total: 4,
+      antenasNuevas: 2,
+      frecuenciasNuevas: 2,
+      novedades: [
+        {
+          id: 'ant:ora:4609001',
+          tipo: 'antena',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          codigo: '4609001',
+          antennaId: 'ORANGE ESPAGNE, S.A.U. - 4609001',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'VALENCIA',
+          prov: 'VALENCIA',
+          scannedAt: '2026-11-17T18:04:00Z',
+          fecha: '17/11/2026 19:04:00',
+          scanId: 'scan-latest-99',
+        },
+        {
+          id: 'freq:mov:2800001:3500',
+          tipo: 'frecuencia',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: 'M M -2205199',
+          frecuencia: '3460.00 - 3600.00 MHz',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-17T18:04:00Z',
+          fecha: '17/11/2026 19:04:00',
+          scanId: 'scan-latest-99',
+        },
+        // Filas históricas de un escaneo anterior (permanecen en la tabla pero NO suman a los contadores)
+        {
+          id: 'ant:digi:2809991',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '2809991',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 2809991',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          scannedAt: '2026-11-17T06:06:16Z',
+          fecha: '17/11/2026 07:06:16',
+          scanId: 'scan-older-01',
+        },
+        {
+          id: 'freq:vod:0800002:3500',
+          tipo: 'frecuencia',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '0800002',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800002',
+          codigoBanda: 'B-3500',
+          frecuencia: '3710.00 - 3800.00 MHz',
+          ubicacion: 'BARCELONA',
+          prov: 'BARCELONA',
+          scannedAt: '2026-11-17T06:06:16Z',
+          fecha: '17/11/2026 07:06:16',
+          scanId: 'scan-older-01',
+        },
+      ],
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['novedades-dataset'], dataset);
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute({
+      component: () =>
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(AppHeader),
+          createElement(Outlet),
+        ),
+    });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      component: () => createElement('div', null, 'Mapa'),
+    });
+    const testNov = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await testRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: testRouter }),
+      ),
+    );
+
+    // 1. Encabezado superior: únicamente <h1 class="page-h1">Novedades</h1> sin .page-eyebrow ni .page-lead
+    const heroMatch = html.match(
+      /<header[^>]*class="page-hero novedades-hero"[^>]*>([\s\S]*?)<\/header>/,
+    );
+    expect(heroMatch).not.toBeNull();
+    expect(heroMatch?.[1]?.trim()).toBe('<h1 class="page-h1">Novedades</h1>');
+    expect(html).not.toContain('page-eyebrow');
+    expect(html).not.toContain('page-lead');
+
+    // 2. Zona de escaneo: contadores del último escaneo (1 antena nueva, 1 frecuencia nueva, no 2 y 2 acumulados) y sin frases descriptivas debajo
+    expect(html).not.toContain('Nuevos emplazamientos incorporados al censo');
+    expect(html).not.toContain(
+      'Nuevas concesiones de banda asignadas en MINETUR',
+    );
+    expect(html).toContain(
+      '<div class="metric-cell"><span class="metric-label">Antenas nuevas</span><span class="metric-value">1</span></div>',
+    );
+    expect(html).toContain(
+      '<div class="metric-cell"><span class="metric-label">Frecuencias nuevas</span><span class="metric-value">1</span></div>',
+    );
+
+    // 3. Dos bloques en paralelo ("Antenas Nuevas" y "Frecuencias Nuevas") sin bloque "Todas" y contando solo el último escaneo
+    expect(html).not.toContain('id="novedades-filter-all"');
+    const typePillsMatch = html.match(
+      /<div[^>]*class="novedades-type-pills"[^>]*>([\s\S]*?)<\/div>/,
+    );
+    expect(typePillsMatch).not.toBeNull();
+    expect(typePillsMatch?.[1]).toContain('id="novedades-filter-antenas"');
+    expect(typePillsMatch?.[1]).toContain('<span>Antenas Nuevas</span>');
+    expect(typePillsMatch?.[1]).toContain('id="novedades-filter-frecuencias"');
+    expect(typePillsMatch?.[1]).toContain('<span>Frecuencias Nuevas</span>');
+    expect(
+      typePillsMatch?.[1]?.match(/class="novedades-filter-pill"/g),
+    ).toHaveLength(2);
+    expect(typePillsMatch?.[1]?.match(/>1<\/span>/g)).toHaveLength(2);
+
+    // Chips de operadora y badge del menú lateral cuentan solo el último escaneo (total = 2, DIGI histórico = 0 sin contador)
+    const digiChipMatch = html.match(
+      /<button[^>]*id="novedades-op-chip-digi"[^>]*>([\s\S]*?)<\/button>/,
+    );
+    expect(digiChipMatch?.[1]).not.toContain('novedades-pill-count');
+    const navBadgeMatch = html.match(
+      /<a[^>]*id="nav-tab-novedades"[^>]*>([\s\S]*?)<\/a>/,
+    );
+    expect(navBadgeMatch?.[1]).toMatch(
+      /<span class="nav-tab-badge mono"[^>]*>2<\/span>/,
+    );
+
+    // 4. La tabla mantiene las 4 filas permanentes pero los badges de "Frecuencia" NO tienen icono de ondas (<svg)
+    const freqBadges = Array.from(
+      html.matchAll(
+        /<span class="novedades-badge is-frecuencia">([\s\S]*?)<\/span>\s*<span class="novedades-operator-tag"/g,
+      ),
+      (m) => m[1],
+    );
+    expect(freqBadges).toHaveLength(2);
+    for (const badgeInner of freqBadges) {
+      expect(badgeInner).not.toContain('<svg');
+      expect(badgeInner).toContain('<span>Frecuencia</span>');
+    }
+    const antBadges = Array.from(
+      html.matchAll(
+        /<span class="novedades-badge is-antena">([\s\S]*?)<\/span>\s*<span class="novedades-operator-tag"/g,
+      ),
+      (m) => m[1],
+    );
+    expect(antBadges).toHaveLength(2);
+    for (const badgeInner of antBadges) {
+      expect(badgeInner).toContain('<svg');
+      expect(badgeInner).toContain('<span>Antena</span>');
+    }
+
+    // 5. CSS: 2 bloques en paralelo y tabla móvil a todo el ancho sin bordes laterales
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-type-pills\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/,
+    );
+    expect(indexCssSource).toMatch(
+      /@media\s*\(max-width:\s*860px\)\s*\{[\s\S]*?\.novedades-table-section\s*\{[^}]*margin-left:\s*-14px;[^}]*margin-right:\s*-14px;[^}]*width:\s*calc\(100%\s*\+\s*28px\);[^}]*border-left:\s*none;[^}]*border-right:\s*none;[^}]*border-radius:\s*0;/,
+    );
+  });
+});

@@ -2392,6 +2392,10 @@ code {
   gap: 24px;
 }
 
+.novedades-hero {
+  padding-bottom: 12px;
+}
+
 .novedades-scan-monitor {
   gap: 6px;
   position: relative;
@@ -2578,11 +2582,10 @@ code {
 }
 
 .novedades-type-pills {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
 }
 
 .novedades-reset-btn {
@@ -2592,8 +2595,11 @@ code {
 .novedades-filter-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 34px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
   padding: 0 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
@@ -2769,12 +2775,13 @@ code {
   vertical-align: middle;
 }
 
-.novedades-table th.novedades-col-codigo,
-.novedades-table td.novedades-col-codigo {
-  width: 72px;
-  max-width: 74px;
-  padding-left: 4px;
-  padding-right: 4px;
+.novedades-table th.novedades-col-novedad,
+.novedades-table td.novedades-col-novedad {
+  width: 74px;
+  max-width: 82px;
+  padding-left: 5px;
+  padding-right: 5px;
+  white-space: nowrap;
 }
 
 .novedades-table tbody td:not(:last-child) {
@@ -2862,33 +2869,32 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  max-width: 100%;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 1.2;
   color: inherit;
-  white-space: normal;
+  white-space: nowrap;
 }
 
 .novedades-operator-name {
   line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .novedades-code-link {
   display: inline-flex;
   align-items: center;
-  padding: 1.5px 4px;
+  padding: 2px 6px;
   border-radius: var(--radius-xs);
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.2;
-  max-width: 100%;
   color: #0369a1;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(15, 23, 42, 0.18);
   text-decoration: none;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   transition:
     background-color 0.14s ease,
     border-color 0.14s ease,
@@ -3600,8 +3606,21 @@ code {
     margin: 8px 10px 12px;
   }
 
+  .novedades-table-section {
+    margin-left: -14px;
+    margin-right: -14px;
+    width: calc(100% + 28px);
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+  }
+
   .novedades-filters-panel {
     padding: 12px 14px;
+  }
+
+  .novedades-results-status {
+    padding: 8px 14px;
   }
 
   .novedades-filters-grid {
@@ -3649,6 +3668,13 @@ code {
 }
 
 @media (max-width: 520px) {
+  .novedades-filter-pill {
+    height: 34px;
+    padding: 0 8px;
+    font-size: 12px;
+    gap: 5px;
+  }
+
   .novedades-filter-pair .select-control {
     font-size: 12px;
     padding: 0 7px;

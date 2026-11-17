@@ -12,7 +12,10 @@ import {
   X,
 } from 'lucide-react';
 import { useAntenasData } from '../../hooks/useAntenasData';
-import { useNovedadesData } from '../../hooks/useNovedadesData';
+import {
+  computeLatestScanNovedadesCounts,
+  useNovedadesData,
+} from '../../hooks/useNovedadesData';
 import { usePwaInstall } from '../../hooks/usePwaInstall';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import {
@@ -65,8 +68,8 @@ export function AppHeader() {
   const totalFormatted = derived
     ? derived.dataset.total.toLocaleString('es-ES')
     : null;
-  const novedadesCount =
-    novedadesData && novedadesData.total > 0 ? novedadesData.total : 0;
+  const latestNovedadesCounts = computeLatestScanNovedadesCounts(novedadesData);
+  const novedadesCount = latestNovedadesCounts.total;
   const relativeDate = derived
     ? formatRelativeDateEs(derived.dataset.updatedAt)
     : '';
