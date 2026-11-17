@@ -10,6 +10,12 @@ import {
 } from '../types/antena';
 import { normalizeSearchText } from '../utils/export';
 import {
+  ALL_SPANISH_COMUNIDADES,
+  getCanonicalProvincesByComunidad,
+  getCanonicalSpanishProvince,
+  getComunidadAutonomaByProvince,
+} from './useAntenasData';
+import {
   useLiveScanDelta,
   type LiveScanMergedDelta,
 } from './useScanProgress';
@@ -431,11 +437,64 @@ export function extractScanDayDmy(
   return spaceIdx > 0 ? formatted.slice(0, spaceIdx) : formatted;
 }
 
+export const NOVEDADES_SPANISH_COMUNIDADES: readonly string[] =
+  ALL_SPANISH_COMUNIDADES;
+
+export function getNovedadesProvincesForComunidad(
+  comunidad?: string,
+): string[] {
+  return getCanonicalProvincesByComunidad(comunidad);
+}
+
+export function getNovedadesOperatorLabel(
+  op: OperatorKey,
+  opRaw?: string,
+): string {
+  switch (op) {
+    case 'movistar':
+      return 'Telefonica';
+    case 'vodafone':
+      return 'Vodafone';
+    case 'orange':
+      return 'Orange';
+    case 'digi':
+      return 'DIGI';
+    case 'masmovil':
+      return 'MásMóvil';
+    case 'otros':
+    default:
+      return opRaw?.trim() || 'Otros';
+  }
+}
+
+export function resolveNovedadProvince(
+  row: Pick<NovedadRecord, 'prov' | 'ubicacion'>,
+): string {
+  const rawProv = row.prov?.trim() ?? '';
+  if (rawProv) {
+    return getCanonicalSpanishProvince(rawProv) || rawProv;
+  }
+  const rawUbicacion = row.ubicacion?.trim() ?? '';
+  if (rawUbicacion) {
+    return getCanonicalSpanishProvince(rawUbicacion);
+  }
+  return '';
+}
+
+export function resolveNovedadComunidad(
+  row: Pick<NovedadRecord, 'prov' | 'ubicacion'>,
+): string {
+  const resolvedProv = resolveNovedadProvince(row) || (row.prov ?? '');
+  return getComunidadAutonomaByProvince(resolvedProv);
+}
+
 export interface NovedadesFilterInput {
   novedades: NovedadRecord[];
   tipoFilter: 'all' | NovedadTipo;
   operatorFilter: 'all' | OperatorKey;
   bandFilter?: string;
+  comunidadFilter?: string;
+  provinceFilter?: string;
   locationFilter?: string;
   dateFilter?: string;
   searchQuery: string;
@@ -446,6 +505,8 @@ export function filterNovedades({
   tipoFilter,
   operatorFilter,
   bandFilter = 'all',
+  comunidadFilter = 'all',
+  provinceFilter = 'all',
   locationFilter = 'all',
   dateFilter = 'all',
   searchQuery,
@@ -455,6 +516,16 @@ export function filterNovedades({
     ? normalizedQuery.split(/\s+/).filter(Boolean)
     : [];
   const activeBand = bandFilter && bandFilter !== 'all' ? bandFilter : '';
+  const activeComunidad =
+    comunidadFilter && comunidadFilter !== 'all'
+      ? normalizeSearchText(comunidadFilter)
+      : '';
+  const targetProv =
+    provinceFilter && provinceFilter !== 'all'
+      ? normalizeSearchText(
+          getCanonicalSpanishProvince(provinceFilter) || provinceFilter,
+        )
+      : '';
   const activeLocation =
     locationFilter && locationFilter !== 'all'
       ? normalizeSearchText(locationFilter)
@@ -465,6 +536,8 @@ export function filterNovedades({
     tipoFilter === 'all' &&
     operatorFilter === 'all' &&
     !activeBand &&
+    !activeComunidad &&
+    !targetProv &&
     !activeLocation &&
     !activeDate &&
     tokens.length === 0
@@ -484,10 +557,29 @@ export function filterNovedades({
       if (inferredBand !== activeBand) continue;
     }
 
+    if (activeComunidad) {
+      if (normalizeSearchText(resolveNovedadComunidad(row)) !== activeComunidad) {
+        continue;
+      }
+    }
+
+    if (targetProv) {
+      const resolvedProvNorm = normalizeSearchText(resolveNovedadProvince(row));
+      const fallbackProvNorm = normalizeSearchText(row.prov ?? '');
+      if (resolvedProvNorm !== targetProv && fallbackProvNorm !== targetProv) {
+        continue;
+      }
+    }
+
     if (activeLocation) {
       const rowCity = normalizeSearchText(row.ubicacion);
       const rowProv = normalizeSearchText(row.prov ?? '');
-      if (rowCity !== activeLocation && rowProv !== activeLocation) {
+      const rowResolvedProv = normalizeSearchText(resolveNovedadProvince(row));
+      if (
+        rowCity !== activeLocation &&
+        rowProv !== activeLocation &&
+        rowResolvedProv !== activeLocation
+      ) {
         continue;
       }
     }
@@ -500,13 +592,16 @@ export function filterNovedades({
 
     if (tokens.length > 0) {
       const meta = OPERATOR_META[row.op];
+      const opLabel = getNovedadesOperatorLabel(row.op, row.opRaw);
       const tipoLabel =
         row.tipo === 'antena' ? 'antena nueva' : 'frecuencia nueva';
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia) ?? '';
       const inferredBandSearch =
         inferredBand === '26 GHz' ? '26 GHz 26GHz' : inferredBand;
+      const resolvedProv = resolveNovedadProvince(row);
+      const resolvedComunidad = resolveNovedadComunidad(row);
       const haystack = normalizeSearchText(
-        `${tipoLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${row.op} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${formattedDate}`,
+        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${row.op} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
       );
       let matchesAll = true;
       for (let t = 0; t < tokens.length; t++) {

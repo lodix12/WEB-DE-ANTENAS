@@ -48,6 +48,7 @@ import {
   compareFrequencyRanges,
   filterAntenas,
   fuseVodafoneAntennasInDataset,
+  getCanonicalSpanishProvince,
   getComunidadAutonomaByProvince,
   importAntenasJsonDataset,
   matchesAntennaBandsFilter,
@@ -59,12 +60,15 @@ import {
 } from './useAntenasData';
 import {
   NOVEDADES_PAGE_SIZE_OPTIONS,
+  NOVEDADES_SPANISH_COMUNIDADES,
   buildPaginationTokens,
   classifyFrequencyBandMhz,
   filterNovedades,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
   getNovedadScanBatchKey,
+  getNovedadesOperatorLabel,
+  getNovedadesProvincesForComunidad,
   getOperatorRowBackground,
   importNovedadesJsonDataset,
   isValidNovedadesPageSize,
@@ -72,6 +76,8 @@ import {
   orderNovedadesGroupedByNewAntenna,
   paginateNovedades,
   parseCustomNovedadesJson,
+  resolveNovedadComunidad,
+  resolveNovedadProvince,
   splitFrequencyRangeLines,
   splitScanDateTimeLines,
 } from './useNovedadesData';
@@ -1216,10 +1222,13 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(baselineHtml).toContain(
       '<span class="metric-label">Frecuencias nuevas</span>',
     );
-    expect(baselineHtml).toContain('id="novedades-operator-filter"');
+    expect(baselineHtml).not.toContain('id="novedades-operator-filter"');
+    expect(baselineHtml).not.toContain('id="novedades-location-filter"');
     expect(baselineHtml).toContain('id="novedades-op-chip-digi"');
     expect(baselineHtml).toContain('id="novedades-band-filter"');
-    expect(baselineHtml).toContain('id="novedades-location-filter"');
+    expect(baselineHtml).toContain('id="novedades-date-filter"');
+    expect(baselineHtml).toContain('id="novedades-ccaa-filter"');
+    expect(baselineHtml).toContain('id="novedades-province-filter"');
     expect(baselineHtml).toContain('18:00 h');
 
     const populatedHtml = await renderNovedadesWithDataset(
@@ -1229,10 +1238,15 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(populatedHtml).toContain('rgba(124, 58, 237, 0.5)');
     expect(populatedHtml).toContain('rgba(0, 102, 204, 0.5)');
     expect(populatedHtml).toContain('id="novedades-date-filter"');
-    expect(populatedHtml).toContain('Antena nueva');
-    expect(populatedHtml).toContain('DIGI Spain');
-    expect(populatedHtml).toContain('Frecuencia nueva');
-    expect(populatedHtml).toContain('Movistar (Telefónica)');
+    expect(populatedHtml).toContain('<span>Antena</span>');
+    expect(populatedHtml).toContain(
+      '<span class="novedades-operator-name">DIGI</span>',
+    );
+    expect(populatedHtml).toContain('<span>Frecuencia</span>');
+    expect(populatedHtml).toContain(
+      '<span class="novedades-operator-name">Telefonica</span>',
+    );
+    expect(populatedHtml).not.toContain('novedades-row-op-dot');
     expect(populatedHtml).toContain('2809991');
     expect(populatedHtml).toContain('M M -2205199');
     expect(populatedHtml).toContain('3460.00 - 3600.00 MHz');
@@ -5538,22 +5552,22 @@ describe('Tabla Novedades compacta, frecuencia inicio/fin en dos líneas, diviso
     );
     expect(rowMatches).toHaveLength(4);
     expect(rowMatches[0]?.[1]).toBe('novedades-row');
-    expect(rowMatches[0]?.[2]).toContain('Antena nueva');
+    expect(rowMatches[0]?.[2]).toContain('<span>Antena</span>');
     expect(rowMatches[0]?.[2]).toContain('2809991');
 
     expect(rowMatches[1]?.[1]).toContain('is-associated-freq');
-    expect(rowMatches[1]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[1]?.[2]).toContain('<span>Frecuencia</span>');
     expect(rowMatches[1]?.[2]).toContain('DG-1800');
 
     expect(rowMatches[2]?.[1]).toContain('is-associated-freq');
-    expect(rowMatches[2]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[2]?.[2]).toContain('<span>Frecuencia</span>');
     expect(rowMatches[2]?.[2]).toContain('DG-2600');
 
     expect(rowMatches[3]?.[1]).toBe('novedades-row');
-    expect(rowMatches[3]?.[2]).toContain('Frecuencia nueva');
+    expect(rowMatches[3]?.[2]).toContain('<span>Frecuencia</span>');
     expect(rowMatches[3]?.[2]).toContain('M M -2205199');
 
-    // 3. Verificación CSS: anchura compacta min-width: 540px y líneas verticales separadoras entre columnas
+    // 3. Verificación CSS: anchura compacta min-width: 460px y líneas verticales separadoras entre columnas
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -5563,7 +5577,7 @@ describe('Tabla Novedades compacta, frecuencia inicio/fin en dos líneas, diviso
       'utf-8',
     );
     expect(indexCssSource).toMatch(
-      /\.novedades-table\s*\{[^}]*min-width:\s*540px;/,
+      /\.novedades-table\s*\{[^}]*min-width:\s*460px;/,
     );
     expect(indexCssSource).not.toMatch(
       /\.novedades-table\s*\{[^}]*min-width:\s*880px;/,
@@ -6205,3 +6219,315 @@ describe('Listado permanente y acumulativo de Novedades entre múltiples escaneo
     ]);
   });
 });
+
+describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operadora y filtros en paralelo (Frecuencia+Fecha y CCAA+Provincia)', () => {
+  it('simplifica nombres de operadora (Telefonica, Vodafone, Orange, DIGI) y filtra por Comunidad Autónoma y Provincia', () => {
+    expect(getNovedadesOperatorLabel('movistar')).toBe('Telefonica');
+    expect(getNovedadesOperatorLabel('vodafone')).toBe('Vodafone');
+    expect(getNovedadesOperatorLabel('orange')).toBe('Orange');
+    expect(getNovedadesOperatorLabel('digi')).toBe('DIGI');
+    expect(getNovedadesOperatorLabel('masmovil')).toBe('MásMóvil');
+    expect(getNovedadesOperatorLabel('otros', 'EUSKALTEL, S.A.')).toBe(
+      'EUSKALTEL, S.A.',
+    );
+
+    expect(NOVEDADES_SPANISH_COMUNIDADES).toHaveLength(19);
+    expect(getNovedadesProvincesForComunidad('all')).toHaveLength(52);
+    expect(getNovedadesProvincesForComunidad('Galicia')).toEqual([
+      'A CORUÑA',
+      'LUGO',
+      'OURENSE',
+      'PONTEVEDRA',
+    ]);
+    expect(getNovedadesProvincesForComunidad('Comunidad Valenciana')).toEqual([
+      'ALICANTE',
+      'CASTELLÓN',
+      'VALENCIA',
+    ]);
+
+    expect(getCanonicalSpanishProvince('LA CORUÑA')).toBe('A CORUÑA');
+    expect(getCanonicalSpanishProvince('VALÈNCIA')).toBe('VALENCIA');
+    expect(getCanonicalSpanishProvince('ARABA/ÁLAVA')).toBe('ÁLAVA');
+    expect(getCanonicalSpanishProvince('ISLAS BALEARES')).toBe('ILLES BALEARS');
+
+    const rows: NovedadRecord[] = [
+      {
+        id: 'ant:mov:1500001',
+        tipo: 'antena',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        codigo: '1500001',
+        antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 1500001',
+        codigoBanda: '',
+        frecuencia: '',
+        ubicacion: 'SANTIAGO DE COMPOSTELA',
+        prov: 'LA CORUÑA',
+        scannedAt: '2026-11-17T06:10:00Z',
+        fecha: '17/11/2026 07:10:00',
+      },
+      {
+        id: 'freq:vod:3600002',
+        tipo: 'frecuencia',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        codigo: '3600002',
+        antennaId: 'VODAFONE ESPAÑA, S.A.U. - 3600002',
+        codigoBanda: 'PO-3500',
+        frecuencia: '3710.00 - 3800.00 MHz',
+        ubicacion: 'VIGO',
+        prov: 'PONTEVEDRA',
+        scannedAt: '2026-11-17T06:11:00Z',
+        fecha: '17/11/2026 07:11:00',
+      },
+      {
+        id: 'freq:ora:4600003',
+        tipo: 'frecuencia',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        codigo: '4600003',
+        antennaId: 'ORANGE ESPAGNE, S.A.U. - 4600003',
+        codigoBanda: 'V-700',
+        frecuencia: '758.00 - 768.00 MHz',
+        ubicacion: 'GANDIA',
+        prov: 'VALÈNCIA',
+        scannedAt: '2026-11-16T17:10:00Z',
+        fecha: '16/11/2026 18:10:00',
+      },
+      {
+        id: 'ant:digi:2800004',
+        tipo: 'antena',
+        op: 'digi',
+        opRaw: 'DS MOBILE NETWORKS, S.L.',
+        codigo: '2800004',
+        antennaId: 'DS MOBILE NETWORKS, S.L. - 2800004',
+        codigoBanda: '',
+        frecuencia: '',
+        ubicacion: 'GETAFE',
+        prov: 'MADRID',
+        scannedAt: '2026-11-16T17:12:00Z',
+        fecha: '16/11/2026 18:12:00',
+      },
+    ];
+
+    expect(resolveNovedadProvince(rows[0])).toBe('A CORUÑA');
+    expect(resolveNovedadComunidad(rows[0])).toBe('Galicia');
+    expect(resolveNovedadProvince(rows[2])).toBe('VALENCIA');
+    expect(resolveNovedadComunidad(rows[2])).toBe('Comunidad Valenciana');
+
+    // Filtro por Comunidad Autónoma
+    expect(
+      filterNovedades({
+        novedades: rows,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        comunidadFilter: 'Galicia',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['1500001', '3600002']);
+
+    // Filtro combinado Comunidad Autónoma + Provincia (normalizando LA CORUÑA -> A CORUÑA)
+    expect(
+      filterNovedades({
+        novedades: rows,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        comunidadFilter: 'Galicia',
+        provinceFilter: 'A CORUÑA',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['1500001']);
+
+    // Filtro directo por provincia canónica sobre variante cooficial VALÈNCIA
+    expect(
+      filterNovedades({
+        novedades: rows,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        provinceFilter: 'VALENCIA',
+        searchQuery: '',
+      }).map((r) => r.codigo),
+    ).toEqual(['4600003']);
+
+    // Búsqueda libre por "telefonica" o por nombre de Comunidad Autónoma ("galicia")
+    expect(
+      filterNovedades({
+        novedades: rows,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        searchQuery: 'telefonica galicia',
+      }).map((r) => r.codigo),
+    ).toEqual(['1500001']);
+  });
+
+  it('renderiza en SSR etiquetas "Antena"/"Frecuencia" sin "nueva", operadoras "Telefonica"/"Vodafone"/"Orange"/"DIGI" sin icono circular, columna Código 20% más estrecha y filtros en paralelo', async () => {
+    const dataset: NovedadesDataset = {
+      updatedAt: '2026-11-17T06:20:00Z',
+      scanId: 'scan-compact-ui',
+      previousScanAt: '2026-11-16T18:00:00Z',
+      isBaselineScan: false,
+      total: 4,
+      antenasNuevas: 2,
+      frecuenciasNuevas: 2,
+      novedades: [
+        {
+          id: 'ant:mov:2800001',
+          tipo: 'antena',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          codigo: '2800001',
+          antennaId: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'MADRID',
+          prov: 'MADRID',
+          scannedAt: '2026-11-17T06:18:00Z',
+          fecha: '17/11/2026 07:18:00',
+        },
+        {
+          id: 'freq:vod:0800002',
+          tipo: 'frecuencia',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          codigo: '0800002',
+          antennaId: 'VODAFONE ESPAÑA, S.A.U. - 0800002',
+          codigoBanda: 'B-3500',
+          frecuencia: '3710.00 - 3800.00 MHz',
+          ubicacion: 'BARCELONA',
+          prov: 'BARCELONA',
+          scannedAt: '2026-11-17T06:17:00Z',
+          fecha: '17/11/2026 07:17:00',
+        },
+        {
+          id: 'freq:ora:4600003',
+          tipo: 'frecuencia',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          codigo: 'GALR0453B',
+          antennaId: 'ORANGE ESPAGNE, S.A.U. - GALR0453B',
+          codigoBanda: 'V-700',
+          frecuencia: '758.00 - 768.00 MHz',
+          ubicacion: 'VALENCIA',
+          prov: 'VALENCIA',
+          scannedAt: '2026-11-17T06:16:00Z',
+          fecha: '17/11/2026 07:16:00',
+        },
+        {
+          id: 'ant:digi:4100004',
+          tipo: 'antena',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          codigo: '4100004',
+          antennaId: 'DIGI SPAIN TELECOM, S.L.U. - 4100004',
+          codigoBanda: '',
+          frecuencia: '',
+          ubicacion: 'SEVILLA',
+          prov: 'SEVILLA',
+          scannedAt: '2026-11-17T06:15:00Z',
+          fecha: '17/11/2026 07:15:00',
+        },
+      ],
+    };
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['novedades-dataset'], dataset);
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute({ component: Outlet });
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      component: () => createElement('div', null, 'Mapa'),
+    });
+    const testNov = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/novedades',
+      component: NovedadesView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap, testNov]),
+      history: createMemoryHistory({ initialEntries: ['/novedades'] }),
+    });
+    await testRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: testRouter }),
+      ),
+    );
+
+    // 1. Sin desplegable de operadora ni desplegable antiguo de ubicación única
+    expect(html).not.toContain('id="novedades-operator-filter"');
+    expect(html).not.toContain('id="novedades-location-filter"');
+    // Se conserva la selección superior de operadora
+    expect(html).toContain('class="novedades-operator-chips"');
+
+    // 2. Dos pares en paralelo (.novedades-filter-pair): [Frecuencia + Fecha] y [Comunidad Autónoma + Provincia]
+    expect(html.match(/class="novedades-filter-pair"/g)).toHaveLength(2);
+    const freqDatePairMatch = html.match(
+      /<div[^>]*class="novedades-filter-pair"[^>]*aria-label="Filtros de frecuencia y fecha"[^>]*>([\s\S]*?)<div[^>]*class="novedades-filter-pair"/,
+    );
+    expect(freqDatePairMatch).not.toBeNull();
+    expect(freqDatePairMatch?.[1]).toContain('id="novedades-band-filter"');
+    expect(freqDatePairMatch?.[1]).toContain('id="novedades-date-filter"');
+
+    const ccaaProvPairMatch = html.match(
+      /<div[^>]*class="novedades-filter-pair"[^>]*aria-label="Filtros de ubicación por comunidad autónoma y provincia"[^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/,
+    );
+    expect(ccaaProvPairMatch).not.toBeNull();
+    expect(ccaaProvPairMatch?.[1]).toContain('id="novedades-ccaa-filter"');
+    expect(ccaaProvPairMatch?.[1]).toContain('id="novedades-province-filter"');
+
+    // 3. Dentro de #novedades-table: "Antena" / "Frecuencia" sin "nueva", "Telefonica"/"Vodafone"/"Orange"/"DIGI" y cero iconos circulares (.operator-dot)
+    const tableMatch = html.match(
+      /<table[^>]*id="novedades-table"[^>]*>([\s\S]*?)<\/table>/,
+    );
+    expect(tableMatch).not.toBeNull();
+    const tableHtml = tableMatch?.[1] ?? '';
+    expect(tableHtml).toContain('<span>Antena</span>');
+    expect(tableHtml).toContain('<span>Frecuencia</span>');
+    expect(tableHtml).not.toContain('Antena nueva');
+    expect(tableHtml).not.toContain('Frecuencia nueva');
+    expect(tableHtml).not.toContain('operator-dot');
+    expect(tableHtml).toContain(
+      '<span class="novedades-operator-name">Telefonica</span>',
+    );
+    expect(tableHtml).toContain(
+      '<span class="novedades-operator-name">Vodafone</span>',
+    );
+    expect(tableHtml).toContain(
+      '<span class="novedades-operator-name">Orange</span>',
+    );
+    expect(tableHtml).toContain(
+      '<span class="novedades-operator-name">DIGI</span>',
+    );
+    expect(tableHtml).toContain('class="novedades-col-codigo"');
+
+    // 4. Verificación CSS: contenedor y tabla más estrechos, columna Código 20% más estrecha (width: 72px) y pares 50%/50%
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.page-container\.novedades-page\s*\{[^}]*max-width:\s*1020px;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table\s*\{[^}]*min-width:\s*460px;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table td\.novedades-col-codigo\s*\{[^}]*width:\s*72px;[^}]*max-width:\s*74px;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-filter-pair\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/,
+    );
+  });
+});
+

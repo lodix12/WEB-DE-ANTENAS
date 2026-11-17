@@ -69,6 +69,152 @@ export interface DerivedAntenasStructures {
 
 const VALID_OPERATORS = new Set<string>(OPERATOR_ORDER);
 
+export const CANONICAL_COMUNIDAD_PROVINCES: ReadonlyArray<
+  readonly [comunidad: string, canonicalProvinces: readonly string[]]
+> = [
+  [
+    'Andalucía',
+    [
+      'ALMERÍA',
+      'CÁDIZ',
+      'CÓRDOBA',
+      'GRANADA',
+      'HUELVA',
+      'JAÉN',
+      'MÁLAGA',
+      'SEVILLA',
+    ],
+  ],
+  ['Aragón', ['HUESCA', 'TERUEL', 'ZARAGOZA']],
+  ['Principado de Asturias', ['ASTURIAS']],
+  ['Illes Balears', ['ILLES BALEARS']],
+  ['Canarias', ['LAS PALMAS', 'SANTA CRUZ DE TENERIFE']],
+  ['Cantabria', ['CANTABRIA']],
+  [
+    'Castilla-La Mancha',
+    ['ALBACETE', 'CIUDAD REAL', 'CUENCA', 'GUADALAJARA', 'TOLEDO'],
+  ],
+  [
+    'Castilla y León',
+    [
+      'ÁVILA',
+      'BURGOS',
+      'LEÓN',
+      'PALENCIA',
+      'SALAMANCA',
+      'SEGOVIA',
+      'SORIA',
+      'VALLADOLID',
+      'ZAMORA',
+    ],
+  ],
+  ['Cataluña', ['BARCELONA', 'GIRONA', 'LLEIDA', 'TARRAGONA']],
+  ['Comunidad Valenciana', ['ALICANTE', 'CASTELLÓN', 'VALENCIA']],
+  ['Extremadura', ['BADAJOZ', 'CÁCERES']],
+  ['Galicia', ['A CORUÑA', 'LUGO', 'OURENSE', 'PONTEVEDRA']],
+  ['Comunidad de Madrid', ['MADRID']],
+  ['Región de Murcia', ['MURCIA']],
+  ['Comunidad Foral de Navarra', ['NAVARRA']],
+  ['País Vasco', ['ÁLAVA', 'BIZKAIA', 'GIPUZKOA']],
+  ['La Rioja', ['LA RIOJA']],
+  ['Ceuta', ['CEUTA']],
+  ['Melilla', ['MELILLA']],
+];
+
+const CANONICAL_PROVINCE_ALIASES: ReadonlyArray<
+  readonly [canonicalProvince: string, aliases: readonly string[]]
+> = [
+  ['ALMERÍA', ['ALMERIA']],
+  ['CÁDIZ', ['CADIZ']],
+  ['CÓRDOBA', ['CORDOBA']],
+  ['JAÉN', ['JAEN']],
+  ['MÁLAGA', ['MALAGA']],
+  ['ASTURIAS', ['PRINCIPADO DE ASTURIAS', 'OVIEDO']],
+  [
+    'ILLES BALEARS',
+    [
+      'ISLAS BALEARES',
+      'BALEARES',
+      'BALEARS',
+      'ILLES BALEARS/ISLAS BALEARES',
+      'ISLAS BALEARES/ILLES BALEARS',
+    ],
+  ],
+  [
+    'SANTA CRUZ DE TENERIFE',
+    ['TENERIFE', 'S.C. DE TENERIFE', 'S/C DE TENERIFE', 'STA. CRUZ DE TENERIFE'],
+  ],
+  ['CANTABRIA', ['SANTANDER']],
+  ['ÁVILA', ['AVILA']],
+  ['LEÓN', ['LEON']],
+  ['GIRONA', ['GERONA', 'GIRONA/GERONA', 'GERONA/GIRONA']],
+  ['LLEIDA', ['LÉRIDA', 'LERIDA', 'LLEIDA/LÉRIDA', 'LÉRIDA/LLEIDA']],
+  ['ALICANTE', ['ALACANT', 'ALICANTE/ALACANT', 'ALACANT/ALICANTE']],
+  [
+    'CASTELLÓN',
+    [
+      'CASTELLON',
+      'CASTELLÓ',
+      'CASTELLO',
+      'CASTELLÓN/CASTELLÓ',
+      'CASTELLÓ/CASTELLÓN',
+      'CASTELLÓN DE LA PLANA',
+      'CASTELLO DE LA PLANA',
+      'CASTELLÓ DE LA PLANA',
+    ],
+  ],
+  ['VALENCIA', ['VALÈNCIA', 'VALENCIA/VALÈNCIA', 'VALÈNCIA/VALENCIA']],
+  ['CÁCERES', ['CACERES']],
+  [
+    'A CORUÑA',
+    [
+      'A CORUNA',
+      'LA CORUÑA',
+      'LA CORUNA',
+      'CORUÑA',
+      'CORUNA',
+      'A CORUÑA/LA CORUÑA',
+      'LA CORUÑA/A CORUÑA',
+    ],
+  ],
+  ['OURENSE', ['OURENSE/ORENSE', 'ORENSE/OURENSE', 'ORENSE']],
+  ['MADRID', ['COMUNIDAD DE MADRID']],
+  ['MURCIA', ['REGIÓN DE MURCIA', 'REGION DE MURCIA']],
+  [
+    'NAVARRA',
+    [
+      'NAFARROA',
+      'NAVARRA/NAFARROA',
+      'NAFARROA/NAVARRA',
+      'COMUNIDAD FORAL DE NAVARRA',
+    ],
+  ],
+  [
+    'ÁLAVA',
+    [
+      'ALAVA',
+      'ARABA',
+      'ARABA/ÁLAVA',
+      'ÁLAVA/ARABA',
+      'ARABA/ALAVA',
+      'ALAVA/ARABA',
+    ],
+  ],
+  ['BIZKAIA', ['VIZCAYA', 'BIZKAIA/VIZCAYA', 'VIZCAYA/BIZKAIA']],
+  [
+    'GIPUZKOA',
+    [
+      'GUIPÚZCOA',
+      'GUIPUZCOA',
+      'GIPUZKOA/GUIPÚZCOA',
+      'GUIPÚZCOA/GIPUZKOA',
+    ],
+  ],
+  ['LA RIOJA', ['RIOJA', 'LOGROÑO', 'LOGRONO']],
+  ['CEUTA', ['CIUDAD AUTÓNOMA DE CEUTA', 'CIUDAD AUTONOMA DE CEUTA']],
+  ['MELILLA', ['CIUDAD AUTÓNOMA DE MELILLA', 'CIUDAD AUTONOMA DE MELILLA']],
+];
+
 const COMUNIDAD_PROVINCE_VARIANTS: ReadonlyArray<
   readonly [comunidad: string, provinces: readonly string[]]
 > = [
@@ -202,19 +348,123 @@ const COMUNIDAD_PROVINCE_VARIANTS: ReadonlyArray<
   ],
 ];
 
+function normalizeProvinceLookupKey(prov: string): string {
+  return normalizeSearchText(prov)
+    .replace(/\s*\/\s*/g, '/')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 const PROVINCE_TO_COMUNIDAD_RAW = new Map<string, string>();
 const PROVINCE_TO_COMUNIDAD_NORM = new Map<string, string>();
+const PROVINCE_TO_CANONICAL_RAW = new Map<string, string>();
+const PROVINCE_TO_CANONICAL_NORM = new Map<string, string>();
+const CANONICAL_PROVINCES_BY_COMUNIDAD_RAW = new Map<
+  string,
+  readonly string[]
+>();
+const CANONICAL_PROVINCES_BY_COMUNIDAD_NORM = new Map<
+  string,
+  readonly string[]
+>();
+
+for (let i = 0; i < CANONICAL_COMUNIDAD_PROVINCES.length; i++) {
+  const [comunidad, canonicalProvinces] = CANONICAL_COMUNIDAD_PROVINCES[i];
+  const sortedProvinces = Object.freeze(
+    [...canonicalProvinces].sort((a, b) => a.localeCompare(b, 'es')),
+  );
+  CANONICAL_PROVINCES_BY_COMUNIDAD_RAW.set(comunidad, sortedProvinces);
+  const normComunidad = normalizeSearchText(comunidad);
+  if (normComunidad) {
+    CANONICAL_PROVINCES_BY_COMUNIDAD_NORM.set(normComunidad, sortedProvinces);
+  }
+  for (let j = 0; j < canonicalProvinces.length; j++) {
+    const canonical = canonicalProvinces[j];
+    PROVINCE_TO_CANONICAL_RAW.set(canonical, canonical);
+    PROVINCE_TO_COMUNIDAD_RAW.set(canonical, comunidad);
+    const normCanonical = normalizeProvinceLookupKey(canonical);
+    if (normCanonical) {
+      PROVINCE_TO_CANONICAL_NORM.set(normCanonical, canonical);
+      PROVINCE_TO_COMUNIDAD_NORM.set(normCanonical, comunidad);
+    }
+  }
+}
+
+for (let i = 0; i < CANONICAL_PROVINCE_ALIASES.length; i++) {
+  const [canonical, aliases] = CANONICAL_PROVINCE_ALIASES[i];
+  const comunidad = PROVINCE_TO_COMUNIDAD_RAW.get(canonical);
+  for (let j = 0; j < aliases.length; j++) {
+    const alias = aliases[j];
+    PROVINCE_TO_CANONICAL_RAW.set(alias, canonical);
+    if (comunidad) {
+      PROVINCE_TO_COMUNIDAD_RAW.set(alias, comunidad);
+    }
+    const normAlias = normalizeProvinceLookupKey(alias);
+    if (normAlias) {
+      PROVINCE_TO_CANONICAL_NORM.set(normAlias, canonical);
+      if (comunidad) {
+        PROVINCE_TO_COMUNIDAD_NORM.set(normAlias, comunidad);
+      }
+    }
+  }
+}
 
 for (let i = 0; i < COMUNIDAD_PROVINCE_VARIANTS.length; i++) {
   const [comunidad, variants] = COMUNIDAD_PROVINCE_VARIANTS[i];
   for (let j = 0; j < variants.length; j++) {
     const rawVariant = variants[j];
     PROVINCE_TO_COMUNIDAD_RAW.set(rawVariant, comunidad);
-    const normalized = normalizeSearchText(rawVariant).trim();
+    const normalized = normalizeProvinceLookupKey(rawVariant);
     if (normalized) {
       PROVINCE_TO_COMUNIDAD_NORM.set(normalized, comunidad);
     }
   }
+}
+
+export const ALL_SPANISH_COMUNIDADES: readonly string[] = Object.freeze(
+  CANONICAL_COMUNIDAD_PROVINCES.map(([comunidad]) => comunidad).sort((a, b) =>
+    a.localeCompare(b, 'es'),
+  ),
+);
+
+const ALL_CANONICAL_SPANISH_PROVINCES: readonly string[] = Object.freeze(
+  CANONICAL_COMUNIDAD_PROVINCES.flatMap(([, provinces]) => provinces).sort(
+    (a, b) => a.localeCompare(b, 'es'),
+  ),
+);
+
+/**
+ * Resuelve cualquier variante de provincia española (cooficial, histórica o sin tildes)
+ * a su nombre canónico oficial en mayúsculas del censo, o `""` si no corresponde a una provincia española.
+ */
+export function getCanonicalSpanishProvince(prov: string): string {
+  if (!prov) return '';
+  const direct = PROVINCE_TO_CANONICAL_RAW.get(prov);
+  if (direct !== undefined) return direct;
+  const key = normalizeProvinceLookupKey(prov);
+  if (!key) return '';
+  return PROVINCE_TO_CANONICAL_NORM.get(key) ?? '';
+}
+
+/**
+ * Devuelve las provincias españolas canónicas ordenadas alfabéticamente (`es`):
+ * - Si `!comunidad || comunidad === 'all'`, devuelve las 52 provincias oficiales.
+ * - En caso contrario, devuelve las provincias canónicas de esa Comunidad Autónoma.
+ */
+export function getCanonicalProvincesByComunidad(comunidad?: string): string[] {
+  const trimmed = comunidad?.trim() ?? '';
+  if (!trimmed || trimmed === 'all') {
+    return [...ALL_CANONICAL_SPANISH_PROVINCES];
+  }
+  const direct = CANONICAL_PROVINCES_BY_COMUNIDAD_RAW.get(trimmed);
+  if (direct !== undefined) {
+    return [...direct];
+  }
+  const norm = normalizeSearchText(trimmed);
+  const byNorm = norm
+    ? CANONICAL_PROVINCES_BY_COMUNIDAD_NORM.get(norm)
+    : undefined;
+  return byNorm ? [...byNorm] : [];
 }
 
 /**
@@ -225,7 +475,7 @@ export function getComunidadAutonomaByProvince(prov: string): string {
   if (!prov) return '';
   const direct = PROVINCE_TO_COMUNIDAD_RAW.get(prov);
   if (direct !== undefined) return direct;
-  const key = normalizeSearchText(prov).trim();
+  const key = normalizeProvinceLookupKey(prov);
   if (!key) return '';
   return PROVINCE_TO_COMUNIDAD_NORM.get(key) ?? '';
 }

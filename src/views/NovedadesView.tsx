@@ -28,6 +28,7 @@ import { useAntenasData } from '../hooks/useAntenasData';
 import {
   DEFAULT_NOVEDADES_PAGE_SIZE,
   NOVEDADES_PAGE_SIZE_OPTIONS,
+  NOVEDADES_SPANISH_COMUNIDADES,
   STANDARD_NOVEDADES_BANDS,
   buildPaginationTokens,
   extractScanDayDmy,
@@ -35,10 +36,14 @@ import {
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
   getNovedadScanBatchKey,
+  getNovedadesOperatorLabel,
+  getNovedadesProvincesForComunidad,
   getOperatorRowBackground,
   isValidNovedadesPageSize,
   orderNovedadesGroupedByNewAntenna,
   paginateNovedades,
+  resolveNovedadComunidad,
+  resolveNovedadProvince,
   splitFrequencyRangeLines,
   splitScanDateTimeLines,
   useNovedadesData,
@@ -85,7 +90,8 @@ export function NovedadesView() {
     'all',
   );
   const [bandFilter, setBandFilter] = useState<string>('all');
-  const [locationFilter, setLocationFilter] = useState<string>('all');
+  const [comunidadFilter, setComunidadFilter] = useState<string>('all');
+  const [provinceFilter, setProvinceFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [pageSize, setPageSize] = useState<NovedadesPageSize>(
@@ -155,7 +161,7 @@ export function NovedadesView() {
     };
   }, [keyPopoverOpen]);
 
-  const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${locationFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
+  const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${comunidadFilter}|${provinceFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
   const requestedPage = pageState.key === filterKey ? pageState.page : 1;
 
   const summaryCounts = useMemo(() => {
@@ -191,30 +197,40 @@ export function NovedadesView() {
     };
   }, [dataset]);
 
-  const availableLocations = useMemo(() => {
-    const cities = new Set<string>();
-    if (dataset) {
-      for (let i = 0; i < dataset.novedades.length; i++) {
-        const city = dataset.novedades[i].ubicacion?.trim();
-        if (city) cities.add(city);
-      }
-    }
-    if (cities.size > 0) {
-      return Array.from(cities).sort((a, b) => a.localeCompare(b, 'es'));
-    }
-    if (derived) {
-      return derived.dataset.provinces
-        .map((p) => p.provincia)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b, 'es'));
-    }
-    return [];
-  }, [dataset, derived]);
-
   const orderedNovedades = useMemo(
     () => (dataset ? orderNovedadesGroupedByNewAntenna(dataset.novedades) : []),
     [dataset],
   );
+
+  const availableComunidades = useMemo(() => {
+    const comunidades = new Set<string>(NOVEDADES_SPANISH_COMUNIDADES);
+    for (let i = 0; i < orderedNovedades.length; i++) {
+      const comunidad = resolveNovedadComunidad(orderedNovedades[i]).trim();
+      if (comunidad) {
+        comunidades.add(comunidad);
+      }
+    }
+    return Array.from(comunidades).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [orderedNovedades]);
+
+  const availableProvinces = useMemo(() => {
+    const provinces = new Set<string>(
+      getNovedadesProvincesForComunidad(comunidadFilter),
+    );
+    for (let i = 0; i < orderedNovedades.length; i++) {
+      const row = orderedNovedades[i];
+      if (
+        comunidadFilter === 'all' ||
+        resolveNovedadComunidad(row) === comunidadFilter
+      ) {
+        const province = resolveNovedadProvince(row).trim();
+        if (province) {
+          provinces.add(province);
+        }
+      }
+    }
+    return Array.from(provinces).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [comunidadFilter, orderedNovedades]);
 
   const availableScanDates = useMemo(() => {
     const dates = new Set<string>();
@@ -248,7 +264,8 @@ export function NovedadesView() {
       tipoFilter,
       operatorFilter,
       bandFilter,
-      locationFilter,
+      comunidadFilter,
+      provinceFilter,
       dateFilter,
       searchQuery,
     });
@@ -257,7 +274,8 @@ export function NovedadesView() {
     tipoFilter,
     operatorFilter,
     bandFilter,
-    locationFilter,
+    comunidadFilter,
+    provinceFilter,
     dateFilter,
     searchQuery,
   ]);
@@ -266,15 +284,35 @@ export function NovedadesView() {
     tipoFilter !== 'all' ||
     operatorFilter !== 'all' ||
     bandFilter !== 'all' ||
-    locationFilter !== 'all' ||
+    comunidadFilter !== 'all' ||
+    provinceFilter !== 'all' ||
     dateFilter !== 'all' ||
     searchQuery.trim().length > 0;
+
+  function handleComunidadChange(nextComunidad: string) {
+    setComunidadFilter(nextComunidad);
+    if (nextComunidad !== 'all' && provinceFilter !== 'all') {
+      const inStaticProvinces =
+        getNovedadesProvincesForComunidad(nextComunidad).includes(
+          provinceFilter,
+        );
+      const inDatasetRows = orderedNovedades.some(
+        (row) =>
+          resolveNovedadProvince(row) === provinceFilter &&
+          resolveNovedadComunidad(row) === nextComunidad,
+      );
+      if (!inStaticProvinces && !inDatasetRows) {
+        setProvinceFilter('all');
+      }
+    }
+  }
 
   function handleResetFilters() {
     setTipoFilter('all');
     setOperatorFilter('all');
     setBandFilter('all');
-    setLocationFilter('all');
+    setComunidadFilter('all');
+    setProvinceFilter('all');
     setDateFilter('all');
     setSearchQuery('');
     setPageState({ key: '', page: 1, draftInput: null });
@@ -339,8 +377,6 @@ export function NovedadesView() {
     pageState.key === filterKey && pageState.draftInput !== null
       ? pageState.draftInput
       : String(currentPage);
-  const selectedOperatorMeta =
-    operatorFilter !== 'all' ? OPERATOR_META[operatorFilter] : null;
 
   function scrollTableTopIfNeeded() {
     const sectionEl = tableSectionRef.current;
@@ -745,7 +781,7 @@ export function NovedadesView() {
                     style={{ backgroundColor: meta.color }}
                     aria-hidden="true"
                   />
-                  <span>{meta.shortName}</span>
+                  <span>{getNovedadesOperatorLabel(opKey)}</span>
                   {summaryCounts.byOp[opKey] > 0 && (
                     <span className="novedades-pill-count mono">
                       {summaryCounts.byOp[opKey].toLocaleString('es-ES')}
@@ -789,92 +825,39 @@ export function NovedadesView() {
               </div>
             </div>
 
-            <div className="novedades-filter-field">
-              <label
-                htmlFor="novedades-operator-filter"
-                className="novedades-filter-label"
-              >
-                Operadora
-              </label>
-              <div className="novedades-op-select-wrap">
-                {selectedOperatorMeta && (
-                  <span
-                    className="operator-dot novedades-op-select-dot"
-                    style={{ backgroundColor: selectedOperatorMeta.color }}
-                    aria-hidden="true"
-                  />
-                )}
-                <select
-                  id="novedades-operator-filter"
-                  className={`select-control novedades-op-select${
-                    selectedOperatorMeta ? ' has-dot' : ''
-                  }`}
-                  value={operatorFilter}
-                  onChange={(e) =>
-                    setOperatorFilter(e.target.value as 'all' | OperatorKey)
-                  }
+            <div
+              className="novedades-filter-pair"
+              role="group"
+              aria-label="Filtros de frecuencia y fecha"
+            >
+              <div className="novedades-filter-field">
+                <label
+                  htmlFor="novedades-band-filter"
+                  className="novedades-filter-label"
                 >
-                  <option value="all">Todas las operadoras</option>
-                  {OPERATOR_ORDER.map((opKey) => (
-                    <option key={opKey} value={opKey}>
-                      {OPERATOR_META[opKey].name}
+                  Frecuencia
+                </label>
+                <select
+                  id="novedades-band-filter"
+                  className="select-control"
+                  value={bandFilter}
+                  onChange={(e) => setBandFilter(e.target.value)}
+                >
+                  <option value="all">Todas las bandas</option>
+                  {STANDARD_NOVEDADES_BANDS.map((band) => (
+                    <option key={band} value={band}>
+                      {band}
                     </option>
                   ))}
                 </select>
               </div>
-            </div>
 
-            <div className="novedades-filter-field">
-              <label
-                htmlFor="novedades-band-filter"
-                className="novedades-filter-label"
-              >
-                Banda / Frecuencia
-              </label>
-              <select
-                id="novedades-band-filter"
-                className="select-control"
-                value={bandFilter}
-                onChange={(e) => setBandFilter(e.target.value)}
-              >
-                <option value="all">Todas las bandas</option>
-                {STANDARD_NOVEDADES_BANDS.map((band) => (
-                  <option key={band} value={band}>
-                    {band}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="novedades-filter-field">
-              <label
-                htmlFor="novedades-location-filter"
-                className="novedades-filter-label"
-              >
-                Ubicación
-              </label>
-              <select
-                id="novedades-location-filter"
-                className="select-control"
-                value={locationFilter}
-                onChange={(e) => setLocationFilter(e.target.value)}
-              >
-                <option value="all">Todas las ubicaciones</option>
-                {availableLocations.map((loc) => (
-                  <option key={loc} value={loc}>
-                    {loc}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {availableScanDates.length > 0 && (
               <div className="novedades-filter-field">
                 <label
                   htmlFor="novedades-date-filter"
                   className="novedades-filter-label"
                 >
-                  Fecha de escaneo
+                  Fecha
                 </label>
                 <select
                   id="novedades-date-filter"
@@ -890,7 +873,57 @@ export function NovedadesView() {
                   ))}
                 </select>
               </div>
-            )}
+            </div>
+
+            <div
+              className="novedades-filter-pair"
+              role="group"
+              aria-label="Filtros de ubicación por comunidad autónoma y provincia"
+            >
+              <div className="novedades-filter-field">
+                <label
+                  htmlFor="novedades-ccaa-filter"
+                  className="novedades-filter-label"
+                >
+                  Comunidad Autónoma
+                </label>
+                <select
+                  id="novedades-ccaa-filter"
+                  className="select-control"
+                  value={comunidadFilter}
+                  onChange={(e) => handleComunidadChange(e.target.value)}
+                >
+                  <option value="all">Todas las comunidades</option>
+                  {availableComunidades.map((ccaa) => (
+                    <option key={ccaa} value={ccaa}>
+                      {ccaa}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="novedades-filter-field">
+                <label
+                  htmlFor="novedades-province-filter"
+                  className="novedades-filter-label"
+                >
+                  Provincia
+                </label>
+                <select
+                  id="novedades-province-filter"
+                  className="select-control"
+                  value={provinceFilter}
+                  onChange={(e) => setProvinceFilter(e.target.value)}
+                >
+                  <option value="all">Todas las provincias</option>
+                  {availableProvinces.map((prov) => (
+                    <option key={prov} value={prov}>
+                      {prov}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -913,7 +946,9 @@ export function NovedadesView() {
             <thead>
               <tr>
                 <th scope="col">Novedad</th>
-                <th scope="col">Código</th>
+                <th scope="col" className="novedades-col-codigo">
+                  Código
+                </th>
                 <th scope="col">Código Banda</th>
                 <th scope="col">Frecuencia</th>
                 <th scope="col">Ubicación</th>
@@ -924,8 +959,10 @@ export function NovedadesView() {
               {visibleRows.length > 0 ? (
                 visibleRows.map((row) => {
                   const meta = OPERATOR_META[row.op];
-                  const operatorDisplayName =
-                    row.op === 'otros' && row.opRaw ? row.opRaw : meta.name;
+                  const operatorDisplayName = getNovedadesOperatorLabel(
+                    row.op,
+                    row.opRaw,
+                  );
                   const isFrecuencia = row.tipo === 'frecuencia';
                   const isAssociatedNewAntFreq =
                     isFrecuencia &&
@@ -959,26 +996,17 @@ export function NovedadesView() {
                             }`}
                           >
                             {isFrecuencia ? (
-                              <Radio size={12} aria-hidden="true" />
+                              <Radio size={11} aria-hidden="true" />
                             ) : (
-                              <RadioTower size={12} aria-hidden="true" />
+                              <RadioTower size={11} aria-hidden="true" />
                             )}
-                            <span>
-                              {isFrecuencia
-                                ? 'Frecuencia nueva'
-                                : 'Antena nueva'}
-                            </span>
+                            <span>{isFrecuencia ? 'Frecuencia' : 'Antena'}</span>
                           </span>
 
                           <span
                             className="novedades-operator-tag"
                             title={row.opRaw || meta.description}
                           >
-                            <span
-                              className="operator-dot novedades-row-op-dot"
-                              style={{ backgroundColor: meta.color }}
-                              aria-hidden="true"
-                            />
                             <span className="novedades-operator-name">
                               {operatorDisplayName}
                             </span>
@@ -986,7 +1014,7 @@ export function NovedadesView() {
                         </div>
                       </td>
 
-                      <td>
+                      <td className="novedades-col-codigo">
                         <Link
                           to="/"
                           search={{
@@ -1123,8 +1151,9 @@ export function NovedadesView() {
                           Ninguna novedad coincide con los filtros aplicados
                         </p>
                         <p className="novedades-empty-desc">
-                          Prueba con otro término de búsqueda, operadora, banda,
-                          ubicación o tipo de novedad.
+                          Prueba con otro término de búsqueda, operadora,
+                          frecuencia, fecha, comunidad autónoma, provincia o tipo
+                          de novedad.
                         </p>
                         <button
                           type="button"
