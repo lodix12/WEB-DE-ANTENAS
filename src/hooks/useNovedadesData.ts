@@ -367,14 +367,26 @@ export function paginateNovedades<T>(
 }
 
 /**
- * Devuelve el color de fondo de la fila con el color oficial de la operadora
- * asociada y un 50% de transparencia exacta (alpha = 0.5).
+ * Paleta de tonos desaturados por operadora exclusiva para las filas de la
+ * tabla de Novedades, manteniendo la identidad cromática de cada operador con
+ * baja saturación (~28%–36% HSL frente al 72%–100% del mapa) y alta legibilidad.
+ */
+export const NOVEDADES_OPERATOR_ROW_COLORS: Record<OperatorKey, string> = {
+  movistar: '#537AA2',
+  orange: '#B17959',
+  vodafone: '#AC5D5D',
+  digi: '#8169AB',
+  otros: '#717D8E',
+};
+
+/**
+ * Devuelve el color de fondo desaturado de la fila en la tabla de Novedades
+ * según la operadora asociada (con alpha = 0.5 por defecto).
  */
 export function getOperatorRowBackground(op: OperatorKey, alpha = 0.5): string {
-  const hex = (OPERATOR_META[op]?.color ?? OPERATOR_META.otros.color).replace(
-    /^#/,
-    '',
-  );
+  const hex = (
+    NOVEDADES_OPERATOR_ROW_COLORS[op] ?? NOVEDADES_OPERATOR_ROW_COLORS.otros
+  ).replace(/^#/, '');
   const normalized =
     hex.length === 3
       ? `${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`
@@ -383,7 +395,7 @@ export function getOperatorRowBackground(op: OperatorKey, alpha = 0.5): string {
   const g = Number.parseInt(normalized.slice(2, 4), 16);
   const b = Number.parseInt(normalized.slice(4, 6), 16);
   if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
-    return `rgba(100, 116, 139, ${alpha})`;
+    return `rgba(113, 125, 142, ${alpha})`;
   }
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

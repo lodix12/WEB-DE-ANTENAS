@@ -79,6 +79,7 @@ import {
   useFilteredAntenas,
 } from './useAntenasData';
 import {
+  NOVEDADES_OPERATOR_ROW_COLORS,
   NOVEDADES_PAGE_SIZE_OPTIONS,
   NOVEDADES_SPANISH_COMUNIDADES,
   buildPaginationTokens,
@@ -1077,12 +1078,42 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(loaded.total).toBe(2);
   });
 
-  it('calcula el color de fondo de cada fila con 50% de transparencia exacta según la operadora', () => {
-    expect(getOperatorRowBackground('movistar')).toBe('rgba(0, 102, 204, 0.5)');
-    expect(getOperatorRowBackground('orange')).toBe('rgba(234, 88, 12, 0.5)');
-    expect(getOperatorRowBackground('vodafone')).toBe('rgba(220, 38, 38, 0.5)');
-    expect(getOperatorRowBackground('digi')).toBe('rgba(124, 58, 237, 0.5)');
-    expect(getOperatorRowBackground('otros')).toBe('rgba(100, 116, 139, 0.5)');
+  it('calcula el color de fondo desaturado de cada fila en la tabla de Novedades según la operadora', () => {
+    expect(getOperatorRowBackground('movistar')).toBe(
+      'rgba(83, 122, 162, 0.5)',
+    );
+    expect(getOperatorRowBackground('orange')).toBe(
+      'rgba(177, 121, 89, 0.5)',
+    );
+    expect(getOperatorRowBackground('vodafone')).toBe(
+      'rgba(172, 93, 93, 0.5)',
+    );
+    expect(getOperatorRowBackground('digi')).toBe(
+      'rgba(129, 105, 171, 0.5)',
+    );
+    expect(getOperatorRowBackground('otros')).toBe(
+      'rgba(113, 125, 142, 0.5)',
+    );
+
+    const hexSaturation = (hex: string): number => {
+      const clean = hex.replace(/^#/, '');
+      const r = Number.parseInt(clean.slice(0, 2), 16) / 255;
+      const g = Number.parseInt(clean.slice(2, 4), 16) / 255;
+      const b = Number.parseInt(clean.slice(4, 6), 16) / 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      if (max === min) return 0;
+      const l = (max + min) / 2;
+      const d = max - min;
+      return l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    };
+
+    for (const op of ['movistar', 'orange', 'vodafone', 'digi'] as const) {
+      const rowSat = hexSaturation(NOVEDADES_OPERATOR_ROW_COLORS[op]);
+      const brandSat = hexSaturation(OPERATOR_META[op].color);
+      expect(rowSat).toBeLessThan(brandSat * 0.55);
+      expect(rowSat).toBeLessThanOrEqual(0.4);
+    }
   });
 
   it('filtra novedades por tipo, operadora, banda, ubicación, fecha y búsqueda instantánea sin tildes', () => {
@@ -1254,8 +1285,10 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
       createSampleNovedadesDataset(),
     );
     expect(populatedHtml.match(/<table\b/g)).toHaveLength(1);
-    expect(populatedHtml).toContain('rgba(124, 58, 237, 0.5)');
-    expect(populatedHtml).toContain('rgba(0, 102, 204, 0.5)');
+    expect(populatedHtml).toContain('rgba(129, 105, 171, 0.5)');
+    expect(populatedHtml).toContain('rgba(83, 122, 162, 0.5)');
+    expect(populatedHtml).not.toContain('rgba(124, 58, 237, 0.5)');
+    expect(populatedHtml).not.toContain('rgba(0, 102, 204, 0.5)');
     expect(populatedHtml).toContain('id="novedades-date-filter"');
     expect(populatedHtml).toContain('<span>Antena</span>');
     expect(populatedHtml).toContain(
