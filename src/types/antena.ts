@@ -346,7 +346,7 @@ export const OSM_RETINA_TILE_URL =
 
 export const OSM_STANDARD_TILE_URL = OSM_RETINA_TILE_URL;
 
-export const OSM_RETINA_TILE_SIZE = 128;
+export const OSM_RETINA_TILE_SIZE = 64;
 
 export const OSM_RETINA_MAX_NATIVE_ZOOM = 19;
 
@@ -360,13 +360,13 @@ export const OSM_STANDARD_ATTRIBUTION = OSM_RETINA_ATTRIBUTION;
 
 /**
  * Construye la especificación MapLibre GL v8 de teselas oficiales de OpenStreetMap
- * en modo Retina 2× (`tileSize: 128`, `OSM_RETINA_TILE_SIZE`).
+ * en modo Retina 4× (`tileSize: 64`, `OSM_RETINA_TILE_SIZE`).
  *
- * - `tileSize: 128` activa la densidad Retina 2× en MapLibre
- *   (`z = round(zoom + log2(512 / 128)) = round(zoom + 2)`), proyectando teselas PNG
- *   oficiales OSM de `256×256px` en `128×128 CSS px` (relación física 2:1 en pantallas
- *   Retina 2× y supermuestreo SSAA 2× en monitores 1× mediante `computeHighQualityMapPixelRatio`),
- *   adelantando +1 nivel de zoom el detalle urbano.
+ * - `tileSize: 64` activa la máxima densidad Retina 4× en MapLibre
+ *   (`z = round(zoom + log2(512 / 64)) = round(zoom + 3)`), proyectando teselas PNG
+ *   oficiales OSM de `256×256px` en `64×64 CSS px` (relación 4:1 con mipmaps WebGL y
+ *   supermuestreo SSAA 2×–3× mediante `computeHighQualityMapPixelRatio`), adelantando
+ *   +2 niveles de zoom el detalle urbano respecto a `tileSize: 256` (+1 respecto a `128`).
  * - `minzoom: 0` y `maxzoom: 19` (`OSM_RETINA_MAX_NATIVE_ZOOM`) acotan el rango nativo de teselas.
  * - `glyphs: OPENFREEMAP_GLYPHS_URL` provee las fuentes `Noto Sans Regular` requeridas por las
  *   capas simbólicas WebGL de conteo de clústeres y medición de distancias.
@@ -374,7 +374,7 @@ export const OSM_STANDARD_ATTRIBUTION = OSM_RETINA_ATTRIBUTION;
 export function buildOsmRetinaStyleSpec(): StyleSpecification {
   return {
     version: 8,
-    name: 'OpenStreetMap Retina (Teselas 2×)',
+    name: 'OpenStreetMap Retina (Teselas 4×)',
     glyphs: OPENFREEMAP_GLYPHS_URL,
     sources: {
       'osm-retina-raster': {
@@ -412,7 +412,7 @@ export function buildOsmRetinaStyleSpec(): StyleSpecification {
 
 /**
  * Alias compatible que construye la especificación MapLibre GL v8 de teselas oficiales
- * de OpenStreetMap en modo Retina 2× (`tileSize: 128`).
+ * de OpenStreetMap en modo Retina 4× (`tileSize: 64`).
  */
 export const buildOsmStandardStyleSpec = buildOsmRetinaStyleSpec;
 
@@ -451,7 +451,7 @@ export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   {
     id: 'osm',
     label: 'OSM Retina',
-    description: 'OpenStreetMap en modo Retina (teselas 2×)',
+    description: 'OpenStreetMap en modo Retina (teselas 4×)',
     url: OSM_RETINA_TILE_URL,
     isDark: false,
   },

@@ -8083,7 +8083,7 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
   });
 });
 
-describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2×)', () => {
+describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (4×)', () => {
   it('incluye OSM Retina ("osm") junto con los otros 5 estilos vectoriales con identificadores únicos y constantes oficiales sincronizadas', () => {
     const ids = OPENFREEMAP_STYLES.map((style) => style.id);
     expect(new Set(ids).size).toBe(OPENFREEMAP_STYLES.length);
@@ -8100,13 +8100,13 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
     expect(OPENFREEMAP_STYLES[0]).toEqual(osmStyle);
     expect(osmStyle?.label).toBe('OSM Retina');
     expect(osmStyle?.description).toBe(
-      'OpenStreetMap en modo Retina (teselas 2×)',
+      'OpenStreetMap en modo Retina (teselas 4×)',
     );
     expect(osmStyle?.isDark).toBe(false);
     expect(osmStyle?.url).toBe('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
     expect(osmStyle?.url).toBe(OSM_RETINA_TILE_URL);
     expect(OSM_STANDARD_TILE_URL).toBe(OSM_RETINA_TILE_URL);
-    expect(OSM_RETINA_TILE_SIZE).toBe(128);
+    expect(OSM_RETINA_TILE_SIZE).toBe(64);
     expect(OSM_RETINA_MAX_NATIVE_ZOOM).toBe(19);
     expect(OSM_STANDARD_ATTRIBUTION).toBe(OSM_RETINA_ATTRIBUTION);
     expect(OSM_RETINA_ATTRIBUTION).toBe(
@@ -8114,7 +8114,7 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
     );
   });
 
-  it('construye un StyleSpecification MapLibre GL v8 en modo Retina (tileSize 128) mediante buildOsmRetinaStyleSpec y su alias buildOsmStandardStyleSpec', () => {
+  it('construye un StyleSpecification MapLibre GL v8 en modo Retina (tileSize 64) mediante buildOsmRetinaStyleSpec y su alias buildOsmStandardStyleSpec', () => {
     expect(buildOsmStandardStyleSpec).toBe(buildOsmRetinaStyleSpec);
 
     const spec = buildOsmRetinaStyleSpec();
@@ -8123,7 +8123,7 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
     expect(specFromAlias).not.toBe(spec);
 
     expect(spec.version).toBe(8);
-    expect(spec.name).toBe('OpenStreetMap Retina (Teselas 2×)');
+    expect(spec.name).toBe('OpenStreetMap Retina (Teselas 4×)');
     expect(spec.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
     expect(spec.glyphs).toBe(
       'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
@@ -8147,7 +8147,7 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
         'La fuente osm-retina-raster debe ser una fuente raster válida',
       );
     }
-    expect(rasterSource.tileSize).toBe(128);
+    expect(rasterSource.tileSize).toBe(64);
     expect(rasterSource.minzoom).toBe(0);
     expect(rasterSource.maxzoom).toBe(19);
     expect(rasterSource.attribution).toBe(OSM_RETINA_ATTRIBUTION);
@@ -8202,7 +8202,7 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
     expect(validationErrors).toEqual([]);
   });
 
-  it('solicita teselas z + 2 con tileSize 128 sobre la cuadrícula de 512 px (densidad Retina 2× exacta, +1 zoom respecto a tileSize 256) y fija el tope seguro en maxzoom 19', () => {
+  it('solicita teselas z + 3 con tileSize 64 sobre la cuadrícula de 512 px (densidad Retina 4× exacta, +1 zoom respecto a 128 y +2 respecto a 256) y fija el tope seguro en maxzoom 19', () => {
     const spec = buildOsmRetinaStyleSpec();
     const rasterSource = spec.sources['osm-retina-raster'];
     const rasterLayer = spec.layers[1];
@@ -8219,12 +8219,13 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
     const retinaTileSize = rasterSource.tileSize ?? 0;
     const maxNativeZoom = rasterSource.maxzoom ?? 0;
 
-    expect(retinaTileSize).toBe(128);
+    expect(retinaTileSize).toBe(64);
     expect(maxNativeZoom).toBe(19);
     expect(rasterLayer.maxzoom).toBe(24);
-    // 256 px nativos de imagen OSM comprimidos en 128 CSS px => densidad física exacta 2× Retina
-    expect(osmNativeTileImagePx / retinaTileSize).toBe(2);
-    expect(Math.log2(worldTileSize / retinaTileSize)).toBe(2);
+    // 256 px nativos de imagen OSM comprimidos en 64 CSS px => densidad física exacta 4× Retina
+    expect(osmNativeTileImagePx / retinaTileSize).toBe(4);
+    expect(Math.log2(worldTileSize / retinaTileSize)).toBe(3);
+    expect(Math.log2(worldTileSize / 128)).toBe(2);
     expect(Math.log2(worldTileSize / 256)).toBe(1);
 
     const computeRequestedTileZoom = (
@@ -8240,10 +8241,15 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
         maxzoom,
       );
 
-    for (let cameraZoom = 0; cameraZoom <= 17; cameraZoom += 1) {
+    for (let cameraZoom = 0; cameraZoom <= 16; cameraZoom += 1) {
       const retinaZ = computeRequestedTileZoom(
         cameraZoom,
         retinaTileSize,
+        maxNativeZoom,
+      );
+      const retina128Z = computeRequestedTileZoom(
+        cameraZoom,
+        128,
         maxNativeZoom,
       );
       const standard256Z = computeRequestedTileZoom(
@@ -8251,12 +8257,14 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (2
         256,
         maxNativeZoom,
       );
-      expect(retinaZ).toBe(cameraZoom + 2);
+      expect(retinaZ).toBe(cameraZoom + 3);
+      expect(retina128Z).toBe(cameraZoom + 2);
       expect(standard256Z).toBe(cameraZoom + 1);
-      expect(retinaZ - standard256Z).toBe(1);
+      expect(retinaZ - retina128Z).toBe(1);
+      expect(retinaZ - standard256Z).toBe(2);
     }
 
-    for (let cameraZoom = 17; cameraZoom <= 22; cameraZoom += 1) {
+    for (let cameraZoom = 16; cameraZoom <= 22; cameraZoom += 1) {
       expect(
         computeRequestedTileZoom(cameraZoom, retinaTileSize, maxNativeZoom),
       ).toBe(19);
