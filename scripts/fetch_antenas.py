@@ -1108,7 +1108,7 @@ class InfoantenasCrawler:
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.checkpoint_path.with_suffix(self.checkpoint_path.suffix + ".tmp")
         payload = {
-            "savedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "savedAt": _utc_now_iso(self._now_utc),
             "stats": {
                 "requestsCount": self.requests_count,
                 "gridBoxesVisited": self.grid_boxes_visited,
@@ -1544,7 +1544,11 @@ class InfoantenasCrawler:
             "delaySeconds": self.delay_seconds,
             "isPartialSeed": region != "all",
         }
-        return build_dataset(self.records_by_id, crawl_stats=crawl_stats)
+        return build_dataset(
+            self.records_by_id,
+            crawl_stats=crawl_stats,
+            updated_at=_utc_now_iso(self._now_utc),
+        )
 
 
 def _redundant_leading_zeros(gid: str) -> int:
@@ -4786,7 +4790,7 @@ def build_dataset(
             }
         )
 
-    timestamp = updated_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = updated_at or _utc_now_iso()
     return {
         "updatedAt": timestamp,
         "sourceUrl": PORTAL_SOURCE_URL,

@@ -3689,6 +3689,11 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 (n["id"], n["scannedAt"], n["fecha"], n.get("scanId"))
                 for n in nov_day1["novedades"]
             ]
+            for n in nov_day1["novedades"]:
+                self.assertTrue(
+                    str(n["scannedAt"]).startswith("2026-11-17T17:00:"),
+                    f"scannedAt inesperado en scan-day-1: {n}",
+                )
 
             # Escaneo 2 (scan-day-2, modo por defecto 'append'):
             # Re-escanea todo pero encuentra 0 cambios nuevos -> conserva intactas las 3 novedades
@@ -3884,6 +3889,11 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 ],
                 day1_snapshot,
             )
+            for n in nov_day3["novedades"][:3]:
+                self.assertTrue(
+                    str(n["scannedAt"]).startswith("2026-11-19T17:00:"),
+                    f"scannedAt inesperado en scan-day-3: {n}",
+                )
 
             # Fusión sin pérdidas entre archivos (merge_novedades_files / --merge-novedades-from)
             # simulando rebase concurrente en GitHub Actions
