@@ -1078,15 +1078,19 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(loaded.total).toBe(2);
   });
 
-  it('calcula el color de fondo desaturado de cada fila en la tabla de Novedades según la operadora', () => {
+  it('calcula el color de fondo de cada fila en la tabla de Novedades según la operadora', () => {
+    expect(NOVEDADES_OPERATOR_ROW_COLORS.orange.toLowerCase()).toBe('#f28430');
+    expect(NOVEDADES_OPERATOR_ROW_COLORS.vodafone.toLowerCase()).toBe(
+      '#ff5959',
+    );
     expect(getOperatorRowBackground('movistar')).toBe(
       'rgba(83, 122, 162, 0.5)',
     );
     expect(getOperatorRowBackground('orange')).toBe(
-      'rgba(177, 121, 89, 0.5)',
+      'rgba(242, 132, 48, 0.5)',
     );
     expect(getOperatorRowBackground('vodafone')).toBe(
-      'rgba(172, 93, 93, 0.5)',
+      'rgba(255, 89, 89, 0.5)',
     );
     expect(getOperatorRowBackground('digi')).toBe(
       'rgba(129, 105, 171, 0.5)',
@@ -1108,7 +1112,7 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
       return l > 0.5 ? d / (2 - max - min) : d / (max + min);
     };
 
-    for (const op of ['movistar', 'orange', 'vodafone', 'digi'] as const) {
+    for (const op of ['movistar', 'digi'] as const) {
       const rowSat = hexSaturation(NOVEDADES_OPERATOR_ROW_COLORS[op]);
       const brandSat = hexSaturation(OPERATOR_META[op].color);
       expect(rowSat).toBeLessThan(brandSat * 0.55);
@@ -6566,16 +6570,20 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
     expect(tableHtml).toContain(
       '<span class="novedades-operator-name">Vodafone</span>',
     );
+    expect(tableHtml).toContain('rgba(255, 89, 89, 0.5)');
+    expect(tableHtml).not.toContain('rgba(172, 93, 93, 0.5)');
     expect(tableHtml).toContain(
       '<span class="novedades-operator-name">Orange</span>',
     );
+    expect(tableHtml).toContain('rgba(242, 132, 48, 0.5)');
+    expect(tableHtml).not.toContain('rgba(177, 121, 89, 0.5)');
     expect(tableHtml).toContain(
       '<span class="novedades-operator-name">DIGI</span>',
     );
     expect(tableHtml).not.toContain('novedades-col-codigo');
     expect(tableHtml).toContain('class="novedades-col-novedad"');
 
-    // 4. Verificación CSS: contenedor y tabla compactos, columna Código devuelta a su tamaño original, columna Novedad estrechada y pares 50%/50%
+    // 4. Verificación CSS: contenedor y tabla compactos, fondo blanco de la tabla bajo las filas semitransparentes, columna Código devuelta a su tamaño original, columna Novedad estrechada y pares 50%/50%
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -6588,7 +6596,16 @@ describe('Tabla Novedades estrecha, etiquetas simplificadas sin punto de operado
       /\.page-container\.novedades-page\s*\{[^}]*max-width:\s*1020px;/,
     );
     expect(indexCssSource).toMatch(
-      /\.novedades-table\s*\{[^}]*min-width:\s*460px;/,
+      /\.novedades-table-wrap\s*\{[^}]*background:\s*#ffffff;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table\s*\{[^}]*min-width:\s*460px;[^}]*background:\s*#ffffff;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\.novedades-table tbody\s*\{[^}]*background:\s*#ffffff;/,
+    );
+    expect(indexCssSource).toMatch(
+      /\[data-theme='dark'\]\s+\.novedades-table tbody td\s*\{[^}]*color:\s*#0b1120;/,
     );
     expect(indexCssSource).not.toContain('novedades-col-codigo');
     expect(indexCssSource).toMatch(

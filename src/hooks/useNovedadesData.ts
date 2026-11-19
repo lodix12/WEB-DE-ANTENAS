@@ -367,20 +367,20 @@ export function paginateNovedades<T>(
 }
 
 /**
- * Paleta de tonos desaturados por operadora exclusiva para las filas de la
- * tabla de Novedades, manteniendo la identidad cromática de cada operador con
- * baja saturación (~28%–36% HSL frente al 72%–100% del mapa) y alta legibilidad.
+ * Paleta de tonos exclusivos para las filas de la tabla de Novedades,
+ * manteniendo la identidad cromática de cada operador con alta legibilidad
+ * (tonos desaturados para Movistar/DIGI, #F28430 para Orange y #FF5959 para Vodafone).
  */
 export const NOVEDADES_OPERATOR_ROW_COLORS: Record<OperatorKey, string> = {
   movistar: '#537AA2',
-  orange: '#B17959',
-  vodafone: '#AC5D5D',
+  orange: '#F28430',
+  vodafone: '#FF5959',
   digi: '#8169AB',
   otros: '#717D8E',
 };
 
 /**
- * Devuelve el color de fondo desaturado de la fila en la tabla de Novedades
+ * Devuelve el color de fondo de la fila en la tabla de Novedades
  * según la operadora asociada (con alpha = 0.5 por defecto).
  */
 export function getOperatorRowBackground(op: OperatorKey, alpha = 0.5): string {
