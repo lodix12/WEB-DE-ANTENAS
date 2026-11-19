@@ -7,7 +7,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from 'react';
-import { Link } from '@tanstack/react-router';
+import { Link, useNavigate, useRouter, useSearch } from '@tanstack/react-router';
 import {
   Check,
   ChevronLeft,
@@ -25,7 +25,6 @@ import {
 } from 'lucide-react';
 import { useAntenasData } from '../hooks/useAntenasData';
 import {
-  DEFAULT_NOVEDADES_PAGE_SIZE,
   NOVEDADES_PAGE_SIZE_OPTIONS,
   NOVEDADES_SPANISH_COMUNIDADES,
   STANDARD_NOVEDADES_BANDS,
@@ -44,10 +43,12 @@ import {
   paginateNovedades,
   resolveNovedadComunidad,
   resolveNovedadProvince,
+  resolveNovedadesTableStateFromSearch,
+  serializeNovedadesTableStateToSearch,
   splitFrequencyRangeLines,
   splitScanDateTimeLines,
   useNovedadesData,
-  type NovedadesPageSize,
+  type NovedadesTableViewState,
 } from '../hooks/useNovedadesData';
 import {
   useScanProgress,
@@ -61,6 +62,14 @@ import {
 } from '../types/antena';
 
 export function NovedadesView() {
+  const navigate = useNavigate();
+  const router = useRouter();
+  const rawSearch = useSearch({ strict: false });
+  const urlState = useMemo(
+    () => resolveNovedadesTableStateFromSearch(rawSearch),
+    [rawSearch],
+  );
+
   const {
     data: dataset,
     isLoading,
@@ -76,6 +85,10 @@ export function NovedadesView() {
   const cornerPopoverRef = useRef<HTMLDivElement | null>(null);
   const cornerKeyInputRef = useRef<HTMLInputElement | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
+  const searchSyncTimerRef = useRef<number | null>(null);
+  const pendingSearchQueryRef = useRef<string | null>(null);
+  const latestCommittedStateRef = useRef<NovedadesTableViewState>(urlState);
+  const pendingCommitCountRef = useRef(0);
 
   const [isDispatching, setIsDispatching] = useState(false);
   const [cornerFeedback, setCornerFeedback] = useState<'ok' | 'err' | null>(
@@ -85,27 +98,13 @@ export function NovedadesView() {
   const [tokenDraft, setTokenDraft] = useState('');
   const [keyError, setKeyError] = useState(false);
 
-  const [tipoFilter, setTipoFilter] = useState<'all' | NovedadTipo>('all');
-  const [operatorFilter, setOperatorFilter] = useState<'all' | OperatorKey>(
-    'all',
+  const [localSearchQuery, setLocalSearchQuery] = useState(
+    urlState.searchQuery,
   );
-  const [bandFilter, setBandFilter] = useState<string>('all');
-  const [comunidadFilter, setComunidadFilter] = useState<string>('all');
-  const [provinceFilter, setProvinceFilter] = useState<string>('all');
-  const [dateFilter, setDateFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [pageSize, setPageSize] = useState<NovedadesPageSize>(
-    DEFAULT_NOVEDADES_PAGE_SIZE,
-  );
-  const [pageState, setPageState] = useState<{
+  const [pageInputDraft, setPageInputDraft] = useState<{
     key: string;
-    page: number;
-    draftInput: string | null;
-  }>({
-    key: '',
-    page: 1,
-    draftInput: null,
-  });
+    value: string;
+  } | null>(null);
 
   useEffect(() => {
     document.title =
@@ -117,8 +116,38 @@ export function NovedadesView() {
       if (feedbackTimerRef.current !== null) {
         window.clearTimeout(feedbackTimerRef.current);
       }
+      if (searchSyncTimerRef.current !== null) {
+        window.clearTimeout(searchSyncTimerRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    return router.history.subscribe(({ action }) => {
+      if (
+        action.type === 'BACK' ||
+        action.type === 'FORWARD' ||
+        action.type === 'GO'
+      ) {
+        if (searchSyncTimerRef.current !== null) {
+          window.clearTimeout(searchSyncTimerRef.current);
+          searchSyncTimerRef.current = null;
+        }
+        pendingCommitCountRef.current = 0;
+        pendingSearchQueryRef.current = null;
+      }
+    });
+  }, [router]);
+
+  useEffect(() => {
+    if (pendingSearchQueryRef.current !== null) {
+      if (urlState.searchQuery === pendingSearchQueryRef.current) {
+        pendingSearchQueryRef.current = null;
+      }
+      return;
+    }
+    setLocalSearchQuery(urlState.searchQuery);
+  }, [urlState.searchQuery]);
 
   useEffect(() => {
     if (!keyPopoverOpen) {
@@ -161,8 +190,19 @@ export function NovedadesView() {
     };
   }, [keyPopoverOpen]);
 
+  const {
+    tipoFilter,
+    operatorFilter,
+    bandFilter,
+    comunidadFilter,
+    provinceFilter,
+    dateFilter,
+    pageSize,
+  } = urlState;
+  const searchQuery = localSearchQuery;
+  const isSearchQueryDirty = localSearchQuery !== urlState.searchQuery;
   const filterKey = `${tipoFilter}|${operatorFilter}|${bandFilter}|${comunidadFilter}|${provinceFilter}|${dateFilter}|${searchQuery}|${pageSize}`;
-  const requestedPage = pageState.key === filterKey ? pageState.page : 1;
+  const requestedPage = isSearchQueryDirty ? 1 : urlState.page;
 
   const latestScanCounts = useMemo(
     () => computeLatestScanNovedadesCounts(dataset),
@@ -261,33 +301,191 @@ export function NovedadesView() {
     dateFilter !== 'all' ||
     searchQuery.trim().length > 0;
 
-  function handleComunidadChange(nextComunidad: string) {
-    setComunidadFilter(nextComunidad);
-    if (nextComunidad !== 'all' && provinceFilter !== 'all') {
-      const inStaticProvinces =
-        getNovedadesProvincesForComunidad(nextComunidad).includes(
-          provinceFilter,
-        );
-      const inDatasetRows = orderedNovedades.some(
-        (row) =>
-          resolveNovedadProvince(row) === provinceFilter &&
-          resolveNovedadComunidad(row) === nextComunidad,
-      );
-      if (!inStaticProvinces && !inDatasetRows) {
-        setProvinceFilter('all');
-      }
+  function clearSearchSyncTimer() {
+    if (searchSyncTimerRef.current !== null) {
+      window.clearTimeout(searchSyncTimerRef.current);
+      searchSyncTimerRef.current = null;
     }
   }
 
+  function getCurrentBaseState(): NovedadesTableViewState {
+    if (pendingCommitCountRef.current > 0) {
+      return {
+        ...latestCommittedStateRef.current,
+        searchQuery: localSearchQuery,
+      };
+    }
+    return {
+      ...urlState,
+      searchQuery: localSearchQuery,
+    };
+  }
+
+  function dispatchUrlState(nextState: NovedadesTableViewState) {
+    latestCommittedStateRef.current = nextState;
+    pendingCommitCountRef.current += 1;
+    void navigate({
+      to: '/novedades',
+      search: serializeNovedadesTableStateToSearch(nextState),
+      replace: true,
+      resetScroll: false,
+    }).finally(() => {
+      pendingCommitCountRef.current = Math.max(
+        0,
+        pendingCommitCountRef.current - 1,
+      );
+    });
+  }
+
+  function updateViewState(
+    updater: (prev: NovedadesTableViewState) => NovedadesTableViewState,
+  ) {
+    clearSearchSyncTimer();
+    const nextState = updater(getCurrentBaseState());
+    setLocalSearchQuery(nextState.searchQuery);
+    pendingSearchQueryRef.current =
+      nextState.searchQuery !== urlState.searchQuery
+        ? nextState.searchQuery
+        : null;
+    setPageInputDraft(null);
+    dispatchUrlState(nextState);
+  }
+
+  function handleTipoChange(nextTipo: 'all' | NovedadTipo) {
+    updateViewState((prev) => ({
+      ...prev,
+      tipoFilter: nextTipo,
+      page: 1,
+    }));
+  }
+
+  function handleOperatorChange(nextOperator: 'all' | OperatorKey) {
+    updateViewState((prev) => ({
+      ...prev,
+      operatorFilter: nextOperator,
+      page: 1,
+    }));
+  }
+
+  function handleBandChange(nextBand: string) {
+    updateViewState((prev) => ({
+      ...prev,
+      bandFilter: nextBand,
+      page: 1,
+    }));
+  }
+
+  function handleDateChange(nextDate: string) {
+    updateViewState((prev) => ({
+      ...prev,
+      dateFilter: nextDate,
+      page: 1,
+    }));
+  }
+
+  function handleProvinceChange(nextProvince: string) {
+    updateViewState((prev) => ({
+      ...prev,
+      provinceFilter: nextProvince,
+      page: 1,
+    }));
+  }
+
+  function handleComunidadChange(nextComunidad: string) {
+    updateViewState((prev) => {
+      let nextProvince = prev.provinceFilter;
+      if (nextComunidad !== 'all' && prev.provinceFilter !== 'all') {
+        const inStaticProvinces =
+          getNovedadesProvincesForComunidad(nextComunidad).includes(
+            prev.provinceFilter,
+          );
+        const inDatasetRows = orderedNovedades.some(
+          (row) =>
+            resolveNovedadProvince(row) === prev.provinceFilter &&
+            resolveNovedadComunidad(row) === nextComunidad,
+        );
+        if (!inStaticProvinces && !inDatasetRows) {
+          nextProvince = 'all';
+        }
+      }
+      return {
+        ...prev,
+        comunidadFilter: nextComunidad,
+        provinceFilter: nextProvince,
+        page: 1,
+      };
+    });
+  }
+
+  function handleSearchQueryChange(nextQuery: string) {
+    setLocalSearchQuery(nextQuery);
+    setPageInputDraft(null);
+    clearSearchSyncTimer();
+
+    const baseState =
+      pendingCommitCountRef.current > 0
+        ? latestCommittedStateRef.current
+        : urlState;
+
+    if (
+      nextQuery === baseState.searchQuery &&
+      pendingCommitCountRef.current === 0
+    ) {
+      pendingSearchQueryRef.current = null;
+      if (baseState.page !== 1) {
+        updateViewState((prev) => ({
+          ...prev,
+          searchQuery: nextQuery,
+          page: 1,
+        }));
+      }
+      return;
+    }
+
+    pendingSearchQueryRef.current = nextQuery;
+    const nextState: NovedadesTableViewState = {
+      ...baseState,
+      searchQuery: nextQuery,
+      page: 1,
+    };
+    searchSyncTimerRef.current = window.setTimeout(() => {
+      searchSyncTimerRef.current = null;
+      dispatchUrlState(nextState);
+    }, 150);
+  }
+
+  function handleSearchInputBlur() {
+    if (searchSyncTimerRef.current === null) {
+      return;
+    }
+    clearSearchSyncTimer();
+    dispatchUrlState({
+      ...getCurrentBaseState(),
+      searchQuery: localSearchQuery,
+      page: 1,
+    });
+  }
+
+  function handleClearSearch() {
+    updateViewState((prev) => ({
+      ...prev,
+      searchQuery: '',
+      page: 1,
+    }));
+  }
+
   function handleResetFilters() {
-    setTipoFilter('all');
-    setOperatorFilter('all');
-    setBandFilter('all');
-    setComunidadFilter('all');
-    setProvinceFilter('all');
-    setDateFilter('all');
-    setSearchQuery('');
-    setPageState({ key: '', page: 1, draftInput: null });
+    updateViewState((prev) => ({
+      tipoFilter: 'all',
+      operatorFilter: 'all',
+      bandFilter: 'all',
+      comunidadFilter: 'all',
+      provinceFilter: 'all',
+      dateFilter: 'all',
+      searchQuery: '',
+      pageSize: prev.pageSize,
+      page: 1,
+    }));
   }
 
   if (isLoading && !dataset) {
@@ -345,10 +543,47 @@ export function NovedadesView() {
     endRow,
   } = pageSlice;
   const paginationTokens = buildPaginationTokens(currentPage, totalPages);
+  const pageInputKey = `${filterKey}|${currentPage}`;
   const displayedPageInput =
-    pageState.key === filterKey && pageState.draftInput !== null
-      ? pageState.draftInput
+    pageInputDraft !== null && pageInputDraft.key === pageInputKey
+      ? pageInputDraft.value
       : String(currentPage);
+
+  function flushNovedadesStateBeforeLeaving() {
+    clearSearchSyncTimer();
+    pendingSearchQueryRef.current = null;
+
+    const stateToPersist: NovedadesTableViewState =
+      pendingCommitCountRef.current > 0
+        ? {
+            ...latestCommittedStateRef.current,
+            searchQuery,
+          }
+        : {
+            tipoFilter,
+            operatorFilter,
+            bandFilter,
+            comunidadFilter,
+            provinceFilter,
+            dateFilter,
+            searchQuery,
+            pageSize,
+            page: currentPage,
+          };
+
+    const targetLocation = router.buildLocation({
+      to: '/novedades',
+      search: serializeNovedadesTableStateToSearch(stateToPersist),
+    });
+
+    if (router.history.location.href !== targetLocation.href) {
+      router.history.replace(
+        targetLocation.href,
+        router.history.location.state,
+      );
+    }
+    router.history.flush();
+  }
 
   function scrollTableTopIfNeeded() {
     const sectionEl = tableSectionRef.current;
@@ -361,7 +596,10 @@ export function NovedadesView() {
 
   function goToPage(nextPage: number) {
     const clamped = Math.min(Math.max(1, Math.trunc(nextPage)), totalPages);
-    setPageState({ key: filterKey, page: clamped, draftInput: null });
+    updateViewState((prev) => ({
+      ...prev,
+      page: clamped,
+    }));
     if (clamped !== currentPage) {
       scrollTableTopIfNeeded();
     }
@@ -370,8 +608,11 @@ export function NovedadesView() {
   function handlePageSizeChange(rawValue: string) {
     const parsed = Number.parseInt(rawValue, 10);
     if (isValidNovedadesPageSize(parsed)) {
-      setPageSize(parsed);
-      setPageState({ key: '', page: 1, draftInput: null });
+      updateViewState((prev) => ({
+        ...prev,
+        pageSize: parsed,
+        page: 1,
+      }));
       scrollTableTopIfNeeded();
     }
   }
@@ -381,7 +622,7 @@ export function NovedadesView() {
     const trimmed = displayedPageInput.trim();
     const parsed = Number.parseInt(trimmed, 10);
     if (!Number.isFinite(parsed) || Number.isNaN(parsed)) {
-      setPageState({ key: filterKey, page: currentPage, draftInput: null });
+      setPageInputDraft(null);
       return;
     }
     goToPage(parsed);
@@ -389,7 +630,7 @@ export function NovedadesView() {
 
   function handlePageInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'Escape') {
-      setPageState({ key: filterKey, page: currentPage, draftInput: null });
+      setPageInputDraft(null);
       event.currentTarget.blur();
       return;
     }
@@ -399,10 +640,9 @@ export function NovedadesView() {
       const start = Number.isFinite(base) ? base : currentPage;
       const delta = event.key === 'ArrowUp' ? 1 : -1;
       const next = Math.min(Math.max(1, start + delta), totalPages);
-      setPageState({
-        key: filterKey,
-        page: currentPage,
-        draftInput: String(next),
+      setPageInputDraft({
+        key: pageInputKey,
+        value: String(next),
       });
     }
   }
@@ -655,7 +895,7 @@ export function NovedadesView() {
                 tipoFilter === 'antena' ? ' is-active' : ''
               }`}
               onClick={() =>
-                setTipoFilter(tipoFilter === 'antena' ? 'all' : 'antena')
+                handleTipoChange(tipoFilter === 'antena' ? 'all' : 'antena')
               }
               aria-pressed={tipoFilter === 'antena'}
             >
@@ -673,7 +913,7 @@ export function NovedadesView() {
                 tipoFilter === 'frecuencia' ? ' is-active' : ''
               }`}
               onClick={() =>
-                setTipoFilter(
+                handleTipoChange(
                   tipoFilter === 'frecuencia' ? 'all' : 'frecuencia',
                 )
               }
@@ -697,7 +937,7 @@ export function NovedadesView() {
               className={`novedades-op-chip${
                 operatorFilter === 'all' ? ' is-active' : ''
               }`}
-              onClick={() => setOperatorFilter('all')}
+              onClick={() => handleOperatorChange('all')}
               aria-pressed={operatorFilter === 'all'}
             >
               <span>Todas las operadoras</span>
@@ -720,7 +960,7 @@ export function NovedadesView() {
                       : undefined
                   }
                   onClick={() =>
-                    setOperatorFilter(isActive ? 'all' : opKey)
+                    handleOperatorChange(isActive ? 'all' : opKey)
                   }
                   aria-pressed={isActive}
                 >
@@ -757,14 +997,15 @@ export function NovedadesView() {
                   type="search"
                   className="search-input"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => handleSearchQueryChange(e.target.value)}
+                  onBlur={handleSearchInputBlur}
                   placeholder="Código antena, código banda, MHz o ciudad…"
                 />
                 {searchQuery && (
                   <button
                     type="button"
                     className="search-clear-btn"
-                    onClick={() => setSearchQuery('')}
+                    onClick={handleClearSearch}
                     aria-label="Limpiar búsqueda de novedades"
                   >
                     <X size={13} />
@@ -789,7 +1030,7 @@ export function NovedadesView() {
                   id="novedades-band-filter"
                   className="select-control"
                   value={bandFilter}
-                  onChange={(e) => setBandFilter(e.target.value)}
+                  onChange={(e) => handleBandChange(e.target.value)}
                 >
                   <option value="all">Todas las bandas</option>
                   {STANDARD_NOVEDADES_BANDS.map((band) => (
@@ -811,7 +1052,7 @@ export function NovedadesView() {
                   id="novedades-date-filter"
                   className="select-control"
                   value={dateFilter}
-                  onChange={(e) => setDateFilter(e.target.value)}
+                  onChange={(e) => handleDateChange(e.target.value)}
                 >
                   <option value="all">Todas las fechas</option>
                   {availableScanDates.map((d) => (
@@ -861,7 +1102,7 @@ export function NovedadesView() {
                   id="novedades-province-filter"
                   className="select-control"
                   value={provinceFilter}
-                  onChange={(e) => setProvinceFilter(e.target.value)}
+                  onChange={(e) => handleProvinceChange(e.target.value)}
                 >
                   <option value="all">Todas las provincias</option>
                   {availableProvinces.map((prov) => (
@@ -967,6 +1208,7 @@ export function NovedadesView() {
                             gid: row.codigo,
                             id: row.antennaId || undefined,
                           }}
+                          onClick={flushNovedadesStateBeforeLeaving}
                           className="novedades-code-link mono"
                           title="Ver esta antena en el mapa interactivo"
                         >
@@ -1292,10 +1534,9 @@ export function NovedadesView() {
                 value={displayedPageInput}
                 onChange={(e) => {
                   const digitsOnly = e.target.value.replace(/\D+/g, '');
-                  setPageState({
-                    key: filterKey,
-                    page: currentPage,
-                    draftInput: digitsOnly,
+                  setPageInputDraft({
+                    key: pageInputKey,
+                    value: digitsOnly,
                   });
                 }}
                 onBlur={(e) => {
@@ -1306,10 +1547,7 @@ export function NovedadesView() {
                   ) {
                     return;
                   }
-                  setPageState((prev) => ({
-                    ...prev,
-                    draftInput: null,
-                  }));
+                  setPageInputDraft(null);
                 }}
                 onKeyDown={handlePageInputKeyDown}
                 disabled={totalPages <= 1}

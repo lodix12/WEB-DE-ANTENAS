@@ -366,6 +366,210 @@ export function paginateNovedades<T>(
   };
 }
 
+export interface NovedadesRouteSearch {
+  tipo?: NovedadTipo;
+  op?: OperatorKey;
+  banda?: string;
+  ccaa?: string;
+  prov?: string;
+  fecha?: string;
+  q?: string;
+  filas?: NovedadesPageSize;
+  pagina?: number;
+}
+
+export interface NovedadesTableViewState {
+  tipoFilter: 'all' | NovedadTipo;
+  operatorFilter: 'all' | OperatorKey;
+  bandFilter: string;
+  comunidadFilter: string;
+  provinceFilter: string;
+  dateFilter: string;
+  searchQuery: string;
+  pageSize: NovedadesPageSize;
+  page: number;
+}
+
+const VALID_STANDARD_NOVEDADES_BANDS = new Set<string>(STANDARD_NOVEDADES_BANDS);
+const DMY_DATE_ONLY_REGEX = /^\d{2}\/\d{2}\/\d{4}$/;
+
+/**
+ * Valida y normaliza los parámetros de búsqueda URL de `/novedades`
+ * omitiendo valores por defecto o inválidos para mantener URLs limpias
+ * y restaurar exactamente filtros y paginación al volver desde el mapa.
+ */
+export function validateNovedadesSearch(
+  raw: Record<string, unknown>,
+): NovedadesRouteSearch {
+  const parsed: NovedadesRouteSearch = {};
+
+  if (raw.tipo === 'antena' || raw.tipo === 'frecuencia') {
+    parsed.tipo = raw.tipo;
+  }
+
+  if (typeof raw.op === 'string') {
+    const normalizedOp = normalizeOperatorKeyInput(raw.op.trim().toLowerCase());
+    if (normalizedOp !== null) {
+      parsed.op = normalizedOp;
+    }
+  }
+
+  if (typeof raw.banda === 'string') {
+    const trimmedBand = raw.banda.trim();
+    if (VALID_STANDARD_NOVEDADES_BANDS.has(trimmedBand)) {
+      parsed.banda = trimmedBand;
+    }
+  }
+
+  if (typeof raw.ccaa === 'string') {
+    const trimmedCcaa = raw.ccaa.trim();
+    if (trimmedCcaa.length > 0 && trimmedCcaa !== 'all') {
+      parsed.ccaa = trimmedCcaa;
+    }
+  }
+
+  if (typeof raw.prov === 'string') {
+    const trimmedProv = raw.prov.trim();
+    if (trimmedProv.length > 0 && trimmedProv !== 'all') {
+      parsed.prov = getCanonicalSpanishProvince(trimmedProv) || trimmedProv;
+    }
+  }
+
+  if (typeof raw.fecha === 'string') {
+    const trimmedDate = raw.fecha.trim();
+    if (DMY_DATE_ONLY_REGEX.test(trimmedDate)) {
+      parsed.fecha = trimmedDate;
+    }
+  }
+
+  if (typeof raw.q === 'string') {
+    if (raw.q.length > 0) {
+      parsed.q = raw.q;
+    }
+  } else if (typeof raw.q === 'number' && Number.isFinite(raw.q)) {
+    parsed.q = String(raw.q);
+  } else if (typeof raw.q === 'boolean') {
+    parsed.q = String(raw.q);
+  }
+
+  let parsedFilas: number | null = null;
+  if (typeof raw.filas === 'number' && Number.isInteger(raw.filas)) {
+    parsedFilas = raw.filas;
+  } else if (
+    typeof raw.filas === 'string' &&
+    /^\d+$/.test(raw.filas.trim())
+  ) {
+    parsedFilas = Number.parseInt(raw.filas.trim(), 10);
+  }
+  if (
+    parsedFilas !== null &&
+    isValidNovedadesPageSize(parsedFilas) &&
+    parsedFilas !== DEFAULT_NOVEDADES_PAGE_SIZE
+  ) {
+    parsed.filas = parsedFilas;
+  }
+
+  let parsedPagina: number | null = null;
+  if (typeof raw.pagina === 'number' && Number.isFinite(raw.pagina)) {
+    parsedPagina = Math.trunc(raw.pagina);
+  } else if (
+    typeof raw.pagina === 'string' &&
+    /^\d+$/.test(raw.pagina.trim())
+  ) {
+    parsedPagina = Number.parseInt(raw.pagina.trim(), 10);
+  }
+  if (parsedPagina !== null && parsedPagina > 1) {
+    parsed.pagina = parsedPagina;
+  }
+
+  return parsed;
+}
+
+/**
+ * Resuelve el estado completo de filtros y paginación de la tabla de Novedades
+ * a partir de los parámetros URL actuales.
+ */
+export function resolveNovedadesTableStateFromSearch(
+  rawSearch: unknown,
+): NovedadesTableViewState {
+  const validated = validateNovedadesSearch(
+    isPlainRecord(rawSearch) ? rawSearch : {},
+  );
+  return {
+    tipoFilter: validated.tipo ?? 'all',
+    operatorFilter: validated.op ?? 'all',
+    bandFilter: validated.banda ?? 'all',
+    comunidadFilter: validated.ccaa ?? 'all',
+    provinceFilter: validated.prov ?? 'all',
+    dateFilter: validated.fecha ?? 'all',
+    searchQuery: validated.q ?? '',
+    pageSize: validated.filas ?? DEFAULT_NOVEDADES_PAGE_SIZE,
+    page: validated.pagina ?? 1,
+  };
+}
+
+/**
+ * Serializa el estado de filtros y paginación de la tabla de Novedades a
+ * parámetros URL mínimos (omitiendo valores por defecto).
+ */
+export function serializeNovedadesTableStateToSearch(
+  state: NovedadesTableViewState,
+): NovedadesRouteSearch {
+  const search: NovedadesRouteSearch = {};
+
+  if (state.tipoFilter === 'antena' || state.tipoFilter === 'frecuencia') {
+    search.tipo = state.tipoFilter;
+  }
+  if (state.operatorFilter !== 'all') {
+    const normalizedOp = normalizeOperatorKeyInput(state.operatorFilter);
+    if (normalizedOp !== null) {
+      search.op = normalizedOp;
+    }
+  }
+  if (
+    state.bandFilter !== 'all' &&
+    VALID_STANDARD_NOVEDADES_BANDS.has(state.bandFilter.trim())
+  ) {
+    search.banda = state.bandFilter.trim();
+  }
+  if (
+    state.comunidadFilter !== 'all' &&
+    state.comunidadFilter.trim().length > 0
+  ) {
+    search.ccaa = state.comunidadFilter.trim();
+  }
+  if (
+    state.provinceFilter !== 'all' &&
+    state.provinceFilter.trim().length > 0
+  ) {
+    search.prov = state.provinceFilter.trim();
+  }
+  if (
+    state.dateFilter !== 'all' &&
+    DMY_DATE_ONLY_REGEX.test(state.dateFilter.trim())
+  ) {
+    search.fecha = state.dateFilter.trim();
+  }
+  if (state.searchQuery.length > 0) {
+    search.q = state.searchQuery;
+  }
+  if (
+    isValidNovedadesPageSize(state.pageSize) &&
+    state.pageSize !== DEFAULT_NOVEDADES_PAGE_SIZE
+  ) {
+    search.filas = state.pageSize;
+  }
+  const normalizedPage = Math.trunc(
+    Number.isFinite(state.page) ? state.page : 1,
+  );
+  if (normalizedPage > 1) {
+    search.pagina = normalizedPage;
+  }
+
+  return search;
+}
+
+
 /**
  * Paleta de tonos exclusivos para las filas de la tabla de Novedades,
  * manteniendo la identidad cromática de cada operador con alta legibilidad

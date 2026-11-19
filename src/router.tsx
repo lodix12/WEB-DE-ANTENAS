@@ -5,9 +5,15 @@ import {
   createRouter,
 } from '@tanstack/react-router';
 import { NotFoundView, RootLayout } from './components/ui/RootLayout';
+import {
+  validateNovedadesSearch,
+  type NovedadesRouteSearch,
+} from './hooks/useNovedadesData';
 import { EstadisticasView } from './views/EstadisticasView';
 import { MapaView } from './views/MapaView';
 import { NovedadesView } from './views/NovedadesView';
+
+export type { NovedadesRouteSearch };
 
 export interface MapaRouteSearch {
   gid?: string;
@@ -52,6 +58,7 @@ const mapaRoute = createRoute({
 const novedadesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/novedades',
+  validateSearch: validateNovedadesSearch,
   component: NovedadesView,
 });
 
@@ -71,6 +78,7 @@ export const router = createRouter({
   routeTree,
   history: createHashHistory(),
   defaultPreload: 'intent',
+  scrollRestoration: true,
 });
 
 declare module '@tanstack/react-router' {
