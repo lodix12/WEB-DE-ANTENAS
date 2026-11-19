@@ -19,11 +19,16 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
+  GEOFABRIK_OSM_CARTO_REPO_URL,
   OPENFREEMAP_GLYPHS_URL,
+  OPENFREEMAP_SPRITE_URL,
   OPENFREEMAP_STYLES,
+  OPENFREEMAP_VECTOR_TILEJSON_URL,
   OPERATOR_META,
   OPERATOR_ORDER,
-  OSM_STANDARD_TILE_URL,
+  OSM_CARTO_PALETTE,
+  OSM_CARTO_VECTOR_ATTRIBUTION,
+  buildOsmCartoVectorStyleSpec,
   buildOsmStandardStyleSpec,
   computeHighQualityMapPixelRatio,
   resolveMapStyleInput,
@@ -8077,8 +8082,8 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
   });
 });
 
-describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxima nitidez (OSM Carto 256px + WebGL HiDPI)', () => {
-  it('incluye OSM Estándar ("osm") junto con los 5 estilos vectoriales OpenFreeMap con identificadores únicos', () => {
+describe('Mapa — Capa cartográfica vectorial OpenStreetMap Carto (geofabrik/openstreetmap-carto-vector-tiles)', () => {
+  it('incluye OSM Carto ("osm") 100 % vectorial junto con los otros 5 estilos vectoriales con identificadores únicos', () => {
     const ids = OPENFREEMAP_STYLES.map((style) => style.id);
     expect(new Set(ids).size).toBe(OPENFREEMAP_STYLES.length);
     expect(ids).toContain('osm');
@@ -8091,69 +8096,121 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
 
     const osmStyle = OPENFREEMAP_STYLES.find((style) => style.id === 'osm');
     expect(osmStyle).toBeDefined();
-    expect(osmStyle?.label).toBe('OSM Estándar');
+    expect(osmStyle?.label).toBe('OSM Carto');
     expect(osmStyle?.isDark).toBe(false);
-    expect(osmStyle?.url).toBe('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
-    expect(osmStyle?.url).toBe(OSM_STANDARD_TILE_URL);
+    expect(osmStyle?.url).toBe('https://tiles.openfreemap.org/planet');
+    expect(osmStyle?.url).toBe(OPENFREEMAP_VECTOR_TILEJSON_URL);
+    expect(osmStyle?.url).not.toContain('tile.openstreetmap.org');
   });
 
-  it('construye un StyleSpecification MapLibre v8 completo con tileSize: 256, maxzoom: 19, glifos OpenFreeMap y remuestreo lineal de alto contraste', () => {
-    const spec = buildOsmStandardStyleSpec();
+  it('construye un StyleSpecification MapLibre v8 100 % vectorial fiel a geofabrik/openstreetmap-carto-vector-tiles sin fuentes ni capas ráster', () => {
+    const spec = buildOsmCartoVectorStyleSpec();
+    expect(buildOsmStandardStyleSpec()).toEqual(spec);
 
     expect(spec.version).toBe(8);
     expect(spec.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
     expect(spec.glyphs).toBe(
       'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
     );
+    expect(spec.sprite).toBe(OPENFREEMAP_SPRITE_URL);
+    expect(spec.sprite).toBe(
+      'https://tiles.openfreemap.org/sprites/ofm_f384/ofm',
+    );
 
-    const rasterSource = spec.sources['osm-standard-raster'];
-    expect(rasterSource).toBeDefined();
-    expect(rasterSource).toMatchObject({
-      type: 'raster',
-      tiles: [OSM_STANDARD_TILE_URL],
-      tileSize: 256,
-      minzoom: 0,
-      maxzoom: 19,
+    const sourceEntries = Object.entries(spec.sources);
+    expect(sourceEntries).toHaveLength(1);
+    const vectorSource = spec.sources.openmaptiles;
+    expect(vectorSource).toBeDefined();
+    expect(vectorSource).toMatchObject({
+      type: 'vector',
+      url: OPENFREEMAP_VECTOR_TILEJSON_URL,
+      attribution: OSM_CARTO_VECTOR_ATTRIBUTION,
     });
-    if (rasterSource && 'attribution' in rasterSource) {
-      expect(rasterSource.attribution).toContain('OpenStreetMap');
-      expect(rasterSource.attribution).toContain(
+    if (vectorSource && 'attribution' in vectorSource) {
+      expect(vectorSource.attribution).toContain('OpenStreetMap');
+      expect(vectorSource.attribution).toContain(
         'https://www.openstreetmap.org/copyright',
       );
+      expect(vectorSource.attribution).toContain(GEOFABRIK_OSM_CARTO_REPO_URL);
     } else {
-      throw new Error('La fuente osm-standard-raster debe incluir atribución');
+      throw new Error('La fuente vectorial openmaptiles debe incluir atribución');
     }
 
-    const bgLayer = spec.layers.find(
-      (layer) => layer.id === 'osm-standard-background',
-    );
+    // 0 capas ráster y 100 % IDs únicos con prefijo osm-carto-
+    expect(spec.layers.some((layer) => layer.type === 'raster')).toBe(false);
+    const layerIds = spec.layers.map((layer) => layer.id);
+    expect(new Set(layerIds).size).toBe(layerIds.length);
+    expect(layerIds.every((id) => id.startsWith('osm-carto-'))).toBe(true);
+    expect(spec.layers.length).toBeGreaterThanOrEqual(80);
+
+    // Verificar paleta cromática exacta de geofabrik/openstreetmap-carto-vector-tiles
+    expect(OSM_CARTO_PALETTE.land).toBe('#f2efe9');
+    expect(OSM_CARTO_PALETTE.water).toBe('#b5d0d0');
+    expect(OSM_CARTO_PALETTE.forest).toBe('#add19e');
+    expect(OSM_CARTO_PALETTE.park).toBe('#c8facc');
+    expect(OSM_CARTO_PALETTE.buildingFill).toBe('#d9d0c9');
+    expect(OSM_CARTO_PALETTE.buildingLine).toBe('#b6a69a');
+    expect(OSM_CARTO_PALETTE.motorwayFill).toBe('#e892a2');
+    expect(OSM_CARTO_PALETTE.motorwayCasing).toBe('#dc2a67');
+    expect(OSM_CARTO_PALETTE.trunkFill).toBe('#f9b29c');
+    expect(OSM_CARTO_PALETTE.primaryFill).toBe('#fcd6a4');
+    expect(OSM_CARTO_PALETTE.secondaryFill).toBe('#f7fabf');
+    expect(OSM_CARTO_PALETTE.adminBoundary).toBe('#ac46ac');
+
+    const bgLayer = spec.layers[0];
     expect(bgLayer).toEqual({
-      id: 'osm-standard-background',
+      id: 'osm-carto-background',
       type: 'background',
       paint: {
         'background-color': '#f2efe9',
       },
     });
 
-    const osmRasterLayer = spec.layers.find(
-      (layer) => layer.id === 'osm-standard-layer',
+    // Verificar cobertura de capas OpenMapTiles clave y tipografías soportadas por OpenFreeMap
+    const usedSourceLayers = new Set(
+      spec.layers
+        .map((layer) => ('source-layer' in layer ? layer['source-layer'] : null))
+        .filter((sl): sl is string => Boolean(sl)),
     );
-    expect(osmRasterLayer).toEqual({
-      id: 'osm-standard-layer',
-      type: 'raster',
-      source: 'osm-standard-raster',
-      minzoom: 0,
-      maxzoom: 24,
-      paint: {
-        resampling: 'linear',
-        'raster-contrast': 0.03,
-        'raster-fade-duration': 150,
-      },
-    });
+    for (const expectedSourceLayer of [
+      'landuse',
+      'landcover',
+      'park',
+      'water',
+      'waterway',
+      'aeroway',
+      'building',
+      'transportation',
+      'boundary',
+      'housenumber',
+      'transportation_name',
+      'poi',
+      'place',
+    ]) {
+      expect(usedSourceLayers.has(expectedSourceLayer)).toBe(true);
+    }
+
+    const allowedFonts = new Set([
+      'Noto Sans Regular',
+      'Noto Sans Bold',
+      'Noto Sans Italic',
+    ]);
+    for (const layer of spec.layers) {
+      if (layer.type === 'symbol' && layer.layout?.['text-font']) {
+        const fontProp = layer.layout['text-font'];
+        if (Array.isArray(fontProp)) {
+          for (const f of fontProp) {
+            if (typeof f === 'string') {
+              expect(allowedFonts.has(f)).toBe(true);
+            }
+          }
+        }
+      }
+    }
   });
 
-  it('supera la validación estricta de @maplibre/maplibre-gl-style-spec (validateStyleMin) sin errores ni propiedades paint redundantes', async () => {
-    const spec = buildOsmStandardStyleSpec();
+  it('supera la validación estricta de @maplibre/maplibre-gl-style-spec (validateStyleMin) sin ningún error', async () => {
+    const spec = buildOsmCartoVectorStyleSpec();
     const styleSpecModuleId = '@maplibre/maplibre-gl-style-spec';
     const { validateStyleMin } = (await import(
       /* @vite-ignore */ styleSpecModuleId
@@ -8165,7 +8222,158 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
     expect(validationErrors).toEqual([]);
   });
 
-  it('resolveMapStyleInput devuelve un StyleSpecification nuevo para "osm" y la URL directa para los 5 estilos vectoriales', () => {
+  it('orienta correctamente las flechas de sentido único sobre puentes (excluyendo túneles) y evalúa expresiones sin errores ante propiedades nulas o alfanuméricas', async () => {
+    const spec = buildOsmCartoVectorStyleSpec();
+    const layerIndexById = new Map(
+      spec.layers.map((layer, index) => [layer.id, index]),
+    );
+
+    const onewayLayer = spec.layers.find(
+      (layer) => layer.id === 'osm-carto-road-oneway',
+    );
+    expect(onewayLayer).toBeDefined();
+    if (!onewayLayer || onewayLayer.type !== 'symbol') {
+      throw new Error('osm-carto-road-oneway debe ser una capa symbol');
+    }
+
+    // Debe renderizarse por encima de todos los puentes y límites administrativos, y antes de las etiquetas de texto
+    const onewayIdx = layerIndexById.get('osm-carto-road-oneway') ?? -1;
+    const bridgeIndices = spec.layers
+      .map((layer, idx) => (layer.id.startsWith('osm-carto-bridge-') ? idx : -1))
+      .filter((idx) => idx >= 0);
+    expect(bridgeIndices.length).toBeGreaterThan(0);
+    for (const bridgeIdx of bridgeIndices) {
+      expect(onewayIdx).toBeGreaterThan(bridgeIdx);
+    }
+    expect(onewayIdx).toBeLessThan(
+      layerIndexById.get('osm-carto-road-label-major') ?? -1,
+    );
+
+    // Rotación exacta (-90° / +90°) para el sprite `oneway` orientado al norte (-Y) en `ofm_f384` y exclusión de túneles
+    expect(onewayLayer.layout?.['icon-rotate']).toEqual([
+      'case',
+      ['==', ['get', 'oneway'], -1],
+      -90,
+      90,
+    ]);
+    expect(JSON.stringify(onewayLayer.filter)).toContain(
+      '["!=",["get","brunnel"],"tunnel"]',
+    );
+
+    // Evaluación en tiempo de ejecución con @maplibre/maplibre-gl-style-spec ante valores null o no numéricos
+    const styleSpecModuleId = '@maplibre/maplibre-gl-style-spec';
+    const { expression, featureFilter } = (await import(
+      /* @vite-ignore */ styleSpecModuleId
+    )) as {
+      expression: {
+        createExpression: (
+          expr: unknown,
+          rootKey: string,
+        ) => {
+          result: string;
+          value: {
+            evaluate: (
+              globals: { zoom: number },
+              feature: {
+                type: number;
+                properties: Record<string, unknown>;
+              },
+            ) => unknown;
+          };
+        };
+      };
+      featureFilter: (
+        filter: unknown,
+        rootKey: string,
+      ) => {
+        filter: (
+          globals: { zoom: number },
+          feature: {
+            type: number;
+            properties: Record<string, unknown>;
+          },
+        ) => boolean;
+      };
+    };
+
+    const municipalityLayer = spec.layers.find(
+      (l) => l.id === 'osm-carto-boundary-municipality',
+    );
+    expect(municipalityLayer && 'filter' in municipalityLayer).toBe(true);
+    if (municipalityLayer && 'filter' in municipalityLayer) {
+      const compiledMuniFilter = featureFilter(
+        municipalityLayer.filter,
+        'layers[0].filter',
+      );
+      expect(
+        compiledMuniFilter.filter(
+          { zoom: 13 },
+          { type: 2, properties: { maritime: 0, admin_level: null } },
+        ),
+      ).toBe(false);
+      expect(
+        compiledMuniFilter.filter(
+          { zoom: 13 },
+          { type: 2, properties: { maritime: 0, admin_level: 8 } },
+        ),
+      ).toBe(true);
+    }
+
+    const shieldLayer = spec.layers.find(
+      (l) => l.id === 'osm-carto-road-shield',
+    );
+    expect(shieldLayer && 'filter' in shieldLayer).toBe(true);
+    if (shieldLayer && 'filter' in shieldLayer) {
+      const compiledShieldFilter = featureFilter(
+        shieldLayer.filter,
+        'layers[1].filter',
+      );
+      expect(
+        compiledShieldFilter.filter(
+          { zoom: 12 },
+          {
+            type: 2,
+            properties: { class: 'motorway', ref: 'A-1', ref_length: null },
+          },
+        ),
+      ).toBe(false);
+      expect(
+        compiledShieldFilter.filter(
+          { zoom: 12 },
+          {
+            type: 2,
+            properties: { class: 'motorway', ref: 'A-1', ref_length: 3 },
+          },
+        ),
+      ).toBe(true);
+    }
+
+    const peakLayer = spec.layers.find(
+      (l) => l.id === 'osm-carto-mountain-peak',
+    );
+    expect(peakLayer?.type).toBe('symbol');
+    if (peakLayer && peakLayer.type === 'symbol') {
+      const compiledPeakText = expression.createExpression(
+        peakLayer.layout?.['text-field'],
+        'layers[2].layout.text-field',
+      );
+      expect(compiledPeakText.result).toBe('success');
+      expect(
+        compiledPeakText.value.evaluate(
+          { zoom: 13 },
+          { type: 1, properties: { name: 'Mulhacén', ele: '3479m' } },
+        ),
+      ).toBe('Mulhacén');
+      expect(
+        compiledPeakText.value.evaluate(
+          { zoom: 13 },
+          { type: 1, properties: { name: 'Mulhacén', ele: 3478.6 } },
+        ),
+      ).toBe('Mulhacén\n3479 m');
+    }
+  });
+
+  it('resolveMapStyleInput devuelve un StyleSpecification vectorial nuevo para "osm" y la URL directa para los otros 5 estilos vectoriales', () => {
     const osmOption = OPENFREEMAP_STYLES.find((opt) => opt.id === 'osm');
     if (!osmOption) {
       throw new Error('No se encontró la opción "osm" en OPENFREEMAP_STYLES');
@@ -8175,7 +8383,7 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
     const specB = resolveMapStyleInput(osmOption);
     expect(typeof specA).toBe('object');
     expect(specA).not.toBe(specB);
-    expect(specA).toEqual(buildOsmStandardStyleSpec());
+    expect(specA).toEqual(buildOsmCartoVectorStyleSpec());
 
     const vectorIds = ['liberty', 'positron', 'bright', 'dark', 'fiord'] as const;
     for (const vectorId of vectorIds) {
@@ -8224,7 +8432,7 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
     );
   });
 
-  it('renderiza "OSM Estándar" en #map-style-switcher-btn de MapOverlays (SSR) y define la muestra cromática .map-style-swatch[data-style="osm"] en map.css', async () => {
+  it('renderiza "OSM Carto" en #map-style-switcher-btn de MapOverlays (SSR) y define la muestra cromática Geofabrik .map-style-swatch[data-style="osm"] en map.css', async () => {
     const overlaysHtml = renderToStaticMarkup(
       createElement(MapOverlays, {
         styleId: 'osm',
@@ -8244,7 +8452,7 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
     );
 
     expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
-    expect(overlaysHtml).toContain('>OSM Estándar<');
+    expect(overlaysHtml).toContain('>OSM Carto<');
 
     expect(mapOverlaysRawSource).toContain('Capas cartográficas');
     expect(mapOverlaysRawSource).toContain(
@@ -8264,7 +8472,7 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
     );
     expect(mapCssSource).toContain(".map-style-swatch[data-style='osm']");
     expect(mapCssSource).toMatch(
-      /\.map-style-swatch\[data-style='osm'\]\s*\{[\s\S]*?#f2efe9[\s\S]*?#add19e[\s\S]*?#f9b29c[\s\S]*?#aad3df[\s\S]*?\}/i,
+      /\.map-style-swatch\[data-style='osm'\]\s*\{[\s\S]*?#f2efe9[\s\S]*?#add19e[\s\S]*?#f9b29c[\s\S]*?#b5d0d0[\s\S]*?\}/i,
     );
   });
 });

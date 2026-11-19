@@ -1,4 +1,13 @@
 import type { StyleSpecification } from 'maplibre-gl';
+import {
+  GEOFABRIK_OSM_CARTO_REPO_URL,
+  OPENFREEMAP_GLYPHS_URL,
+  OPENFREEMAP_SPRITE_URL,
+  OPENFREEMAP_VECTOR_TILEJSON_URL,
+  OSM_CARTO_PALETTE,
+  OSM_CARTO_VECTOR_ATTRIBUTION,
+  buildOsmCartoVectorStyleSpec,
+} from '../styles/osmCartoVectorStyle';
 
 export type OperatorKey =
   | 'movistar'
@@ -341,72 +350,32 @@ export interface OpenFreeMapStyleOption {
   isDark: boolean;
 }
 
-export const OSM_STANDARD_TILE_URL =
-  'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-
-export const OPENFREEMAP_GLYPHS_URL =
-  'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
-
-export const OSM_STANDARD_ATTRIBUTION =
-  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+export {
+  GEOFABRIK_OSM_CARTO_REPO_URL,
+  OPENFREEMAP_GLYPHS_URL,
+  OPENFREEMAP_SPRITE_URL,
+  OPENFREEMAP_VECTOR_TILEJSON_URL,
+  OSM_CARTO_PALETTE,
+  OSM_CARTO_VECTOR_ATTRIBUTION,
+  buildOsmCartoVectorStyleSpec,
+};
 
 /**
- * Construye la especificación MapLibre GL v8 de máxima nitidez para la capa
- * oficial OpenStreetMap versión estándar (OSM Carto):
- * - `tileSize: 256` evita el escalado borroso 2× (512 px por defecto en MapLibre)
- *   forzando teselas nativas z+1 en relación 1:1 CSS.
- * - `maxzoom: 19` aprovecha el nivel máximo nativo del CDN oficial de OSM.
- * - `glyphs` de OpenFreeMap mantiene operativas las capas WebGL `symbol`
- *   (`Noto Sans Regular`) de conteo exacto de clústeres y mediciones.
+ * Alias compatible que construye la especificación vectorial MapLibre GL v8
+ * de OpenStreetMap Carto basada en `geofabrik/openstreetmap-carto-vector-tiles`.
  */
-export function buildOsmStandardStyleSpec(): StyleSpecification {
-  return {
-    version: 8,
-    name: 'OpenStreetMap Estándar',
-    glyphs: OPENFREEMAP_GLYPHS_URL,
-    sources: {
-      'osm-standard-raster': {
-        type: 'raster',
-        tiles: [OSM_STANDARD_TILE_URL],
-        tileSize: 256,
-        minzoom: 0,
-        maxzoom: 19,
-        attribution: OSM_STANDARD_ATTRIBUTION,
-      },
-    },
-    layers: [
-      {
-        id: 'osm-standard-background',
-        type: 'background',
-        paint: {
-          'background-color': '#f2efe9',
-        },
-      },
-      {
-        id: 'osm-standard-layer',
-        type: 'raster',
-        source: 'osm-standard-raster',
-        minzoom: 0,
-        maxzoom: 24,
-        paint: {
-          resampling: 'linear',
-          'raster-contrast': 0.03,
-          'raster-fade-duration': 150,
-        },
-      },
-    ],
-  };
-}
+export const buildOsmStandardStyleSpec = buildOsmCartoVectorStyleSpec;
 
 /**
  * Resuelve la entrada de estilo para `new maplibregl.Map` y `map.setStyle`:
- * devuelve el `StyleSpecification` de alta nitidez para `'osm'` o la URL JSON vectorial.
+ * devuelve el `StyleSpecification` vectorial de OSM Carto (Geofabrik) para `'osm'`
+ * o la URL JSON vectorial directa para el resto de estilos.
  */
 export function resolveMapStyleInput(
   option: Pick<OpenFreeMapStyleOption, 'id' | 'url'>,
 ): StyleSpecification | string {
   if (option.id === 'osm') {
-    return buildOsmStandardStyleSpec();
+    return buildOsmCartoVectorStyleSpec();
   }
   return option.url;
 }
@@ -431,9 +400,9 @@ export function computeHighQualityMapPixelRatio(
 export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   {
     id: 'osm',
-    label: 'OSM Estándar',
-    description: 'OpenStreetMap versión estándar en máxima nitidez',
-    url: OSM_STANDARD_TILE_URL,
+    label: 'OSM Carto',
+    description: 'OpenStreetMap Carto vectorial (Geofabrik)',
+    url: OPENFREEMAP_VECTOR_TILEJSON_URL,
     isDark: false,
   },
   {

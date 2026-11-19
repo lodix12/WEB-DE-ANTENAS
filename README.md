@@ -8,7 +8,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 
 - **Mapa Vectorial de Alto Rendimiento (MapLibre GL JS + OpenFreeMap)**:
   - Renderizado WebGL fluido de decenas de miles de emplazamientos en Península, Islas Baleares, Islas Canarias, Ceuta y Melilla con agrupación dinámica (*clustering*), codificación cromática por operador y **agrupación visual multi-operador (`< 35 m`)** en un icono multicolor compartido cuando distintas redes comparten mástil o azotea (sin fusionar jamás estaciones de Telefónica consigo mismas).
-  - Cinco estilos cartográficos vectoriales sin claves ni límites de cuota (**Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**) sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
+  - Seis estilos cartográficos vectoriales sin claves ni límites de cuota: **OSM Carto** (cartografía vectorial basada en [`geofabrik/openstreetmap-carto-vector-tiles`](https://github.com/geofabrik/openstreetmap-carto-vector-tiles)), **Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**, sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
 - **Medición de Distancia entre 2 Puntos**:
   - La función **"Medir en mapa"** permite seleccionar **2 puntos cualesquiera en el mapa** (Punto A y Punto B) mostrando directamente sobre la cartografía el segmento geodésico y la distancia exacta entre ambos.
 - **Ficha Técnica de Estación, Bandas MHz y Co-emplazamiento (`< 35 m` / `< 100 m`)**:
@@ -37,7 +37,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
 | **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades` y `#/estadisticas` sin errores 404 en GitHub Pages |
 | **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `data/antenas.json` y `data/novedades.json` (con validación de esquema propio), caché en memoria e índices `O(1)` |
-| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap | Teselas vectoriales libres, renderizado WebGL en GPU desde el JSON propio |
+| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Carto | Teselas vectoriales libres (6 estilos, incl. [`geofabrik/openstreetmap-carto-vector-tiles`](https://github.com/geofabrik/openstreetmap-carto-vector-tiles)), renderizado WebGL en GPU desde el JSON propio |
 | **Pipeline y Motor Diff** | Python 3.12 (`scripts/fetch_antenas.py`) | Barrido *quadtree*, re-escaneo de concesiones RF y cálculo diferencial de altas en `public/data/antenas.json` y `public/data/novedades.json` |
 | **CI/CD y Hosting** | GitHub Actions + GitHub Pages | Escaneo diario automático a las **18:00 (`Europe/Madrid`)** en 4 tramos encadenados y despliegue estático |
 
