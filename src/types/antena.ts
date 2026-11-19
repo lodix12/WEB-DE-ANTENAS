@@ -387,10 +387,9 @@ export function buildOsmStandardStyleSpec(): StyleSpecification {
         type: 'raster',
         source: 'osm-standard-raster',
         minzoom: 0,
-        maxzoom: 22,
+        maxzoom: 24,
         paint: {
           resampling: 'linear',
-          'raster-resampling': 'linear',
           'raster-contrast': 0.03,
           'raster-fade-duration': 150,
         },

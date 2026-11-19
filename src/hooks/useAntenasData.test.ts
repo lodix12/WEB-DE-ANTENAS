@@ -8126,14 +8126,26 @@ describe('Mapa — Capa cartográfica OpenStreetMap versión estándar en máxim
       type: 'raster',
       source: 'osm-standard-raster',
       minzoom: 0,
-      maxzoom: 22,
+      maxzoom: 24,
       paint: {
         resampling: 'linear',
-        'raster-resampling': 'linear',
         'raster-contrast': 0.03,
         'raster-fade-duration': 150,
       },
     });
+  });
+
+  it('supera la validación estricta de @maplibre/maplibre-gl-style-spec (validateStyleMin) sin errores ni propiedades paint redundantes', async () => {
+    const spec = buildOsmStandardStyleSpec();
+    const styleSpecModuleId = '@maplibre/maplibre-gl-style-spec';
+    const { validateStyleMin } = (await import(
+      /* @vite-ignore */ styleSpecModuleId
+    )) as {
+      validateStyleMin: (style: unknown) => Array<{ message: string }>;
+    };
+
+    const validationErrors = validateStyleMin(spec);
+    expect(validationErrors).toEqual([]);
   });
 
   it('resolveMapStyleInput devuelve un StyleSpecification nuevo para "osm" y la URL directa para los 5 estilos vectoriales', () => {
