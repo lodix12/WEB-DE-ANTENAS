@@ -8475,4 +8475,250 @@ describe('Mapa — Capa cartográfica vectorial OpenStreetMap Carto (geofabrik/o
       /\.map-style-swatch\[data-style='osm'\]\s*\{[\s\S]*?#f2efe9[\s\S]*?#add19e[\s\S]*?#f9b29c[\s\S]*?#b5d0d0[\s\S]*?\}/i,
     );
   });
+
+  it('garantiza descompresión viaria monótona sin mesetas ni saltos bruscos (z12..z18), calles blancas con borde temprano, continuidad de puentes/túneles bajo z12 y descompresión temprana de etiquetas, escudos y POIs', async () => {
+    const spec = buildOsmCartoVectorStyleSpec();
+    const layerById = new Map(
+      spec.layers.map((layer, index) => [layer.id, { layer, index }]),
+    );
+
+    const getLayerEntry = (id: string) => {
+      const entry = layerById.get(id);
+      expect(entry, `Falta la capa ${id}`).toBeDefined();
+      if (!entry) {
+        throw new Error(`Falta la capa ${id}`);
+      }
+      return entry;
+    };
+
+    const getLayerMinzoom = (id: string): number => {
+      const { layer } = getLayerEntry(id);
+      const minzoom = 'minzoom' in layer ? layer.minzoom : undefined;
+      expect(
+        typeof minzoom,
+        `La capa ${id} debe declarar un minzoom numérico explícito`,
+      ).toBe('number');
+      return minzoom as number;
+    };
+
+    const styleSpecModuleId = '@maplibre/maplibre-gl-style-spec';
+    const { expression, latest } = (await import(
+      /* @vite-ignore */ styleSpecModuleId
+    )) as {
+      expression: {
+        createPropertyExpression: (
+          expr: unknown,
+          rootKey: string,
+          propertySpec: unknown,
+        ) => {
+          result: string;
+          value: {
+            evaluate: (
+              globals: { zoom: number },
+              feature: {
+                type: number;
+                properties: Record<string, unknown>;
+              },
+            ) => unknown;
+          };
+        };
+        normalizePropertyExpression: (
+          value: unknown,
+          rootKey: string,
+          propertySpec: unknown,
+        ) => {
+          evaluate: (
+            globals: { zoom: number },
+            feature: {
+              type: number;
+              properties: Record<string, unknown>;
+            },
+          ) => unknown;
+        };
+      };
+      latest: {
+        paint_line: Record<string, unknown>;
+        layout_symbol: Record<string, unknown>;
+      };
+    };
+
+    // 1. Descompresión viaria estrictamente monótona sin mesetas (0 %) ni explosiones (> 1.75×) en z12..z18
+    const roadFillIds = [
+      'osm-carto-road-minor-fill',
+      'osm-carto-road-tertiary-fill',
+      'osm-carto-road-secondary-fill',
+      'osm-carto-road-primary-fill',
+      'osm-carto-road-motorway-fill',
+    ] as const;
+    const integerZooms = [12, 13, 14, 15, 16, 17, 18] as const;
+    const widthsByLayer = new Map<string, Map<number, number>>();
+
+    for (const roadId of roadFillIds) {
+      const { layer, index } = getLayerEntry(roadId);
+      expect(layer.type).toBe('line');
+      if (layer.type !== 'line') {
+        throw new Error(`${roadId} debe ser de tipo line`);
+      }
+
+      const compiledWidth = expression.createPropertyExpression(
+        layer.paint?.['line-width'],
+        `layers[${index}].paint.line-width`,
+        latest.paint_line['line-width'],
+      );
+      expect(
+        compiledWidth.result,
+        `Expresión line-width inválida en ${roadId}`,
+      ).toBe('success');
+
+      const zoomWidths = new Map<number, number>();
+      for (const zoom of integerZooms) {
+        const evaluated = compiledWidth.value.evaluate(
+          { zoom },
+          { type: 2, properties: { ramp: 0 } },
+        );
+        expect(typeof evaluated).toBe('number');
+        const numericWidth = evaluated as number;
+        expect(Number.isFinite(numericWidth)).toBe(true);
+        expect(numericWidth).toBeGreaterThan(0);
+        zoomWidths.set(zoom, numericWidth);
+      }
+      widthsByLayer.set(roadId, zoomWidths);
+
+      for (const z of [12, 13, 14, 15, 16, 17] as const) {
+        const wCurr = zoomWidths.get(z) ?? 0;
+        const wNext = zoomWidths.get(z + 1) ?? 0;
+        expect(
+          wNext,
+          `${roadId} debe crecer estrictamente en z${z}->z${z + 1} (${wCurr} -> ${wNext})`,
+        ).toBeGreaterThan(wCurr);
+
+        const ratio = wNext / wCurr;
+        expect(
+          ratio,
+          `${roadId} sin meseta plana en z${z}->z${z + 1} (${wCurr} -> ${wNext}, ratio=${ratio.toFixed(4)})`,
+        ).toBeGreaterThanOrEqual(1.18);
+        expect(
+          ratio,
+          `${roadId} sin salto brusco >1.75× en z${z}->z${z + 1} (${wCurr} -> ${wNext}, ratio=${ratio.toFixed(4)})`,
+        ).toBeLessThanOrEqual(1.75);
+      }
+    }
+
+    const minorWidths = widthsByLayer.get('osm-carto-road-minor-fill');
+    expect(minorWidths?.get(12)).toBeGreaterThanOrEqual(1.0);
+    expect(minorWidths?.get(14)).toBeGreaterThanOrEqual(3.0);
+
+    // 2. Bordes tempranos (casing) y calles urbanas blancas nítidas desde z12
+    expect(getLayerMinzoom('osm-carto-road-minor-casing')).toBeLessThanOrEqual(
+      12,
+    );
+    expect(
+      getLayerMinzoom('osm-carto-road-service-casing'),
+    ).toBeLessThanOrEqual(13);
+
+    const { layer: minorFillLayer, index: minorFillIdx } = getLayerEntry(
+      'osm-carto-road-minor-fill',
+    );
+    if (minorFillLayer.type !== 'line') {
+      throw new Error('osm-carto-road-minor-fill debe ser de tipo line');
+    }
+    const normalizedMinorColor = expression.normalizePropertyExpression(
+      minorFillLayer.paint?.['line-color'],
+      `layers[${minorFillIdx}].paint.line-color`,
+      latest.paint_line['line-color'],
+    );
+    const minorColorAtZ12 = normalizedMinorColor.evaluate(
+      { zoom: 12 },
+      { type: 2, properties: { class: 'minor', subclass: 'residential' } },
+    ) as { r: number; g: number; b: number; a: number; rgb: number[] };
+    expect(minorColorAtZ12.rgb).toEqual([1, 1, 1, 1]);
+
+    expect(
+      getLayerMinzoom('osm-carto-road-motorway-casing'),
+    ).toBeLessThanOrEqual(8);
+    expect(
+      getLayerMinzoom('osm-carto-road-primary-casing'),
+    ).toBeLessThanOrEqual(8.5);
+    expect(
+      getLayerMinzoom('osm-carto-road-secondary-casing'),
+    ).toBeLessThanOrEqual(9.5);
+    expect(
+      getLayerMinzoom('osm-carto-road-tertiary-casing'),
+    ).toBeLessThanOrEqual(10.5);
+
+    // 3. Continuidad de red en puentes y túneles por debajo de z12
+    expect(
+      getLayerMinzoom('osm-carto-bridge-motorway-fill'),
+    ).toBeLessThanOrEqual(5);
+    expect(
+      getLayerMinzoom('osm-carto-tunnel-motorway-fill'),
+    ).toBeLessThanOrEqual(5);
+    expect(
+      getLayerMinzoom('osm-carto-bridge-primary-fill'),
+    ).toBeLessThanOrEqual(7);
+    expect(
+      getLayerMinzoom('osm-carto-tunnel-primary-fill'),
+    ).toBeLessThanOrEqual(7);
+    expect(
+      getLayerMinzoom('osm-carto-bridge-secondary-fill'),
+    ).toBeLessThanOrEqual(9);
+    expect(
+      getLayerMinzoom('osm-carto-tunnel-secondary-fill'),
+    ).toBeLessThanOrEqual(9);
+    expect(
+      getLayerMinzoom('osm-carto-bridge-tertiary-fill'),
+    ).toBeLessThanOrEqual(10);
+    expect(
+      getLayerMinzoom('osm-carto-tunnel-tertiary-fill'),
+    ).toBeLessThanOrEqual(10);
+    expect(getLayerMinzoom('osm-carto-bridge-rail')).toBeLessThanOrEqual(8);
+    expect(getLayerMinzoom('osm-carto-tunnel-rail')).toBeLessThanOrEqual(8);
+
+    // 4. Contornos de edificios tempranos y etiquetas/escudos/lugares/POIs descomprimidos
+    expect(getLayerMinzoom('osm-carto-building-outline')).toBeLessThanOrEqual(
+      14,
+    );
+    expect(getLayerMinzoom('osm-carto-road-label-major')).toBeLessThanOrEqual(
+      12,
+    );
+    expect(getLayerMinzoom('osm-carto-road-label-minor')).toBeLessThanOrEqual(
+      13.5,
+    );
+    expect(getLayerMinzoom('osm-carto-road-label-path')).toBeLessThanOrEqual(
+      14.5,
+    );
+
+    expect(getLayerMinzoom('osm-carto-road-shield')).toBeLessThanOrEqual(8.5);
+    const { layer: shieldLayer, index: shieldIdx } = getLayerEntry(
+      'osm-carto-road-shield',
+    );
+    if (shieldLayer.type !== 'symbol') {
+      throw new Error('osm-carto-road-shield debe ser de tipo symbol');
+    }
+    const normalizedShieldSpacing = expression.normalizePropertyExpression(
+      shieldLayer.layout?.['symbol-spacing'],
+      `layers[${shieldIdx}].layout.symbol-spacing`,
+      latest.layout_symbol['symbol-spacing'],
+    );
+    for (const z of [9, 12, 15] as const) {
+      const shieldSpacingAtZoom = normalizedShieldSpacing.evaluate(
+        { zoom: z },
+        { type: 2, properties: { class: 'motorway', ref: 'A-1', ref_length: 3 } },
+      ) as number;
+      expect(shieldSpacingAtZoom).toBeGreaterThan(0);
+      expect(shieldSpacingAtZoom).toBeLessThanOrEqual(300);
+    }
+
+    expect(getLayerMinzoom('osm-carto-place-village')).toBeLessThanOrEqual(9.5);
+    expect(getLayerMinzoom('osm-carto-place-suburb')).toBeLessThanOrEqual(10);
+    expect(getLayerMinzoom('osm-carto-place-other')).toBeLessThanOrEqual(11);
+    expect(getLayerMinzoom('osm-carto-place-city')).toBeLessThanOrEqual(7.5);
+    expect(getLayerMinzoom('osm-carto-place-capital')).toBeLessThanOrEqual(7.5);
+
+    expect(getLayerMinzoom('osm-carto-poi-major')).toBeLessThanOrEqual(13.5);
+    expect(getLayerMinzoom('osm-carto-poi-detail')).toBeLessThanOrEqual(15);
+    expect(getLayerMinzoom('osm-carto-housenumber')).toBeLessThanOrEqual(15.5);
+    expect(getLayerMinzoom('osm-carto-road-oneway')).toBeLessThanOrEqual(15);
+  });
 });
+
