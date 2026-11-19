@@ -3,13 +3,13 @@ name: Actualizar Censo Infoantenas y Desplegar en GitHub Pages
 on:
   schedule:
     # Ventanas escalonadas fuera de minutos punta (:00/:30) para garantizar el escaneo
-    # diario de las 18:00 hora peninsular española (Europe/Madrid: 17:xx UTC en CET / 16:xx UTC en CEST)
+    # diario de las 00:05 hora peninsular española (Europe/Madrid: 23:05 UTC en CET / 22:05 UTC en CEST)
     # con recuperación automática idempotente si GitHub Actions retrasa o descarta un turno puntual:
-    - cron: '3 16,17 * * *'
-    - cron: '23 16,17 * * *'
-    - cron: '43 16,17 * * *'
-    - cron: '13 18 * * *'
-    - cron: '37 19 * * *'
+    - cron: '5 22,23 * * *'
+    - cron: '23 22,23 * * *'
+    - cron: '43 22,23 * * *'
+    - cron: '13 0 * * *'
+    - cron: '37 1 * * *'
   push:
     branches:
       - main
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   check-trigger:
-    name: Evaluar Ventana Horaria (18:00 España) y Modo de Escaneo
+    name: Evaluar Ventana Horaria (00:05 España) y Modo de Escaneo
     runs-on: ubuntu-latest
     outputs:
       should_scan: ${{ steps.decide.outputs.should_scan }}
@@ -193,7 +193,7 @@ jobs:
               echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
               break
             fi
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 1/2)"
+            git commit -m "chore(data): escaneo Infoantenas 00:05 (parte 1/2)"
             if git push origin HEAD:main; then
               break
             fi
@@ -353,7 +353,7 @@ jobs:
               echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
               break
             fi
-            git commit -m "chore(data): escaneo Infoantenas 18:00 (parte 2/2)"
+            git commit -m "chore(data): escaneo Infoantenas 00:05 (parte 2/2)"
             if git push origin HEAD:main; then
               break
             fi

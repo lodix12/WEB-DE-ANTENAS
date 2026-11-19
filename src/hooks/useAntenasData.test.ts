@@ -1289,7 +1289,7 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
     expect(baselineHtml).toContain('id="novedades-date-filter"');
     expect(baselineHtml).toContain('id="novedades-ccaa-filter"');
     expect(baselineHtml).toContain('id="novedades-province-filter"');
-    expect(baselineHtml).toContain('18:00 h');
+    expect(baselineHtml).toContain('00:05 h');
 
     const populatedHtml = await renderNovedadesWithDataset(
       createSampleNovedadesDataset(),
@@ -1349,7 +1349,7 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
       '<span class="metric-label">Frecuencias nuevas</span>',
     );
 
-    // Escaneo diario 18:00 activo (schedule) mostrando porcentaje en vivo
+    // Escaneo diario 00:05 activo (schedule) mostrando porcentaje en vivo
     const dailyScanHtml = await renderNovedadesWithDataset(
       createSampleNovedadesDataset(),
       {
@@ -1370,7 +1370,7 @@ describe('Novedades: parseCustomNovedadesJson, formatScanDateTimeDmyHms, filtrad
         percent: 68.12,
       },
     );
-    expect(dailyScanHtml).toContain('Diario · 18:00');
+    expect(dailyScanHtml).toContain('Diario · 00:05');
     expect(dailyScanHtml).toMatch(/68,12\s*%/);
     expect(dailyScanHtml).toContain('Parte 3/4');
 
@@ -4840,26 +4840,34 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
     expect(idlePoll?.state).toBe('completed');
   });
 
-  it('ignora comprobaciones fugaces de schedule antes de las 18:00 o tras completar hoy y no oculta un escaneo activo debajo de un schedule omitido (<60s)', async () => {
-    // 16:03 UTC en invierno (17:03 CET) -> siempre se ignora un schedule de invierno previo a las 18:00
+  it('ignora comprobaciones fugaces de schedule antes de las 00:05 o tras completar hoy y no oculta un escaneo activo debajo de un schedule omitido (<60s)', async () => {
+    // 22:05 UTC en invierno (23:05 CET del día anterior) -> siempre se ignora un schedule de invierno previo a medianoche
     expect(
       shouldIgnoreScheduleWorkflowRun(
-        Date.parse('2026-11-16T16:03:10Z'),
+        Date.parse('2026-11-16T22:05:10Z'),
         null,
       ),
     ).toBe(true);
 
-    // 17:03 UTC en invierno (18:03 CET) sin escaneo de hoy >= 18:00 -> NO se ignora (es el escaneo diario real)
-    const before18Doc: ScanStatusPayload = {
+    // 23:03 UTC en invierno (00:03 CET, antes de las 00:05) -> también se ignora
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-11-16T23:03:10Z'),
+        null,
+      ),
+    ).toBe(true);
+
+    // 23:05 UTC en invierno (00:05 CET del 17/11) sin escaneo de hoy >= 00:05 -> NO se ignora (es el escaneo diario real)
+    const before0005Doc: ScanStatusPayload = {
       schemaVersion: 2,
       state: 'completed',
-      scanId: 'manual-afternoon',
+      scanId: 'manual-previous-evening',
       trigger: 'workflow_dispatch',
       recordNovedades: true,
       part: '1/2',
       phase: 'frecuencias',
-      startedAt: '2026-11-16T15:38:51Z',
-      updatedAt: '2026-11-16T15:54:40Z',
+      startedAt: '2026-11-16T22:38:51Z',
+      updatedAt: '2026-11-16T22:54:40Z',
       censusBoxesVisited: 239,
       estimatedCensusBoxes: 239,
       discoveredAntennas: 62238,
@@ -4869,23 +4877,45 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
     };
     expect(
       shouldIgnoreScheduleWorkflowRun(
-        Date.parse('2026-11-16T17:03:10Z'),
-        before18Doc,
+        Date.parse('2026-11-16T23:05:10Z'),
+        before0005Doc,
       ),
     ).toBe(false);
 
-    // 17:43 UTC (18:43 CET) cuando el escaneo de las 17:03 UTC (18:03 CET) YA completó -> se ignora respaldo
-    const done18Doc: ScanStatusPayload = {
-      ...before18Doc,
-      scanId: 'daily-1803',
+    // 23:43 UTC (00:43 CET del 17/11) cuando el escaneo de las 23:05 UTC (00:05 CET) YA completó -> se ignora respaldo
+    const done0005Doc: ScanStatusPayload = {
+      ...before0005Doc,
+      scanId: 'daily-0005',
       trigger: 'schedule',
-      startedAt: '2026-11-16T17:03:05Z',
-      updatedAt: '2026-11-16T17:20:00Z',
+      startedAt: '2026-11-16T23:05:05Z',
+      updatedAt: '2026-11-16T23:20:00Z',
     };
     expect(
       shouldIgnoreScheduleWorkflowRun(
-        Date.parse('2026-11-16T17:43:10Z'),
-        done18Doc,
+        Date.parse('2026-11-16T23:43:10Z'),
+        done0005Doc,
+      ),
+    ).toBe(true);
+
+    // Verano CEST (UTC+2): 22:05 UTC = 00:05 CEST del 15/07 -> NO se ignora si no hay escaneo hoy
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-07-14T22:05:10Z'),
+        null,
+      ),
+    ).toBe(false);
+
+    // Verano CEST: 23:23 UTC (01:23 CEST) cuando el de las 22:05 UTC (00:05 CEST) YA completó -> se ignora respaldo
+    const doneSummer0005Doc: ScanStatusPayload = {
+      ...done0005Doc,
+      scanId: 'daily-summer-0005',
+      startedAt: '2026-07-14T22:05:05Z',
+      updatedAt: '2026-07-14T22:22:00Z',
+    };
+    expect(
+      shouldIgnoreScheduleWorkflowRun(
+        Date.parse('2026-07-14T23:23:10Z'),
+        doneSummer0005Doc,
       ),
     ).toBe(true);
 
@@ -4902,7 +4932,7 @@ describe('Control circular discreto en esquina inferior de NovedadesView y trigg
         });
       }
       if (url.includes('/sha-old/scan-status.json')) {
-        return new Response(JSON.stringify(before18Doc), {
+        return new Response(JSON.stringify(before0005Doc), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });

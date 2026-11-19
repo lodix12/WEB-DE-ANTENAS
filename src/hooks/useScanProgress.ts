@@ -1197,45 +1197,70 @@ const MADRID_PARTS_FORMATTER = new Intl.DateTimeFormat('en-CA', {
   month: '2-digit',
   day: '2-digit',
   hour: '2-digit',
+  minute: '2-digit',
   hourCycle: 'h23',
 });
 
-function getMadridDateAndHour(
+const DAILY_SCAN_MADRID_HOUR = 0;
+const DAILY_SCAN_MADRID_MINUTE = 5;
+
+function getMadridDateAndTime(
   epochMs: number,
-): { dateKey: string; hour: number } | null {
+): { dateKey: string; hour: number; minute: number } | null {
   if (!Number.isFinite(epochMs)) return null;
   const parts = MADRID_PARTS_FORMATTER.formatToParts(new Date(epochMs));
   let year = '';
   let month = '';
   let day = '';
   let hourStr = '';
+  let minuteStr = '';
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (p.type === 'year') year = p.value;
     else if (p.type === 'month') month = p.value;
     else if (p.type === 'day') day = p.value;
     else if (p.type === 'hour') hourStr = p.value;
+    else if (p.type === 'minute') minuteStr = p.value;
   }
   const hour = Number.parseInt(hourStr, 10);
-  if (!year || !month || !day || !Number.isFinite(hour)) return null;
-  return { dateKey: `${year}-${month}-${day}`, hour: hour === 24 ? 0 : hour };
+  const minute = Number.parseInt(minuteStr, 10);
+  if (!year || !month || !day || !Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return null;
+  }
+  return {
+    dateKey: `${year}-${month}-${day}`,
+    hour: hour === 24 ? 0 : hour,
+    minute,
+  };
+}
+
+function isInDailyScanWindow(dt: { hour: number; minute: number }): boolean {
+  if (dt.hour === 23) return false;
+  if (
+    dt.hour === DAILY_SCAN_MADRID_HOUR &&
+    dt.minute < DAILY_SCAN_MADRID_MINUTE
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
  * Determina si un disparo `schedule` fugaz de GitHub Actions corresponde a una
  * comprobación de puerta horaria que se autodescartará (`check-trigger` -> `should_scan=false`),
  * evitando parpadeos sintéticos en el monitor de Novedades:
- * 1) Antes de las 18:00 en `Europe/Madrid` (turnos `16:xx UTC` en horario de invierno CET).
- * 2) Cuando `scan-status.json` ya acredita un escaneo válido hoy a partir de las 18:00 `Europe/Madrid`
+ * 1) Fuera de la ventana diaria `00:05–22:59` en `Europe/Madrid` (turnos `22:xx UTC` en horario
+ *    de invierno CET = `23:xx`, o disparos entre `00:00` y `00:04`).
+ * 2) Cuando `scan-status.json` ya acredita un escaneo válido hoy a partir de las 00:05 `Europe/Madrid`
  *    (turnos de respaldo posteriores del mismo día).
  */
 export function shouldIgnoreScheduleWorkflowRun(
   nowMs: number,
   knownPayload: ScanStatusPayload | null,
 ): boolean {
-  const nowMadrid = getMadridDateAndHour(nowMs);
+  const nowMadrid = getMadridDateAndTime(nowMs);
   if (!nowMadrid) return false;
-  if (nowMadrid.hour < 18) {
+  if (!isInDailyScanWindow(nowMadrid)) {
     return true;
   }
   if (
@@ -1246,13 +1271,13 @@ export function shouldIgnoreScheduleWorkflowRun(
       knownPayload.state === 'handoff') &&
     knownPayload.startedAt
   ) {
-    const startedMadrid = getMadridDateAndHour(
+    const startedMadrid = getMadridDateAndTime(
       Date.parse(knownPayload.startedAt),
     );
     if (
       startedMadrid &&
       startedMadrid.dateKey === nowMadrid.dateKey &&
-      startedMadrid.hour >= 18
+      isInDailyScanWindow(startedMadrid)
     ) {
       return true;
     }

@@ -1,6 +1,6 @@
 # RadioMapa España · Mapa y Censo de Antenas de Redes Móviles
 
-Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos para consultar las estaciones base de telefonía móvil registradas en toda España (**Movistar**, **Orange / MasOrange**, **Vodafone**, **Yoigo / Grupo MásMóvil**, **DIGI** y operadores regionales), sincronizada automáticamente todos los días a las **18:00 (`Europe/Madrid`)** con la fuente oficial **Infoantenas** del Ministerio para la Transformación Digital y de la Función Pública (MINETUR).
+Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos para consultar las estaciones base de telefonía móvil registradas en toda España (**Movistar**, **Orange / MasOrange**, **Vodafone**, **Yoigo / Grupo MásMóvil**, **DIGI** y operadores regionales), sincronizada automáticamente todos los días a las **00:05 (`Europe/Madrid`)** con la fuente oficial **Infoantenas** del Ministerio para la Transformación Digital y de la Función Pública (MINETUR).
 
 ---
 
@@ -17,7 +17,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 - **Filtrado Avanzado y Exportación Abierta**:
   - Filtros en cascada por provincia y municipio, filtrado por operador y banda de frecuencia (MHz), búsqueda por coordenadas/dirección/`Gis_ID` y exportación directa en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y opción secundaria SIG (`GeoJSON` para QGIS/ArcGIS).
 - **Sección de Novedades (`#/novedades`)**:
-  - Incluye en su cabecera un **monitor en tiempo real del porcentaje de antenas escaneadas** (activo tanto durante el escaneo diario de las 18:00 como en cualquier escaneo manual forzado, mediante telemetría publicada en `scan-status`) junto a las casillas de **Antenas nuevas**, **Frecuencias nuevas** y **Último escaneo**.
+  - Incluye en su cabecera un **monitor en tiempo real del porcentaje de antenas escaneadas** (activo tanto durante el escaneo diario de las 00:05 como en cualquier escaneo manual forzado, mediante telemetría publicada en `scan-status`) junto a las casillas de **Antenas nuevas**, **Frecuencias nuevas** y **Último escaneo**.
   - Tabla única con las antenas nuevas y las frecuencias/concesiones nuevas detectadas respecto al escaneo anterior (`public/data/novedades.json`), donde cada fila lleva como fondo el color oficial de su operadora con un **50 % de transparencia**, acompañada de filtros por **Operadora**, tipo de novedad, banda/frecuencia, ubicación, fecha de escaneo y búsqueda libre, y las 6 columnas exactas:
     - **Novedad**: indica si es una **antena nueva** o una **frecuencia nueva** junto con el operador asociado.
     - **Código**: código `Gis_ID` de la estación con enlace directo para abrir y centrar esa antena en el mapa de la web.
@@ -39,7 +39,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `data/antenas.json` y `data/novedades.json` (con validación de esquema propio), caché en memoria e índices `O(1)` |
 | **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina | 6 estilos cartográficos libres: **OSM Retina** (teselas oficiales de OpenStreetMap en modo Retina 4× con `tileSize: 64`) y estilos vectoriales OpenFreeMap (**Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**), renderizado WebGL en GPU desde el JSON propio |
 | **Pipeline y Motor Diff** | Python 3.12 (`scripts/fetch_antenas.py`) | Barrido *quadtree*, re-escaneo de concesiones RF y cálculo diferencial de altas en `public/data/antenas.json` y `public/data/novedades.json` |
-| **CI/CD y Hosting** | GitHub Actions + GitHub Pages | Escaneo diario automático a las **18:00 (`Europe/Madrid`)** en 4 tramos encadenados y despliegue estático |
+| **CI/CD y Hosting** | GitHub Actions + GitHub Pages | Escaneo diario automático a las **00:05 (`Europe/Madrid`)** en tramos encadenados y despliegue estático |
 
 ---
 
@@ -47,7 +47,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 
 **El frontend estático carga únicamente nuestros archivos JSON propios (`data/antenas.json` y `data/novedades.json`)** y jamás realiza peticiones al endpoint GeoJSON de MINETUR desde el navegador del usuario (rechazando explícitamente cualquier `FeatureCollection` cruda en tiempo de validación).
 
-Para construir y mantener al día `public/data/antenas.json` y `public/data/novedades.json`, el recolector diario `scripts/fetch_antenas.py` (ejecutado en GitHub Actions todos los días a las **18:00 hora española**) consulta por lotes las celdas del Geoportal oficial salvando su límite de `1.000` registros por caja delimitadora (`bbox`):
+Para construir y mantener al día `public/data/antenas.json` y `public/data/novedades.json`, el recolector diario `scripts/fetch_antenas.py` (ejecutado en GitHub Actions todos los días a las **00:05 hora española**) consulta por lotes las celdas del Geoportal oficial salvando su límite de `1.000` registros por caja delimitadora (`bbox`):
 
 1. **Malla Territorial Completa**: Recorre de noroeste (NO) a sureste (SE) la Península Ibérica, Islas Baleares, Islas Canarias, Ceuta y Melilla.
 2. **Subdivisión Adaptativa Quadtree**: Cuando una celda alcanza el tope de `1.000` registros (áreas metropolitanas densas), el script la subdivide recursivamente en 4 cuadrantes con un solape de seguridad de `0.0001°`.
@@ -189,7 +189,7 @@ npm run preview
 
 ---
 
-## Activación de GitHub Pages y Escaneo Automático Diario a las 18:00 (`Europe/Madrid`)
+## Activación de GitHub Pages y Escaneo Automático Diario a las 00:05 (`Europe/Madrid`)
 
 El flujo `.github/workflows/update-and-deploy.yml` coordina el escaneo nacional diario y el despliegue estático mediante los grupos de concurrencia `'infoantenas-crawl-worker'` y `'pages-update-and-deploy'`:
 
@@ -203,7 +203,7 @@ El flujo `.github/workflows/update-and-deploy.yml` coordina el escaneo nacional 
      gh workflow run update-and-deploy.yml -f refresh_data=true -f record_novedades=false
      ```
 5. Funcionamiento automático diario:
-   - **Disparo horario exacto a las 18:00 hora española (`Europe/Madrid`)**: el cron `'0 16,17 * * *'` junto al filtro `TZ=Europe/Madrid date +%H == 18` garantiza que el escaneo arranque siempre a las **18:00** tanto en horario de invierno (`CET`, `UTC+1`) como en horario de verano (`CEST`, `UTC+2`).
+   - **Disparo horario exacto a las 00:05 hora española (`Europe/Madrid`)**: los cron escalonados (`'5 22,23 * * *'`, `'23 22,23 * * *'`, `'43 22,23 * * *'`, `'13 0 * * *'`, `'37 1 * * *'`) junto al evaluador idempotente `scripts/evaluate_schedule_gate.py` garantizan que el escaneo arranque siempre a las **00:05** tanto en horario de invierno (`CET`, `UTC+1` → `23:05 UTC`) como en horario de verano (`CEST`, `UTC+2` → `22:05 UTC`), descartando automáticamente los turnos previos (`23:xx CET` / `00:00–00:04`) y recuperando cualquier retraso o fallo puntual de GitHub Actions sin duplicar el ciclo diario.
    - **Escaneo encadenado en 4 tramos (`scan-part-1` → `scan-part-4`)**: dado que consultar todos los emplazamientos de España respetando `>= 1.0 s/req` requiere ~17 horas y cada *job* de GitHub Actions tiene un límite de 6 h, el flujo encadena automáticamente hasta 4 tramos (`17.400 s` + `3 × 18.600 s` = `73.200 s` de presupuesto), confirmando checkpoints en `main`, acumulando las altas en `public/data/novedades.json` (`reset` en el tramo 1 y `append` en los tramos 2–4) y desplegando finalmente la aplicación actualizada en GitHub Pages.
    - Cualquier `push` a `main` recompilará y desplegará la interfaz al instante sin repetir el barrido de datos.
 

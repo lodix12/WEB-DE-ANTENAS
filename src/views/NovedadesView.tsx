@@ -758,7 +758,7 @@ export function NovedadesView() {
               <span>
                 {scanProgress.isScanning
                   ? scanProgress.trigger === 'schedule'
-                    ? 'Diario · 18:00'
+                    ? 'Diario · 00:05'
                     : 'Forzado'
                   : 'En espera'}
               </span>
@@ -815,11 +815,11 @@ export function NovedadesView() {
                   }`
               : scanProgress.status?.state === 'completed'
                 ? scanProgress.status.trigger === 'schedule'
-                  ? 'Último escaneo completado (100 %) · Diario 18:00 h'
+                  ? 'Último escaneo completado (100 %) · Diario 00:05 h'
                   : 'Último escaneo forzado completado (100 %)'
                 : scanProgress.status?.state === 'stopped'
                   ? 'Último escaneo interrumpido · Listo para reintentar'
-                  : 'Se activa durante el escaneo diario (18:00) o forzado'}
+                  : 'Se activa durante el escaneo diario (00:05) o forzado'}
           </span>
         </div>
 
@@ -844,7 +844,7 @@ export function NovedadesView() {
           </span>
           <span className="metric-sub">
             {dataset.isBaselineScan
-              ? 'Línea base inicial · Próximo ciclo diario 18:00 h'
+              ? 'Línea base inicial · Próximo ciclo diario 00:05 h'
               : 'Día/Mes/Año y hora exacta (Europe/Madrid)'}
           </span>
         </div>
@@ -1337,7 +1337,7 @@ export function NovedadesView() {
                               novedades. Las nuevas antenas y concesiones de
                               frecuencia se irán añadiendo de forma permanente a
                               esta tabla tras cada escaneo diario de las{' '}
-                              <strong>18:00 h</strong> o forzado.
+                              <strong>00:05 h</strong> o forzado.
                             </>
                           ) : (
                             <>
@@ -1347,7 +1347,7 @@ export function NovedadesView() {
                               <span className="mono">{lastScanFormatted}</span>.
                               Las novedades que se detecten quedarán guardadas de
                               forma permanente tras cada escaneo automático de las{' '}
-                              <strong>18:00 h</strong>.
+                              <strong>00:05 h</strong>.
                             </>
                           )}
                         </p>

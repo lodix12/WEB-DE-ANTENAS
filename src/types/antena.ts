@@ -159,7 +159,7 @@ export interface ScanStatusPayload {
   state: ScanLifecycleState;
   /** Identificador de ejecución de GitHub Actions (run_id) */
   scanId: string;
-  /** Origen del disparo: 'schedule' (diario 18:00) o 'workflow_dispatch' (forzado manual) */
+  /** Origen del disparo: 'schedule' (diario 00:05) o 'workflow_dispatch' (forzado manual) */
   trigger: string;
   /** Si el escaneo registra novedades (false en escaneos forzados de línea base) */
   recordNovedades: boolean;

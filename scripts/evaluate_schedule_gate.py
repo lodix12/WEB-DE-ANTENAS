@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Evalúa de forma idempotente si un disparo `schedule` debe iniciar el escaneo diario de las 18:00 (Europe/Madrid).
+"""Evalúa de forma idempotente si un disparo `schedule` debe iniciar el escaneo diario de las 00:05 (Europe/Madrid).
 
 Diseñado para soportar múltiples ventanas cron escalonadas fuera de minutos punta (:00/:30)
 en GitHub Actions sin duplicar nunca el escaneo diario:
-1. Antes de las 18:00 en `Europe/Madrid` (ej. 16:xx UTC en horario de invierno CET = 17:xx),
-   devuelve `should_scan=false`.
-2. A partir de las 18:00 en `Europe/Madrid` (18:00–23:59 del mismo día local), comprueba tanto
+1. Antes de las 00:05 en `Europe/Madrid` (turnos `22:xx UTC` en horario de invierno CET = `23:xx`
+   del día anterior, o cualquier disparo entre `00:00` y `00:04`), devuelve `should_scan=false`.
+2. A partir de las 00:05 en `Europe/Madrid` (`00:05–22:59` del mismo día local), comprueba tanto
    la rama `scan-status` (`scan-status.json`) como las ejecuciones recientes del workflow en
-   GitHub Actions desde el corte de las 18:00:00 `Europe/Madrid` de hoy:
-   - Si ya existe un escaneo válido completado o actualmente en ejecución desde las 18:00 de hoy,
+   GitHub Actions desde el corte de las 00:05:00 `Europe/Madrid` de hoy:
+   - Si ya existe un escaneo válido completado o actualmente en ejecución desde las 00:05 de hoy,
      devuelve `should_scan=false`.
-   - En caso contrario (primer disparo tras las 18:00, o recuperación automática si GitHub descartó
+   - En caso contrario (primer disparo tras las 00:05, o recuperación automática si GitHub descartó
      el turno anterior o falló una ejecución previa), devuelve `should_scan=true`.
 """
 
@@ -29,6 +29,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 MADRID_TZ = ZoneInfo("Europe/Madrid")
+TARGET_MADRID_HOUR = 0
+TARGET_MADRID_MINUTE = 5
+TARGET_MADRID_LABEL = f"{TARGET_MADRID_HOUR:02d}:{TARGET_MADRID_MINUTE:02d}"
 DEFAULT_WORKFLOW_FILE = "update-and-deploy.yml"
 STALE_RUNNING_SECONDS = 900  # 15 min sin latido se considera detenido/huérfano
 MAX_QUEUED_AGE_SECONDS = 900  # 15 min atascado en queued sin arrancar
@@ -52,15 +55,34 @@ def parse_iso_utc(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def compute_madrid_18h_cutoff_utc(now_utc: datetime) -> tuple[datetime, datetime]:
-    """Devuelve `(now_madrid, cutoff_18h_utc)` para la fecha actual en `Europe/Madrid`."""
+def is_in_daily_scan_window(now_madrid: datetime) -> bool:
+    """Devuelve `True` si la hora en `Europe/Madrid` cae dentro del ciclo diario (`00:05–22:59`).
+
+    Se descartan siempre las `23:00–23:59` (turnos `22:xx UTC` en invierno CET pensados para
+    `00:xx CEST` en verano) y el tramo `00:00–00:04` previo al corte de las `00:05`.
+    """
+    if now_madrid.hour == 23:
+        return False
+    if now_madrid.hour == TARGET_MADRID_HOUR and now_madrid.minute < TARGET_MADRID_MINUTE:
+        return False
+    return True
+
+
+def compute_madrid_cutoff_utc(now_utc: datetime) -> tuple[datetime, datetime]:
+    """Devuelve `(now_madrid, cutoff_utc)` para las 00:05 de la fecha actual en `Europe/Madrid`."""
     aware_utc = (
         now_utc.replace(tzinfo=timezone.utc)
         if now_utc.tzinfo is None
         else now_utc.astimezone(timezone.utc)
     )
     now_madrid = aware_utc.astimezone(MADRID_TZ)
-    cutoff_madrid = now_madrid.replace(hour=18, minute=0, second=0, microsecond=0)
+    cutoff_madrid = now_madrid.replace(
+        hour=TARGET_MADRID_HOUR,
+        minute=TARGET_MADRID_MINUTE,
+        second=0,
+        microsecond=0,
+        fold=0,
+    )
     return now_madrid, cutoff_madrid.astimezone(timezone.utc)
 
 
@@ -72,7 +94,7 @@ def decide_schedule_action(
     recent_runs_with_jobs: list[tuple[dict[str, Any], list[dict[str, Any]]]],
 ) -> tuple[bool, str]:
     """Determina de forma pura `(should_scan, motivo)` para un evento `schedule`."""
-    now_madrid, cutoff_utc = compute_madrid_18h_cutoff_utc(now_utc)
+    now_madrid, cutoff_utc = compute_madrid_cutoff_utc(now_utc)
     aware_now_utc = (
         now_utc.replace(tzinfo=timezone.utc)
         if now_utc.tzinfo is None
@@ -81,10 +103,10 @@ def decide_schedule_action(
     cutoff_iso = cutoff_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     madrid_str = now_madrid.strftime("%Y-%m-%d %H:%M:%S %Z")
 
-    if now_madrid.hour < 18:
+    if not is_in_daily_scan_window(now_madrid):
         return (
             False,
-            f"Antes de las 18:00 en Europe/Madrid ({madrid_str}); omitiendo turno UTC de invierno.",
+            f"Antes de las {TARGET_MADRID_LABEL} en Europe/Madrid ({madrid_str}); omitiendo turno UTC previo al ciclo diario.",
         )
 
     clean_run_id = current_run_id.strip()
@@ -106,7 +128,7 @@ def decide_schedule_action(
             if doc_state == "completed":
                 return (
                     False,
-                    f"Escaneo diario >= 18:00 Europe/Madrid ya completado hoy (scanId={doc_scan_id}, inicio={doc_started_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}).",
+                    f"Escaneo diario >= {TARGET_MADRID_LABEL} Europe/Madrid ya completado hoy (scanId={doc_scan_id}, inicio={doc_started_dt.strftime('%Y-%m-%dT%H:%M:%SZ')}).",
                 )
             if doc_state in ("running", "handoff"):
                 age_sec = (
@@ -117,7 +139,7 @@ def decide_schedule_action(
                 if age_sec <= STALE_RUNNING_SECONDS:
                     return (
                         False,
-                        f"Ya hay un escaneo >= 18:00 Europe/Madrid en curso (scanId={doc_scan_id}, estado={doc_state}).",
+                        f"Ya hay un escaneo >= {TARGET_MADRID_LABEL} Europe/Madrid en curso (scanId={doc_scan_id}, estado={doc_state}).",
                     )
 
     # 2) Comprobar ejecuciones recientes del workflow y el job real de escaneo (Parte 1/2)
@@ -148,24 +170,24 @@ def decide_schedule_action(
             if jstatus == "in_progress":
                 return (
                     False,
-                    f"Ya existe un job de escaneo activo desde >= 18:00 Europe/Madrid (run={rid}, status={jstatus}).",
+                    f"Ya existe un job de escaneo activo desde >= {TARGET_MADRID_LABEL} Europe/Madrid (run={rid}, status={jstatus}).",
                 )
             if jstatus in ("queued", "waiting", "pending"):
                 queued_age = (aware_now_utc - created_dt).total_seconds()
                 if queued_age <= MAX_QUEUED_AGE_SECONDS:
                     return (
                         False,
-                        f"Ya existe un job de escaneo en cola desde >= 18:00 Europe/Madrid (run={rid}, status={jstatus}).",
+                        f"Ya existe un job de escaneo en cola desde >= {TARGET_MADRID_LABEL} Europe/Madrid (run={rid}, status={jstatus}).",
                     )
             if jstatus == "completed" and jconclusion == "success":
                 return (
                     False,
-                    f"El escaneo diario >= 18:00 Europe/Madrid ya se ejecutó con éxito hoy (run={rid}).",
+                    f"El escaneo diario >= {TARGET_MADRID_LABEL} Europe/Madrid ya se ejecutó con éxito hoy (run={rid}).",
                 )
 
     return (
         True,
-        f"Activando escaneo diario de las 18:00 Europe/Madrid ({madrid_str}, corte UTC >= {cutoff_iso}).",
+        f"Activando escaneo diario de las {TARGET_MADRID_LABEL} Europe/Madrid ({madrid_str}, corte UTC >= {cutoff_iso}).",
     )
 
 
@@ -274,7 +296,7 @@ def fetch_recent_runs_with_jobs(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evalúa si el evento schedule actual debe lanzar el escaneo diario de las 18:00 Europe/Madrid."
+        description=f"Evalúa si el evento schedule actual debe lanzar el escaneo diario de las {TARGET_MADRID_LABEL} Europe/Madrid."
     )
     parser.add_argument(
         "--run-id",
@@ -316,10 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
 
-    now_madrid, cutoff_utc = compute_madrid_18h_cutoff_utc(now_utc)
+    now_madrid, cutoff_utc = compute_madrid_cutoff_utc(now_utc)
     token = os.environ.get("GITHUB_TOKEN", "").strip()
 
-    if now_madrid.hour < 18:
+    if not is_in_daily_scan_window(now_madrid):
         should_scan, reason = decide_schedule_action(
             now_utc=now_utc,
             current_run_id=args.run_id,

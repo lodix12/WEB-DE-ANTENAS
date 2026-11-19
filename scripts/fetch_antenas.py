@@ -4944,7 +4944,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--scan-trigger",
         default="",
-        help="Origen del escaneo ('schedule' para diario 18:00 o 'workflow_dispatch' para forzado).",
+        help="Origen del escaneo ('schedule' para diario 00:05 o 'workflow_dispatch' para forzado).",
     )
     parser.add_argument(
         "--scan-part",

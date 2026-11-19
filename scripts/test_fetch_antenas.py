@@ -4262,89 +4262,148 @@ class FetchAntenasUnitTests(unittest.TestCase):
 
 
 class ScheduleGateUnitTests(unittest.TestCase):
-    def test_winter_cet_skips_before_18h_and_triggers_at_1803_or_late_catchup(
+    def test_winter_cet_skips_before_0005_and_triggers_at_0005_or_late_catchup(
         self,
     ) -> None:
-        # Invierno (CET = UTC+1): 16:03 UTC son las 17:03 en España -> debe omitirse
-        should_1703, reason_1703 = esg.decide_schedule_action(
-            now_utc=datetime(2026, 11, 16, 16, 3, 15, tzinfo=timezone.utc),
+        # Invierno (CET = UTC+1): 22:05 UTC son las 23:05 del día anterior en España -> debe omitirse
+        should_2305, reason_2305 = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 22, 5, 15, tzinfo=timezone.utc),
             current_run_id="50001",
             scan_status_doc=None,
             recent_runs_with_jobs=[],
         )
-        self.assertFalse(should_1703)
-        self.assertIn("Antes de las 18:00", reason_1703)
+        self.assertFalse(should_2305)
+        self.assertIn("Antes de las 00:05", reason_2305)
 
-        # 17:03 UTC son las 18:03 CET -> debe disparar (incluso si hubo escaneo manual a las 15:38 UTC < 17:00 UTC)
-        should_1803, _ = esg.decide_schedule_action(
-            now_utc=datetime(2026, 11, 16, 17, 3, 10, tzinfo=timezone.utc),
+        # Invierno (CET = UTC+1): 23:02 UTC son las 00:02 CET (< 00:05) -> debe omitirse
+        should_0002, reason_0002 = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 23, 2, 0, tzinfo=timezone.utc),
+            current_run_id="50001b",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_0002)
+        self.assertIn("Antes de las 00:05", reason_0002)
+
+        # 23:05 UTC son las 00:05 CET del 17/11 -> debe disparar (incluso si hubo escaneo manual el 16/11 a las 22:40 UTC = 23:40 CET)
+        should_0005, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 16, 23, 5, 10, tzinfo=timezone.utc),
             current_run_id="50002",
             scan_status_doc={
                 "state": "completed",
                 "scanId": "43898601263",
                 "recordNovedades": True,
-                "startedAt": "2026-11-16T15:38:51Z",
-                "updatedAt": "2026-11-16T15:54:40Z",
+                "startedAt": "2026-11-16T22:40:00Z",
+                "updatedAt": "2026-11-16T22:55:40Z",
             },
             recent_runs_with_jobs=[],
         )
-        self.assertTrue(should_1803)
+        self.assertTrue(should_0005)
 
-        # Recuperación automática tardía: si GitHub retrasó o descartó los turnos de las 18:xx
-        # y el respaldo entra a las 18:13 UTC (19:13 CET), SÍ debe ejecutarse (antes fallaba por HOUR=="18")
-        should_1913, _ = esg.decide_schedule_action(
-            now_utc=datetime(2026, 11, 16, 18, 13, 5, tzinfo=timezone.utc),
+        # Recuperación automática tardía: si GitHub retrasó o descartó los turnos de las 00:xx
+        # y el respaldo entra a las 00:13 UTC (01:13 CET) o 01:37 UTC (02:37 CET), SÍ debe ejecutarse
+        should_0113, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 17, 0, 13, 5, tzinfo=timezone.utc),
             current_run_id="50003",
             scan_status_doc=None,
             recent_runs_with_jobs=[],
         )
-        self.assertTrue(should_1913)
+        self.assertTrue(should_0113)
 
-    def test_summer_cest_and_idempotent_deduplication_across_backup_slots(
+        should_0237, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 11, 17, 1, 37, 5, tzinfo=timezone.utc),
+            current_run_id="50004",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertTrue(should_0237)
+
+    def test_summer_cest_dst_transitions_and_idempotent_deduplication_across_backup_slots(
         self,
     ) -> None:
-        # Verano (CEST = UTC+2): 16:03 UTC son las 18:03 en España -> dispara
+        # Verano (CEST = UTC+2): 22:03 UTC son las 00:03 CEST (< 00:05) -> se omite
+        should_summer_early, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 7, 14, 22, 3, 0, tzinfo=timezone.utc),
+            current_run_id="60000",
+            scan_status_doc=None,
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_summer_early)
+
+        # Verano (CEST = UTC+2): 22:05 UTC son las 00:05 CEST del 15/07 -> dispara
         should_summer, _ = esg.decide_schedule_action(
-            now_utc=datetime(2026, 7, 15, 16, 3, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 14, 22, 5, 0, tzinfo=timezone.utc),
             current_run_id="60001",
             scan_status_doc=None,
             recent_runs_with_jobs=[],
         )
         self.assertTrue(should_summer)
 
-        # Turno de respaldo a las 17:23 UTC (19:23 CEST) cuando el de las 16:03 UTC ya completó -> se omite
+        # Turno de respaldo a las 23:23 UTC (01:23 CEST) cuando el de las 22:05 UTC ya completó -> se omite
         should_dup_status, reason_dup = esg.decide_schedule_action(
-            now_utc=datetime(2026, 7, 15, 17, 23, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 14, 23, 23, 0, tzinfo=timezone.utc),
             current_run_id="60002",
             scan_status_doc={
                 "state": "completed",
                 "scanId": "60001",
                 "recordNovedades": True,
-                "startedAt": "2026-07-15T16:03:04Z",
-                "updatedAt": "2026-07-15T16:21:10Z",
+                "startedAt": "2026-07-14T22:05:04Z",
+                "updatedAt": "2026-07-14T22:21:10Z",
             },
             recent_runs_with_jobs=[],
         )
         self.assertFalse(should_dup_status)
         self.assertIn("ya completado hoy", reason_dup)
 
-        # Si el escaneo anterior tras las 18:00 falló (state=stopped, conclusion=failure), el respaldo reintenta
+        # Cambio de hora primavera (29/03/2026): el escaneo arrancó a las 00:05 CET (28/03 23:05 UTC)
+        # y el respaldo a las 01:37 UTC (03:37 CEST) debe reconocerlo como completado hoy
+        should_dst_spring, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 3, 29, 1, 37, 0, tzinfo=timezone.utc),
+            current_run_id="61002",
+            scan_status_doc={
+                "state": "completed",
+                "scanId": "61001",
+                "recordNovedades": True,
+                "startedAt": "2026-03-28T23:05:10Z",
+                "updatedAt": "2026-03-28T23:25:00Z",
+            },
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_dst_spring)
+
+        # Cambio de hora otoño (25/10/2026): el escaneo arrancó a las 00:05 CEST (24/10 22:05 UTC)
+        # y el respaldo a las 01:37 UTC (02:37 CET, fold=1) debe reconocerlo como completado hoy
+        should_dst_autumn, _ = esg.decide_schedule_action(
+            now_utc=datetime(2026, 10, 25, 1, 37, 0, tzinfo=timezone.utc),
+            current_run_id="62002",
+            scan_status_doc={
+                "state": "completed",
+                "scanId": "62001",
+                "recordNovedades": True,
+                "startedAt": "2026-10-24T22:05:10Z",
+                "updatedAt": "2026-10-24T22:25:00Z",
+            },
+            recent_runs_with_jobs=[],
+        )
+        self.assertFalse(should_dst_autumn)
+
+        # Si el escaneo anterior tras las 00:05 falló (state=stopped, conclusion=failure), el respaldo reintenta
         should_retry, _ = esg.decide_schedule_action(
-            now_utc=datetime(2026, 11, 16, 17, 43, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 11, 16, 23, 43, 0, tzinfo=timezone.utc),
             current_run_id="70002",
             scan_status_doc={
                 "state": "stopped",
                 "scanId": "70001",
                 "recordNovedades": True,
-                "startedAt": "2026-11-16T17:03:05Z",
-                "updatedAt": "2026-11-16T17:06:00Z",
+                "startedAt": "2026-11-16T23:05:05Z",
+                "updatedAt": "2026-11-16T23:08:00Z",
             },
             recent_runs_with_jobs=[
                 (
                     {
                         "id": 70001,
                         "event": "schedule",
-                        "created_at": "2026-11-16T17:03:02Z",
+                        "created_at": "2026-11-16T23:05:02Z",
                     },
                     [
                         {
@@ -4364,6 +4423,29 @@ class ScheduleGateUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             out_file = Path(tmpdir) / "github_output.txt"
 
+            # En turno de invierno previo a medianoche (22:05 UTC = 23:05 CET), no debe ni consultar la API
+            with mock.patch.object(
+                esg,
+                "_github_api_get_json",
+                side_effect=AssertionError("No debe consultar la API fuera de la ventana 00:05–22:59"),
+            ):
+                rc_skip = esg.main(
+                    [
+                        "--run-id",
+                        "88000",
+                        "--now-utc",
+                        "2026-11-16T22:05:10Z",
+                        "--github-output",
+                        str(out_file),
+                    ]
+                )
+            self.assertEqual(rc_skip, 0)
+            written_skip = out_file.read_text(encoding="utf-8")
+            self.assertIn("should_scan=false\n", written_skip)
+            self.assertIn("record_novedades=false\n", written_skip)
+
+            out_file.unlink()
+
             def fake_api_get(url: str, _token: str, timeout: float = 10.0) -> object:
                 if "contents/scan-status.json" in url:
                     # Aún muestra el escaneo de ayer
@@ -4373,8 +4455,8 @@ class ScheduleGateUnitTests(unittest.TestCase):
                         "state": "completed",
                         "scanId": "old-yesterday",
                         "recordNovedades": True,
-                        "startedAt": "2026-11-15T17:03:00Z",
-                        "updatedAt": "2026-11-15T17:20:00Z",
+                        "startedAt": "2026-11-15T23:05:00Z",
+                        "updatedAt": "2026-11-15T23:20:00Z",
                     }
                     return {
                         "encoding": "base64",
@@ -4388,7 +4470,7 @@ class ScheduleGateUnitTests(unittest.TestCase):
                             {
                                 "id": 88001,
                                 "event": "schedule",
-                                "created_at": "2026-11-16T17:03:05Z",
+                                "created_at": "2026-11-16T23:05:05Z",
                             }
                         ]
                     }
@@ -4410,7 +4492,7 @@ class ScheduleGateUnitTests(unittest.TestCase):
                         "--run-id",
                         "88002",
                         "--now-utc",
-                        "2026-11-16T17:23:10Z",
+                        "2026-11-16T23:23:10Z",
                         "--github-output",
                         str(out_file),
                     ]
