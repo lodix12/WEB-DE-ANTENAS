@@ -1,13 +1,4 @@
 import type { StyleSpecification } from 'maplibre-gl';
-import {
-  GEOFABRIK_OSM_CARTO_REPO_URL,
-  OPENFREEMAP_GLYPHS_URL,
-  OPENFREEMAP_SPRITE_URL,
-  OPENFREEMAP_VECTOR_TILEJSON_URL,
-  OSM_CARTO_PALETTE,
-  OSM_CARTO_VECTOR_ATTRIBUTION,
-  buildOsmCartoVectorStyleSpec,
-} from '../styles/osmCartoVectorStyle';
 
 export type OperatorKey =
   | 'movistar'
@@ -350,32 +341,91 @@ export interface OpenFreeMapStyleOption {
   isDark: boolean;
 }
 
-export {
-  GEOFABRIK_OSM_CARTO_REPO_URL,
-  OPENFREEMAP_GLYPHS_URL,
-  OPENFREEMAP_SPRITE_URL,
-  OPENFREEMAP_VECTOR_TILEJSON_URL,
-  OSM_CARTO_PALETTE,
-  OSM_CARTO_VECTOR_ATTRIBUTION,
-  buildOsmCartoVectorStyleSpec,
-};
+export const OSM_RETINA_TILE_URL =
+  'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+export const OSM_STANDARD_TILE_URL = OSM_RETINA_TILE_URL;
+
+export const OSM_RETINA_TILE_SIZE = 128;
+
+export const OSM_RETINA_MAX_NATIVE_ZOOM = 19;
+
+export const OPENFREEMAP_GLYPHS_URL =
+  'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
+
+export const OSM_RETINA_ATTRIBUTION =
+  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+
+export const OSM_STANDARD_ATTRIBUTION = OSM_RETINA_ATTRIBUTION;
 
 /**
- * Alias compatible que construye la especificación vectorial MapLibre GL v8
- * de OpenStreetMap Carto basada en `geofabrik/openstreetmap-carto-vector-tiles`.
+ * Construye la especificación MapLibre GL v8 de teselas oficiales de OpenStreetMap
+ * en modo Retina 2× (`tileSize: 128`, `OSM_RETINA_TILE_SIZE`).
+ *
+ * - `tileSize: 128` activa la densidad Retina 2× en MapLibre
+ *   (`z = round(zoom + log2(512 / 128)) = round(zoom + 2)`), proyectando teselas PNG
+ *   oficiales OSM de `256×256px` en `128×128 CSS px` (relación física 2:1 en pantallas
+ *   Retina 2× y supermuestreo SSAA 2× en monitores 1× mediante `computeHighQualityMapPixelRatio`),
+ *   adelantando +1 nivel de zoom el detalle urbano.
+ * - `minzoom: 0` y `maxzoom: 19` (`OSM_RETINA_MAX_NATIVE_ZOOM`) acotan el rango nativo de teselas.
+ * - `glyphs: OPENFREEMAP_GLYPHS_URL` provee las fuentes `Noto Sans Regular` requeridas por las
+ *   capas simbólicas WebGL de conteo de clústeres y medición de distancias.
  */
-export const buildOsmStandardStyleSpec = buildOsmCartoVectorStyleSpec;
+export function buildOsmRetinaStyleSpec(): StyleSpecification {
+  return {
+    version: 8,
+    name: 'OpenStreetMap Retina (Teselas 2×)',
+    glyphs: OPENFREEMAP_GLYPHS_URL,
+    sources: {
+      'osm-retina-raster': {
+        type: 'raster',
+        tiles: [OSM_RETINA_TILE_URL],
+        tileSize: OSM_RETINA_TILE_SIZE,
+        minzoom: 0,
+        maxzoom: OSM_RETINA_MAX_NATIVE_ZOOM,
+        attribution: OSM_RETINA_ATTRIBUTION,
+      },
+    },
+    layers: [
+      {
+        id: 'osm-retina-background',
+        type: 'background',
+        paint: {
+          'background-color': '#f2efe9',
+        },
+      },
+      {
+        id: 'osm-retina-layer',
+        type: 'raster',
+        source: 'osm-retina-raster',
+        minzoom: 0,
+        maxzoom: 24,
+        paint: {
+          resampling: 'linear',
+          'raster-contrast': 0.03,
+          'raster-fade-duration': 150,
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Alias compatible que construye la especificación MapLibre GL v8 de teselas oficiales
+ * de OpenStreetMap en modo Retina 2× (`tileSize: 128`).
+ */
+export const buildOsmStandardStyleSpec = buildOsmRetinaStyleSpec;
 
 /**
  * Resuelve la entrada de estilo para `new maplibregl.Map` y `map.setStyle`:
- * devuelve el `StyleSpecification` vectorial de OSM Carto (Geofabrik) para `'osm'`
+ * devuelve el `StyleSpecification` de OpenStreetMap Retina para `'osm'`
  * o la URL JSON vectorial directa para el resto de estilos.
  */
 export function resolveMapStyleInput(
   option: Pick<OpenFreeMapStyleOption, 'id' | 'url'>,
 ): StyleSpecification | string {
   if (option.id === 'osm') {
-    return buildOsmCartoVectorStyleSpec();
+    return buildOsmRetinaStyleSpec();
   }
   return option.url;
 }
@@ -400,9 +450,9 @@ export function computeHighQualityMapPixelRatio(
 export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   {
     id: 'osm',
-    label: 'OSM Carto',
-    description: 'OpenStreetMap Carto vectorial (Geofabrik)',
-    url: OPENFREEMAP_VECTOR_TILEJSON_URL,
+    label: 'OSM Retina',
+    description: 'OpenStreetMap en modo Retina (teselas 2×)',
+    url: OSM_RETINA_TILE_URL,
     isDark: false,
   },
   {

@@ -1746,7 +1746,7 @@ export function AntenasMap(props: AntenasMapProps) {
     };
   }, [ensureCustomSourcesAndLayers]);
 
-  // Cambio resiliente de estilo OpenFreeMap / OSM Carto Vector preservando todas las fuentes y capas
+  // Cambio resiliente de estilo OpenFreeMap / OSM Retina preservando todas las fuentes y capas
   useEffect(() => {
     isDarkStyleRef.current = currentStyleOption.isDark;
     const map = mapRef.current;
