@@ -13,6 +13,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import routerRawSource from '../router.tsx?raw';
+import novedadesViewRawSource from '../views/NovedadesView.tsx?raw';
 import type {
   AntenasDataset,
   NovedadRecord,
@@ -372,5 +373,25 @@ describe('Persistencia en URL de filtros y paginación en NovedadesView', () => 
       filas: 50,
       pagina: 3,
     });
+  });
+
+  it('no realiza ningún desplazamiento automático al cambiar de página en la tabla de novedades', () => {
+    expect(novedadesViewRawSource).not.toContain('scrollTableTopIfNeeded');
+    expect(novedadesViewRawSource).toContain('resetScroll: false');
+    expect(novedadesViewRawSource).toContain(
+      'inputEl.focus({ preventScroll: true })',
+    );
+
+    const goToPageMatch = novedadesViewRawSource.match(
+      /function goToPage\([\s\S]*?\n  \}/,
+    );
+    expect(goToPageMatch).not.toBeNull();
+    expect(goToPageMatch![0]).not.toMatch(/scroll/i);
+
+    const pageSizeMatch = novedadesViewRawSource.match(
+      /function handlePageSizeChange\([\s\S]*?\n  \}/,
+    );
+    expect(pageSizeMatch).not.toBeNull();
+    expect(pageSizeMatch![0]).not.toMatch(/scroll/i);
   });
 });

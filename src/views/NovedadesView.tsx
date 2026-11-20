@@ -80,7 +80,6 @@ export function NovedadesView() {
   const { derived } = useAntenasData();
   const scanProgress = useScanProgress(derived?.dataset.total ?? 62230);
 
-  const tableSectionRef = useRef<HTMLElement | null>(null);
   const pageInputRef = useRef<HTMLInputElement | null>(null);
   const cornerPopoverRef = useRef<HTMLDivElement | null>(null);
   const cornerKeyInputRef = useRef<HTMLInputElement | null>(null);
@@ -585,24 +584,12 @@ export function NovedadesView() {
     router.history.flush();
   }
 
-  function scrollTableTopIfNeeded() {
-    const sectionEl = tableSectionRef.current;
-    if (!sectionEl) return;
-    const rect = sectionEl.getBoundingClientRect();
-    if (rect.top < 56) {
-      sectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
-
   function goToPage(nextPage: number) {
     const clamped = Math.min(Math.max(1, Math.trunc(nextPage)), totalPages);
     updateViewState((prev) => ({
       ...prev,
       page: clamped,
     }));
-    if (clamped !== currentPage) {
-      scrollTableTopIfNeeded();
-    }
   }
 
   function handlePageSizeChange(rawValue: string) {
@@ -613,7 +600,6 @@ export function NovedadesView() {
         pageSize: parsed,
         page: 1,
       }));
-      scrollTableTopIfNeeded();
     }
   }
 
@@ -650,7 +636,7 @@ export function NovedadesView() {
   function focusPageJumpInput() {
     const inputEl = pageInputRef.current;
     if (!inputEl || inputEl.disabled) return;
-    inputEl.focus();
+    inputEl.focus({ preventScroll: true });
     inputEl.select();
   }
 
@@ -851,7 +837,6 @@ export function NovedadesView() {
       </section>
 
       <section
-        ref={tableSectionRef}
         className="section-block novedades-table-section"
         aria-labelledby="novedades-section-h2"
       >
