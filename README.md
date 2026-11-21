@@ -1,6 +1,6 @@
 # RadioMapa España · Mapa y Censo de Antenas de Redes Móviles
 
-Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos para consultar las estaciones base de telefonía móvil registradas en toda España (**Movistar**, **Orange / MasOrange**, **Vodafone**, **DIGI** y operadores regionales) a partir del censo estático procedente de **Infoantenas** del Ministerio para la Transformación Digital y de la Función Pública (MINETUR).
+Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos para consultar las estaciones base de telefonía móvil registradas en toda España (**Movistar**, **Orange / MasOrange**, **Vodafone**, **DIGI** y operadores regionales) a partir de la fuente oficial **Infoantenas** del Ministerio para la Transformación Digital y de la Función Pública (MINETUR).
 
 ---
 
@@ -16,7 +16,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 - **Filtrado Avanzado y Exportación Abierta**:
   - Filtros en cascada por comunidad autónoma, provincia y municipio, filtrado por operador y banda de frecuencia RF (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`), búsqueda por coordenadas/dirección/`Gis_ID` y exportación en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y **GeoJSON**.
 - **Sección de Novedades (`#/novedades`) y Estadísticas (`#/estadisticas`)**:
-  - Historial acumulativo de antenas y frecuencias registradas en `public/data/novedades.json`, cuotas nacionales por operador, desglose por bandas de frecuencia y ranking de las 52 provincias y ciudades autónomas.
+  - Monitor en tiempo real durante escaneos forzados manuales (telemetría en la rama `scan-status`), historial acumulativo permanente en `public/data/novedades.json`, cuotas nacionales por operador, desglose por bandas de frecuencia y ranking de las 52 provincias y ciudades autónomas.
 
 ---
 
@@ -28,7 +28,8 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades` y `#/estadisticas` sin errores 404 en GitHub Pages |
 | **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `public/data/antenas.json` y `public/data/novedades.json` (validación estricta anti-GeoJSON), caché en memoria e índices `O(1)` |
 | **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina | 6 estilos cartográficos libres con renderizado WebGL en GPU |
-| **Despliegue** | GitHub Actions (`.github/workflows/deploy-pages.yml`) + GitHub Pages | Verificación (lint, tests, build) y publicación estática en cada `push` a `main` |
+| **Escaneo Forzado Manual** | Python 3.12 (`scripts/fetch_antenas.py` + `scripts/publish_scan_status.py`) | Recolección bajo demanda desde MINETUR y cálculo diferencial en `public/data/antenas.json` y `public/data/novedades.json` (sin programación automática diaria) |
+| **CI/CD y Hosting** | GitHub Actions (`.github/workflows/update-and-deploy.yml`) + GitHub Pages | Escaneo forzado manual (`workflow_dispatch`) y despliegue estático en cada `push` a `main` |
 
 ---
 
@@ -36,6 +37,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 
 ### Requisitos previos
 - **Node.js** `>= 22` y `npm`
+- **Python** `>= 3.11` (solo si deseas ejecutar localmente el escaneo forzado)
 
 ### Comandos disponibles
 
@@ -46,8 +48,9 @@ npm install
 # 2. Iniciar servidor de desarrollo en caliente (Vite)
 npm run dev
 
-# 3. Ejecutar pruebas unitarias (Vitest)
+# 3. Ejecutar pruebas unitarias (Vitest + pruebas del recolector)
 npm test
+python3 -m unittest scripts/test_fetch_antenas.py
 
 # 4. Analizar código con Oxlint
 npm run lint
@@ -61,9 +64,22 @@ npm run preview
 
 ---
 
-## Despliegue en GitHub Pages
+## Despliegue en GitHub Pages y Escaneo Forzado Manual
 
-El flujo `.github/workflows/deploy-pages.yml` compila y publica automáticamente el sitio estático en GitHub Pages ante cada `push` a `main` o disparo manual (`workflow_dispatch`), sin ejecutar ningún programa de escaneo automático.
+El flujo `.github/workflows/update-and-deploy.yml` **no tiene ningún cron ni escaneo automático diario programado**. Se ejecuta exclusivamente bajo demanda o al subir cambios:
+
+- **Despliegue automático en cada `push` a `main`**: ejecuta las pruebas, compila `dist/` (con respaldo `404.html`) y publica en GitHub Pages sin lanzar escaneos.
+- **Escaneo forzado manual (`workflow_dispatch`)**:
+  - Desde el botón de **escaneo forzado** de la propia web (`#/novedades`).
+  - Desde GitHub Actions: **Actions → «Actualizar Censo Infoantenas y Desplegar en GitHub Pages» → Run workflow**.
+  - Desde GitHub CLI:
+    ```bash
+    # Escaneo forzado contabilizando novedades
+    gh workflow run update-and-deploy.yml -f refresh_data=true -f record_novedades=true
+
+    # Escaneo forzado de línea base (sin contabilizar en Novedades)
+    gh workflow run update-and-deploy.yml -f refresh_data=true -f record_novedades=false
+    ```
 
 ---
 
