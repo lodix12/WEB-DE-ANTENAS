@@ -751,10 +751,9 @@ export function EstadisticasView() {
               Estado del Pipeline de Sincronización Geográfica
             </h2>
             <p className="section-desc">
-              Métricas de la última ejecución diaria de{' '}
-              <code>scripts/fetch_antenas.py</code> para generar nuestro archivo
-              JSON propio estático (<code>data/antenas.json</code>), único
-              origen cargado por la web.
+              Métricas de la última actualización del archivo JSON propio
+              estático (<code>data/antenas.json</code>), único origen cargado
+              por la web.
             </p>
           </div>
           <a
