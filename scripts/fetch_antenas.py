@@ -25,7 +25,9 @@ import base64
 from collections import deque
 import concurrent.futures
 from datetime import datetime, timezone
+import functools
 import gzip
+import html as html_lib
 from html.parser import HTMLParser
 import http.client
 import io
@@ -34,7 +36,9 @@ import logging
 import math
 import os
 from pathlib import Path
+import random
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -53,12 +57,18 @@ DETAIL_ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do
 PORTAL_SOURCE_URL = "https://geoportal.minetur.gob.es/VCTEL/vcne.do"
 SERVER_FEATURE_CAP = 1000
 DEFAULT_ZOOM = 7
-DEFAULT_DELAY_SECONDS = 0.02
-DEFAULT_BAND_WORKERS = 16
+DEFAULT_DELAY_SECONDS = 0.005
+DEFAULT_BAND_WORKERS = 24
 DEFAULT_CENSUS_WORKERS = 8
-LIVE_DELTA_CHUNK_CAPACITY = 500
-MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S = 25.0
+LIVE_DELTA_CHUNK_CAPACITY = 2000
+MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S = 180.0
 DEFAULT_BAND_CHECKPOINT_EVERY = 50
+CONNECT_TIMEOUT_CAP_S = 10.0
+CONNECT_STAGGER_SECONDS = 0.05
+ADAPTIVE_LATENCY_HIGH_S = 1.2
+ADAPTIVE_LATENCY_RECOVER_S = 0.6
+ADAPTIVE_MAX_EXTRA_DELAY_S = 0.5
+FAILED_GID_RECOVERY_MAX = 100
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
 MAX_SUBDIVISION_DEPTH = 9
@@ -66,6 +76,7 @@ FREQ_RANGE_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)(?:\s*(?:MHz|GHz))?$",
     re.IGNORECASE,
 )
+_DIGI_WORD_RE = re.compile(r"\bDIGI\b")
 SPAIN_TZ = ZoneInfo("Europe/Madrid")
 
 BBox = tuple[float, float, float, float]  # (min_lon, min_lat, max_lon, max_lat)
@@ -186,9 +197,16 @@ INE_PROVINCES: dict[str, str] = {
 }
 
 
-def _strip_accents(value: str) -> str:
+@functools.lru_cache(maxsize=4096)
+def _strip_accents_cached(value: str) -> str:
+    if value.isascii():
+        return value
     normalized = unicodedata.normalize("NFD", value)
     return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+def _strip_accents(value: str) -> str:
+    return _strip_accents_cached(value or "")
 
 
 def _build_province_lookup() -> dict[str, str]:
@@ -283,38 +301,48 @@ def decode_infoantenas_payload(raw_bytes: bytes) -> list[dict[str, Any]]:
     return features
 
 
+_XFERA_TOKENS: tuple[str, ...] = (
+    "XFERA",
+    "MASMOVIL",
+    "YOIGO",
+    "EUSKALTEL",
+    "R CABLE",
+    "TELECABLE",
+)
+
+
+@functools.lru_cache(maxsize=1024)
+def _is_xfera_entity_cached(op_raw: str) -> bool:
+    upper_ascii = _strip_accents_cached(op_raw.upper())
+    return any(token in upper_ascii for token in _XFERA_TOKENS)
+
+
 def is_xfera_entity(op_raw: str) -> bool:
     """Indica si la razón social pertenece al antiguo grupo Xfera / MásMóvil / Yoigo (integrado en MasOrange)."""
-    upper_ascii = _strip_accents((op_raw or "").upper())
-    return any(
-        token in upper_ascii
-        for token in (
-            "XFERA",
-            "MASMOVIL",
-            "YOIGO",
-            "EUSKALTEL",
-            "R CABLE",
-            "TELECABLE",
-        )
-    )
+    return _is_xfera_entity_cached(op_raw or "")
 
 
-def classify_operator(op_raw: str) -> str:
-    """Clasifica la razón social de Infoantenas en un `OperatorKey` normalizado."""
-    upper_ascii = _strip_accents((op_raw or "").upper())
+@functools.lru_cache(maxsize=1024)
+def _classify_operator_cached(op_raw: str) -> str:
+    upper_ascii = _strip_accents_cached(op_raw.upper())
     if "TELEFONICA" in upper_ascii or "MOVISTAR" in upper_ascii:
         return "movistar"
     if (
         "ORANGE" in upper_ascii
         or "MASORANGE" in upper_ascii
-        or is_xfera_entity(op_raw)
+        or any(token in upper_ascii for token in _XFERA_TOKENS)
     ):
         return "orange"
     if "VODAFONE" in upper_ascii:
         return "vodafone"
-    if "DS MOBILE" in upper_ascii or re.search(r"\bDIGI\b", upper_ascii):
+    if "DS MOBILE" in upper_ascii or _DIGI_WORD_RE.search(upper_ascii):
         return "digi"
     return "otros"
+
+
+def classify_operator(op_raw: str) -> str:
+    """Clasifica la razón social de Infoantenas en un `OperatorKey` normalizado."""
+    return _classify_operator_cached(op_raw or "")
 
 
 def _normalize_operator_key(op_val: Any, op_raw_val: Any = "") -> str:
@@ -660,19 +688,119 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2.0 * EARTH_RADIUS_M * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
+def _create_ipv4_preferred_socket(
+    address: tuple[str, int],
+    timeout: float | None = None,
+    source_address: tuple[str, int] | None = None,
+) -> socket.socket:
+    """
+    Crea una conexión TCP priorizando IPv4 (`AF_INET`) antes que IPv6 (`AF_INET6`) y
+    limitando el tiempo de establecimiento TCP (`CONNECT_TIMEOUT_CAP_S`) antes de restaurar
+    el `timeout` completo para la lectura de respuesta. Evita bloqueos de 30 s en entornos
+    sin enrutamiento IPv6 (como runners Linux de GitHub Actions).
+    """
+    host, port = address
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    if not infos:
+        raise OSError(f"getaddrinfo devolvió lista vacía para {host}:{port}")
+
+    # Orden estable: IPv4 primero, después IPv6 / otras familias
+    infos.sort(key=lambda item: 0 if item[0] == socket.AF_INET else 1)
+
+    is_numeric_timeout = isinstance(timeout, (int, float)) and timeout > 0
+    connect_timeout = (
+        min(float(timeout), CONNECT_TIMEOUT_CAP_S) if is_numeric_timeout else timeout
+    )
+
+    first_meaningful_err: OSError | None = None
+    last_err: OSError | None = None
+
+    for af, socktype, proto, _, sa in infos:
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if connect_timeout is not None and connect_timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(connect_timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            if timeout is not None and timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            return sock
+        except OSError as exc:
+            last_err = exc
+            # Preferir errores IPv4 / timeout sobre ENETUNREACH (Errno 101) de IPv6 inalcanzable
+            if first_meaningful_err is None and getattr(exc, "errno", None) != 101:
+                first_meaningful_err = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    if first_meaningful_err is not None:
+        raise first_meaningful_err
+    assert last_err is not None
+    raise last_err
+
+
+def _extract_jsessionid_cookie(headers: Any) -> str:
+    """Extrae la cookie `JSESSIONID=...` de las cabeceras `Set-Cookie` de Tomcat (MINETUR)."""
+    if headers is None:
+        return ""
+    raw_cookies: list[str] = []
+    if hasattr(headers, "get_all"):
+        raw_cookies = list(headers.get_all("Set-Cookie") or ())
+    elif hasattr(headers, "get"):
+        single = headers.get("Set-Cookie")
+        if single:
+            raw_cookies = [str(single)]
+    for raw in raw_cookies:
+        pair = str(raw).split(";", 1)[0].strip()
+        if "=" in pair:
+            cname = pair.split("=", 1)[0].strip().upper()
+            if cname == "JSESSIONID":
+                return pair
+    return ""
+
+
+_STALE_KEEPALIVE_ERRORS = (
+    http.client.RemoteDisconnected,
+    http.client.BadStatusLine,
+    http.client.CannotSendRequest,
+    http.client.ResponseNotReady,
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+    ssl.SSLEOFError,
+)
+
+
 class _ThreadLocalKeepAliveClient:
     """
-    Cliente HTTP/1.1 persistente (`Connection: keep-alive` + reutilización TLS por hilo)
-    construido exclusivamente con la librería estándar de Python.
+    Cliente HTTP/1.1 persistente (`Connection: keep-alive` + reutilización TLS y sesión
+    `JSESSIONID` por hilo + ramp-up escalonado y autorregulación adaptativa) construido
+    exclusivamente con la librería estándar de Python.
     Delega automáticamente en `urllib.request.urlopen` cuando los tests unitarios lo parchean.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        connect_stagger_seconds: float = CONNECT_STAGGER_SECONDS,
+    ) -> None:
         self._tls = threading.local()
         self._lock = threading.Lock()
+        self._connect_gate_lock = threading.Lock()
         self._all_conns: list[http.client.HTTPConnection] = []
         self._ssl_ctx: ssl.SSLContext | None = None
+        self._proxy_cache: dict[tuple[str, ...], str] = {}
         self._cooldown_until: float = 0.0
+        self._next_connect_ts: float = 0.0
+        self._connect_stagger_s: float = max(0.0, float(connect_stagger_seconds))
+        self._ewma_latency_s: float = 0.0
+        self._adaptive_delay_s: float = 0.0
+        self._clean_streak: int = 0
 
     def _get_ssl_context(self) -> ssl.SSLContext:
         with self._lock:
@@ -680,28 +808,63 @@ class _ThreadLocalKeepAliveClient:
                 self._ssl_ctx = ssl.create_default_context()
             return self._ssl_ctx
 
-    @staticmethod
-    def _resolve_proxy(scheme: str, target_host: str) -> str:
+    def _resolve_proxy(self, scheme: str, target_host: str) -> str:
         if target_host in ("127.0.0.1", "localhost", "::1"):
             return ""
+        env_key = (
+            scheme,
+            target_host,
+            os.environ.get("HTTPS_PROXY") or "",
+            os.environ.get("https_proxy") or "",
+            os.environ.get("HTTP_PROXY") or "",
+            os.environ.get("http_proxy") or "",
+            os.environ.get("NO_PROXY") or "",
+            os.environ.get("no_proxy") or "",
+        )
+        cached = self._proxy_cache.get(env_key)
+        if cached is not None:
+            return cached
+        resolved = ""
+        bypassed = False
         try:
-            if urllib.request.proxy_bypass(target_host):
-                return ""
+            bypassed = bool(urllib.request.proxy_bypass(target_host))
         except Exception:
-            pass
-        if scheme == "https":
-            return (
-                os.environ.get("HTTPS_PROXY")
-                or os.environ.get("https_proxy")
-                or os.environ.get("HTTP_PROXY")
-                or os.environ.get("http_proxy")
-                or ""
-            ).strip()
-        return (
-            os.environ.get("HTTP_PROXY")
-            or os.environ.get("http_proxy")
-            or ""
-        ).strip()
+            bypassed = False
+        if not bypassed:
+            if scheme == "https":
+                resolved = (
+                    env_key[2] or env_key[3] or env_key[4] or env_key[5]
+                ).strip()
+            else:
+                resolved = (env_key[4] or env_key[5]).strip()
+        with self._lock:
+            if len(self._proxy_cache) > 64:
+                self._proxy_cache.clear()
+            self._proxy_cache[env_key] = resolved
+        return resolved
+
+    def _pace_cold_connect(
+        self,
+        target_host: str,
+        clock_fn: Callable[[], float],
+    ) -> None:
+        """Escalona aperturas TCP/TLS en frío para evitar ráfagas SYN contra el servidor."""
+        if self._connect_stagger_s <= 0.0 or target_host in (
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        ):
+            return
+        with self._connect_gate_lock:
+            now = clock_fn()
+            wait_s = self._next_connect_ts - now
+            if wait_s < 0.0:
+                wait_s = 0.0
+                self._next_connect_ts = now + self._connect_stagger_s
+            else:
+                self._next_connect_ts += self._connect_stagger_s
+        if wait_s > 0.0:
+            time.sleep(wait_s)
 
     def _create_connection(
         self,
@@ -766,6 +929,7 @@ class _ThreadLocalKeepAliveClient:
             extra_req_headers = {}
             use_full_url = False
 
+        conn._create_connection = _create_ipv4_preferred_socket  # type: ignore[assignment]
         with self._lock:
             self._all_conns.append(conn)
         return conn, extra_req_headers, use_full_url
@@ -787,6 +951,54 @@ class _ThreadLocalKeepAliveClient:
             except Exception:
                 pass
 
+    def get_adaptive_delay(self) -> float:
+        return self._adaptive_delay_s
+
+    def _record_success_latency(self, duration_s: float) -> None:
+        if duration_s < 0.0:
+            return
+        with self._lock:
+            if self._ewma_latency_s <= 0.0:
+                self._ewma_latency_s = duration_s
+            else:
+                self._ewma_latency_s = (0.9 * self._ewma_latency_s) + (0.1 * duration_s)
+
+            if self._ewma_latency_s > ADAPTIVE_LATENCY_HIGH_S:
+                self._adaptive_delay_s = min(
+                    ADAPTIVE_MAX_EXTRA_DELAY_S,
+                    max(0.02, self._adaptive_delay_s + 0.01),
+                )
+                self._clean_streak = 0
+            elif (
+                self._adaptive_delay_s > 0.0
+                and self._ewma_latency_s < ADAPTIVE_LATENCY_RECOVER_S
+            ):
+                self._clean_streak += 1
+                if self._clean_streak >= 32:
+                    self._adaptive_delay_s = max(
+                        0.0, (self._adaptive_delay_s * 0.75) - 0.005
+                    )
+                    self._clean_streak = 0
+
+    def _record_congestion_event(
+        self,
+        *,
+        bump_delay_s: float,
+        cooldown_s: float = 0.0,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> None:
+        with self._lock:
+            self._adaptive_delay_s = min(
+                ADAPTIVE_MAX_EXTRA_DELAY_S,
+                max(bump_delay_s, (self._adaptive_delay_s * 1.5) + bump_delay_s),
+            )
+            self._clean_streak = 0
+            if cooldown_s > 0.0:
+                clamped = max(0.5, min(15.0, float(cooldown_s)))
+                target_ts = clock_fn() + clamped
+                if target_ts > self._cooldown_until:
+                    self._cooldown_until = target_ts
+
     def record_throttle_signal(
         self,
         wait_seconds: float,
@@ -797,19 +1009,30 @@ class _ThreadLocalKeepAliveClient:
         with self._lock:
             if target_ts > self._cooldown_until:
                 self._cooldown_until = target_ts
+            self._adaptive_delay_s = min(
+                ADAPTIVE_MAX_EXTRA_DELAY_S,
+                max(0.05, (self._adaptive_delay_s * 1.5) + 0.03),
+            )
+            self._clean_streak = 0
 
     def wait_if_cooled_down(
         self,
         clock_fn: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], None] = time.sleep,
+        *,
+        jitter_max: float = 0.0,
     ) -> None:
+        if self._cooldown_until <= 0.0:
+            return
         while True:
-            with self._lock:
-                until = self._cooldown_until
+            until = self._cooldown_until
             remaining = until - clock_fn()
             if remaining <= 0.0:
                 return
-            sleep_fn(remaining)
+            extra_jitter = (
+                random.uniform(0.0, jitter_max) if jitter_max > 0.0 else 0.0
+            )
+            sleep_fn(remaining + extra_jitter)
 
     def fetch_bytes(
         self,
@@ -835,12 +1058,14 @@ class _ThreadLocalKeepAliveClient:
 
         proxy_raw = self._resolve_proxy(scheme, target_host)
         conn_key = (scheme, target_host, target_port, proxy_raw, float(timeout))
+        cookie_key = (scheme, target_host, target_port)
         host_header = (
             target_host
             if (scheme == "https" and target_port == 443)
             or (scheme == "http" and target_port == 80)
             else f"{target_host}:{target_port}"
         )
+        has_explicit_cookie = any(k.lower() == "cookie" for k in headers)
 
         for is_fresh_attempt in (False, True):
             conn: http.client.HTTPConnection | None = getattr(self._tls, "conn", None)
@@ -848,6 +1073,7 @@ class _ThreadLocalKeepAliveClient:
             if not reused:
                 if conn is not None:
                     self._discard_tls_conn()
+                self._pace_cold_connect(target_host, clock_fn)
                 conn, extra_hdrs, use_full_url = self._create_connection(
                     scheme, target_host, target_port, proxy_raw, timeout
                 )
@@ -868,27 +1094,51 @@ class _ThreadLocalKeepAliveClient:
                 **extra_hdrs,
                 **headers,
             }
+            if not has_explicit_cookie:
+                cookies_map: dict[tuple[str, str, int], str] | None = getattr(
+                    self._tls, "cookies", None
+                )
+                if cookies_map:
+                    cached_cookie = cookies_map.get(cookie_key)
+                    if cached_cookie:
+                        req_headers["Cookie"] = cached_cookie
 
+            req_start_ts = clock_fn()
             try:
                 assert conn is not None
                 conn.request("GET", req_target, headers=req_headers)
                 resp = conn.getresponse()
                 raw_bytes = resp.read()
+                session_cookie = _extract_jsessionid_cookie(resp.headers)
+                if session_cookie:
+                    cookies_map = getattr(self._tls, "cookies", None)
+                    if cookies_map is None:
+                        cookies_map = {}
+                        self._tls.cookies = cookies_map
+                    cookies_map[cookie_key] = session_cookie
                 conn_hdr = (resp.getheader("Connection") or "").lower()
                 if resp.will_close or "close" in conn_hdr:
                     self._discard_tls_conn()
-            except (
-                http.client.HTTPException,
-                BrokenPipeError,
-                ConnectionResetError,
-                ssl.SSLError,
-                TimeoutError,
-                OSError,
-            ):
+            except _STALE_KEEPALIVE_ERRORS:
                 self._discard_tls_conn()
                 if reused and not is_fresh_attempt:
                     # Socket Keep-Alive cerrado en servidor tras inactividad -> reabrir de inmediato
                     continue
+                self._record_congestion_event(bump_delay_s=0.02, clock_fn=clock_fn)
+                raise
+            except (
+                http.client.HTTPException,
+                ssl.SSLError,
+                TimeoutError,
+                OSError,
+            ) as exc:
+                self._discard_tls_conn()
+                if isinstance(exc, TimeoutError):
+                    self._record_congestion_event(
+                        bump_delay_s=0.03,
+                        cooldown_s=1.0,
+                        clock_fn=clock_fn,
+                    )
                 raise
 
             if resp.status in (301, 302, 303, 307, 308) and _redirects_left > 0:
@@ -912,6 +1162,12 @@ class _ThreadLocalKeepAliveClient:
                         except ValueError:
                             wait_s = 2.0
                     self.record_throttle_signal(wait_s, clock_fn=clock_fn)
+                elif resp.status in (500, 502, 504):
+                    self._record_congestion_event(
+                        bump_delay_s=0.03,
+                        cooldown_s=1.0,
+                        clock_fn=clock_fn,
+                    )
                 raise urllib.error.HTTPError(
                     url,
                     resp.status,
@@ -920,6 +1176,7 @@ class _ThreadLocalKeepAliveClient:
                     io.BytesIO(raw_bytes),
                 )
 
+            self._record_success_latency(clock_fn() - req_start_ts)
             return raw_bytes
 
         raise RuntimeError(f"No fue posible establecer conexión HTTP hacia {url}")
@@ -1127,6 +1384,7 @@ class InfoantenasCrawler:
         self._unsaved_requests = 0
 
     def _wait_rate_limit(self) -> None:
+        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
         if self._last_request_ts is not None and self.delay_seconds > 0:
             elapsed = self._clock() - self._last_request_ts
             remaining = self.delay_seconds - elapsed
@@ -1134,7 +1392,17 @@ class InfoantenasCrawler:
                 self._sleep(remaining)
 
     def _wait_worker_rate_limit(self) -> None:
-        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
+        jitter_max = 0.35 if self._sleep is time.sleep else 0.0
+        self._http_client.wait_if_cooled_down(
+            self._clock, self._sleep, jitter_max=jitter_max
+        )
+        adaptive_delay = self._http_client.get_adaptive_delay()
+        if adaptive_delay > 0.0:
+            last_done_ts: float | None = getattr(self._worker_tls, "last_done_ts", None)
+            if last_done_ts is not None:
+                rem_adapt = adaptive_delay - (self._clock() - last_done_ts)
+                if rem_adapt > 0.0:
+                    self._sleep(rem_adapt)
         last_ts: float | None = getattr(self._worker_tls, "last_req_ts", None)
         if last_ts is not None and self.delay_seconds > 0:
             elapsed = self._clock() - last_ts
@@ -1164,12 +1432,14 @@ class InfoantenasCrawler:
                 self.requests_count += 1
                 self._unsaved_requests += 1
 
+            req_start_ts = self._clock()
             if self._custom_fetch_fn is not None:
                 try:
                     features = self._custom_fetch_fn(bbox, self.zoom)
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     return features
@@ -1177,6 +1447,7 @@ class InfoantenasCrawler:
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     last_err = exc
@@ -1190,7 +1461,8 @@ class InfoantenasCrawler:
                     )
                     now_ts = self._clock()
                     if parallel_mode:
-                        self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_req_ts = req_start_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     return decode_infoantenas_payload(raw_bytes)
@@ -1207,12 +1479,24 @@ class InfoantenasCrawler:
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     last_err = exc
 
+            if isinstance(last_err, urllib.error.HTTPError) and last_err.code in (
+                400,
+                401,
+                403,
+                404,
+                410,
+            ):
+                break
+
             if attempt < len(backoffs) - 1:
                 wait_s = backoffs[attempt]
+                if self._sleep is time.sleep:
+                    wait_s += random.uniform(0.0, 0.4)
                 logging.warning(
                     "Error en petición bbox=%s (intento %d/3): %s. Reintentando en %.1fs...",
                     format_bbox_key(bbox),
@@ -1230,16 +1514,23 @@ class InfoantenasCrawler:
         added = 0
         provisional_antennas: list[dict[str, Any]] = []
         provisional_novedades: list[dict[str, Any]] = []
+        records_by_id = self.records_by_id
 
         for feat in features:
+            if isinstance(feat, dict):
+                fast_id = feat.get("id")
+                if isinstance(fast_id, str):
+                    fast_id_clean = fast_id.strip()
+                    if fast_id_clean and fast_id_clean in records_by_id:
+                        continue
             rec = parse_feature(feat)
             if rec is None:
                 continue
             rec_id = rec["id"]
-            is_first_seen = rec_id not in self.records_by_id
+            is_first_seen = rec_id not in records_by_id
             if is_first_seen:
                 added += 1
-            self.records_by_id[rec_id] = rec
+            records_by_id[rec_id] = rec
 
             if (
                 is_first_seen
@@ -1385,7 +1676,12 @@ class InfoantenasCrawler:
         enqueued_keys: set[str] = set()
         subdivided_parent_keys: list[str] = []
 
-        def _enqueue_or_expand(bbox: BBox, depth: int) -> None:
+        def _enqueue_or_expand(
+            bbox: BBox,
+            depth: int,
+            *,
+            prioritize_front: bool = False,
+        ) -> None:
             if is_outside_spain_conservative(bbox):
                 return
             key = format_bbox_key(bbox)
@@ -1396,13 +1692,23 @@ class InfoantenasCrawler:
                 if count >= SERVER_FEATURE_CAP and self._can_subdivide_bbox(bbox, depth):
                     self.subdivided_boxes += 1
                     subdivided_parent_keys.append(key)
-                    for child_bbox in subdivide_bbox(bbox):
-                        _enqueue_or_expand(child_bbox, depth + 1)
+                    children = subdivide_bbox(bbox)
+                    if prioritize_front:
+                        for child_bbox in reversed(children):
+                            _enqueue_or_expand(
+                                child_bbox, depth + 1, prioritize_front=True
+                            )
+                    else:
+                        for child_bbox in children:
+                            _enqueue_or_expand(child_bbox, depth + 1)
                 else:
                     self.completed_leaf_boxes.add(key)
                 return
             enqueued_keys.add(key)
-            pending_queue.append((bbox, depth, key))
+            if prioritize_front:
+                pending_queue.appendleft((bbox, depth, key))
+            else:
+                pending_queue.append((bbox, depth, key))
 
         for root_bbox in initial_boxes:
             _enqueue_or_expand(root_bbox, 0)
@@ -1462,8 +1768,11 @@ class InfoantenasCrawler:
                     if count >= SERVER_FEATURE_CAP and self._can_subdivide_bbox(bbox, depth):
                         self.subdivided_boxes += 1
                         subdivided_parent_keys.append(key)
-                        for child_bbox in subdivide_bbox(bbox):
-                            _enqueue_or_expand(child_bbox, depth + 1)
+                        # Priorizar cuadrantes subdivididos (deepest-first) para evitar cola secuencial en zonas urbanas densas
+                        for child_bbox in reversed(subdivide_bbox(bbox)):
+                            _enqueue_or_expand(
+                                child_bbox, depth + 1, prioritize_front=True
+                            )
                     else:
                         self.completed_leaf_boxes.add(key)
 
@@ -1474,7 +1783,10 @@ class InfoantenasCrawler:
 
                 now = self._clock()
                 elapsed_s = max(0.001, now - run_start_ts)
-                rps = round(self.requests_count / elapsed_s, 2)
+                with self._stats_lock:
+                    cur_reqs = self.requests_count
+                    unsaved_reqs = self._unsaved_requests
+                rps = round(cur_reqs / elapsed_s, 2)
                 if self._progress_callback is not None and (
                     any_flushed_live
                     or not in_flight
@@ -1492,7 +1804,7 @@ class InfoantenasCrawler:
 
                 if (
                     self.checkpoint_path is not None
-                    and self._unsaved_requests >= self.checkpoint_every
+                    and unsaved_reqs >= self.checkpoint_every
                     and (now - last_ckpt_ts) >= 15.0
                 ):
                     self.save_checkpoint(now - run_start_ts)
@@ -2121,11 +2433,12 @@ def _norm_freq_str(value: str) -> str:
 
 
 _MMWAVE_26GHZ_LABEL_RE = re.compile(r"^(?:26|27)\s*(?:MHz|GHz)$", re.IGNORECASE)
+_BAND_SORT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(GHz|MHz)$", re.IGNORECASE)
 
 
-def normalize_band_label(label: str) -> str:
-    """Normaliza variantes históricas/erróneas de la banda milimétrica (`26/27 MHz` o `26/27 GHz`) a `'26 GHz'`."""
-    cleaned = " ".join(str(label or "").strip().split())
+@functools.lru_cache(maxsize=512)
+def _normalize_band_label_cached(label: str) -> str:
+    cleaned = " ".join(label.strip().split())
     if not cleaned:
         return ""
     if _MMWAVE_26GHZ_LABEL_RE.match(cleaned):
@@ -2133,9 +2446,15 @@ def normalize_band_label(label: str) -> str:
     return cleaned
 
 
-def _band_sort_key(label: str) -> tuple[float, str]:
-    text = normalize_band_label(label)
-    m = re.match(r"^(\d+(?:\.\d+)?)\s*(GHz|MHz)$", text, flags=re.IGNORECASE)
+def normalize_band_label(label: str) -> str:
+    """Normaliza variantes históricas/erróneas de la banda milimétrica (`26/27 MHz` o `26/27 GHz`) a `'26 GHz'`."""
+    return _normalize_band_label_cached(str(label or ""))
+
+
+@functools.lru_cache(maxsize=512)
+def _band_sort_key_cached(label: str) -> tuple[float, str]:
+    text = _normalize_band_label_cached(label)
+    m = _BAND_SORT_RE.match(text)
     if m:
         value = float(m.group(1))
         unit = m.group(2).upper()
@@ -2144,14 +2463,18 @@ def _band_sort_key(label: str) -> tuple[float, str]:
     return (float("inf"), text)
 
 
+def _band_sort_key(label: str) -> tuple[float, str]:
+    return _band_sort_key_cached(str(label or ""))
+
+
 def normalize_band_labels(labels: list[str] | set[str]) -> list[str]:
     """Normaliza, deduplica y ordena numéricamente etiquetas de banda (situando `'26 GHz'` tras `'3500 MHz'`)."""
     deduped = {
         norm
         for item in labels
-        if item is not None and (norm := normalize_band_label(str(item)))
+        if item is not None and (norm := _normalize_band_label_cached(str(item)))
     }
-    return sorted(deduped, key=_band_sort_key)
+    return sorted(deduped, key=_band_sort_key_cached)
 
 
 def classify_frequency_band(min_mhz: float, max_mhz: float) -> str:
@@ -2340,14 +2663,112 @@ class _DetalleEstacionHTMLParser(HTMLParser):
             self.tables.append(tbl)
 
 
+_CARACT_H2_RE = re.compile(r"<h2\b[^>]*>[^<]*CARACTER", re.IGNORECASE)
+_NIVELES_MEDIDOS_RE = re.compile(r"NIVELES\s+MEDIDOS", re.IGNORECASE)
+_TABLE_OPEN_RE = re.compile(r"<table\b[^>]*>", re.IGNORECASE)
+_TABLE_CLOSE_RE = re.compile(r"</table\s*>", re.IGNORECASE)
+_TR_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr\s*>", re.IGNORECASE | re.DOTALL)
+_TD_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
+    """
+    Ruta rápida basada en regex compiladas sobre la tabla `CARACTERISTICAS TÉCNICAS`
+    sin tokenizar `<head>`, cabecera ni `NIVELES MEDIDOS`. Devuelve `None` si detecta
+    estructura anidada o inesperada para delegar de forma segura en `_DetalleEstacionHTMLParser`.
+    """
+    m_h2 = _CARACT_H2_RE.search(html)
+    if m_h2 is None:
+        return None
+    if _CARACT_H2_RE.search(html, m_h2.end()) is not None:
+        return None
+    m_open = _TABLE_OPEN_RE.search(html, m_h2.end())
+    if m_open is None:
+        return None
+    m_close = _TABLE_CLOSE_RE.search(html, m_open.end())
+    if m_close is None:
+        return None
+
+    table_body = html[m_open.end() : m_close.start()]
+    if _TABLE_OPEN_RE.search(table_body) is not None:
+        return None
+
+    # Si tras esta tabla existe otra tabla y no pertenece a NIVELES MEDIDOS, usar parser completo
+    if (
+        _TABLE_OPEN_RE.search(html, m_close.end()) is not None
+        and _NIVELES_MEDIDOS_RE.search(html, m_close.end()) is None
+    ):
+        return None
+
+    rows: list[list[str]] = []
+    for m_tr in _TR_RE.finditer(table_body):
+        cells: list[str] = []
+        for m_td in _TD_RE.finditer(m_tr.group(1)):
+            cell_txt = _HTML_TAG_RE.sub("", m_td.group(1))
+            if "&" in cell_txt:
+                cell_txt = html_lib.unescape(cell_txt)
+            cells.append(" ".join(cell_txt.split()))
+        if cells:
+            rows.append(cells)
+
+    if not rows:
+        return None
+
+    header_cells = [_strip_accents(c.upper()) for c in rows[0]]
+    has_tech_headers = (
+        len(header_cells) >= 3
+        and "OPERADOR" in header_cells[0]
+        and any(tok in header_cells[2] for tok in ("BANDA", "FRECUENCIA", "MHZ"))
+    )
+    if not has_tech_headers:
+        return None
+
+    extracted: list[dict[str, Any]] = []
+    for row in rows[1:]:
+        if len(row) < 3:
+            continue
+        operador_raw = row[0]
+        referencia_raw = row[1]
+        banda_raw = row[2]
+        if not operador_raw or not banda_raw:
+            continue
+        match = FREQ_RANGE_RE.match(banda_raw)
+        if not match:
+            continue
+        lo = float(match.group(1))
+        hi = float(match.group(2))
+        if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= 0.0:
+            continue
+        if lo > hi:
+            lo, hi = hi, lo
+        extracted.append(
+            {
+                "operador": operador_raw,
+                "op": classify_operator(operador_raw),
+                "referencia": referencia_raw,
+                "frecuenciaDeclarada": banda_raw,
+                "frecuencia": f"{_format_mhz(lo)} - {_format_mhz(hi)}",
+                "minMhz": lo,
+                "maxMhz": hi,
+                "banda": classify_frequency_band(lo, hi),
+            }
+        )
+    return extracted
+
+
 def parse_detalle_estacion_html(html: str) -> list[dict[str, Any]]:
     """
     Analiza el HTML de `detalleEstacion.do` y devuelve únicamente las filas válidas de
     frecuencia de la tabla `CARACTERISTICAS TÉCNICAS`, ignorando por completo la tabla
     `NIVELES MEDIDOS` y la de `LOCALIZACIÓN`.
     """
-    if not html or not html.strip():
+    if not html or html.isspace():
         return []
+
+    fast_result = _fast_parse_detalle_estacion_html(html)
+    if fast_result is not None:
+        return fast_result
 
     parser = _DetalleEstacionHTMLParser()
     parser.feed(html)
@@ -2383,9 +2804,9 @@ def parse_detalle_estacion_html(html: str) -> list[dict[str, Any]]:
         for row in tbl.rows[start_idx:]:
             if len(row) < 3:
                 continue
-            operador_raw = " ".join(row[0].split()).strip()
-            referencia_raw = " ".join(row[1].split()).strip()
-            banda_raw = " ".join(row[2].split()).strip()
+            operador_raw = row[0]
+            referencia_raw = row[1]
+            banda_raw = row[2]
             if not operador_raw or not banda_raw:
                 continue
             match = FREQ_RANGE_RE.match(banda_raw)
@@ -2437,6 +2858,56 @@ def count_bands_populated(records: list[dict[str, Any]]) -> int:
     return sum(1 for r in records if isinstance(r.get("bandas"), list))
 
 
+def _needs_xfera_fusion(raw_list: list[dict[str, Any]]) -> bool:
+    """
+    Comprueba en tiempo mínimo si `raw_list` requiere realmente ejecutar `fuse_xfera_into_orange`,
+    evitando copias profundas innecesarias sobre datasets ya fusionados con estaciones Xfera independientes.
+    """
+    xfera_records: list[tuple[int, float, float]] = []
+    orange_records: list[tuple[int, float, float]] = []
+    seen_orange_gids: set[str] = set()
+
+    for idx, r in enumerate(raw_list):
+        op_str = str(r.get("op") or "").strip()
+        if op_str == "masmovil":
+            return True
+        op_raw = str(r.get("opRaw") or "")
+        is_xfera = is_xfera_entity(op_raw)
+        if is_xfera and op_str != "orange":
+            return True
+        if op_str == "orange" or is_xfera:
+            for g in get_record_gids(r):
+                if g in seen_orange_gids:
+                    return True
+                seen_orange_gids.add(g)
+            try:
+                lat_f = float(r["lat"])
+                lon_f = float(r["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            orange_records.append((idx, lat_f, lon_f))
+            if is_xfera:
+                xfera_records.append((idx, lat_f, lon_f))
+
+    if not xfera_records or len(orange_records) <= 1:
+        return False
+
+    # Si hay muchas estaciones Xfera (dataset crudo sin fusionar), delegar directamente
+    if len(xfera_records) > 256:
+        return True
+
+    max_dlat = (DEFAULT_XFERA_ORANGE_FUSION_M / 111320.0) + 1e-5
+    max_dlon = (DEFAULT_XFERA_ORANGE_FUSION_M / (111320.0 * 0.65)) + 1e-5
+    for x_idx, x_lat, x_lon in xfera_records:
+        for o_idx, o_lat, o_lon in orange_records:
+            if o_idx == x_idx:
+                continue
+            if abs(x_lat - o_lat) <= max_dlat and abs(x_lon - o_lon) <= max_dlon:
+                if haversine_m(x_lat, x_lon, o_lat, o_lon) < DEFAULT_XFERA_ORANGE_FUSION_M:
+                    return True
+    return False
+
+
 def _load_records_from_preserve_source(
     preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
 ) -> list[dict[str, Any]]:
@@ -2463,11 +2934,7 @@ def _load_records_from_preserve_source(
 
     if not raw_list:
         return []
-    if any(
-        str(r.get("op") or "").strip() == "masmovil"
-        or is_xfera_entity(str(r.get("opRaw") or ""))
-        for r in raw_list
-    ):
+    if _needs_xfera_fusion(raw_list):
         fused, _ = fuse_xfera_into_orange(raw_list)
         return fused
     normalized: list[dict[str, Any]] = []
@@ -2600,27 +3067,47 @@ def preserve_bands_in_records(
     Reutiliza `bandas`, `frecuencias`, `concesiones` y `bandsScannedAt` ya extraídas
     en un dataset previo casando por `id` o `(op, gid)` (verificando que ningún
     `mergedGid` nuevo haya quedado sin cubrir).
+    Acepta también un índice precalculado de `build_prior_antenna_index` para evitar
+    re-indexaciones y fusiones duplicadas.
     Devuelve el número de antenas enriquecidas desde `preserve_from`.
     """
-    prior_records = _load_records_from_preserve_source(preserve_from)
-    if not prior_records:
-        return 0
+    is_prebuilt_index = (
+        isinstance(preserve_from, dict)
+        and "by_id" in preserve_from
+        and "by_op_gid" in preserve_from
+    )
 
-    by_id: dict[str, dict[str, Any]] = {}
-    by_op_gid: dict[tuple[str, str], dict[str, Any]] = {}
-    for old_rec in prior_records:
-        if not isinstance(old_rec.get("bandas"), list):
-            continue
-        old_id = str(old_rec.get("id") or "").strip()
-        old_op = str(old_rec.get("op") or "").strip()
-        old_gid = str(old_rec.get("gid") or "").strip()
-        if old_id:
-            by_id[old_id] = old_rec
-        if old_op:
-            for g in get_record_gids(old_rec):
-                by_op_gid.setdefault((old_op, g), old_rec)
-            if old_gid:
-                by_op_gid[(old_op, old_gid)] = old_rec
+    by_id: dict[str, dict[str, Any]]
+    by_op_gid: dict[tuple[str, str], dict[str, Any]]
+    all_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] | None = None
+
+    if is_prebuilt_index:
+        assert isinstance(preserve_from, dict)
+        by_id = preserve_from.get("by_id") or {}
+        by_op_gid = preserve_from.get("by_op_gid") or {}
+        all_by_op_gid = preserve_from.get("all_by_op_gid") or {}
+        if not by_id and not by_op_gid:
+            return 0
+    else:
+        prior_records = _load_records_from_preserve_source(preserve_from)
+        if not prior_records:
+            return 0
+
+        by_id = {}
+        by_op_gid = {}
+        for old_rec in prior_records:
+            if not isinstance(old_rec.get("bandas"), list):
+                continue
+            old_id = str(old_rec.get("id") or "").strip()
+            old_op = str(old_rec.get("op") or "").strip()
+            old_gid = str(old_rec.get("gid") or "").strip()
+            if old_id:
+                by_id[old_id] = old_rec
+            if old_op:
+                for g in get_record_gids(old_rec):
+                    by_op_gid.setdefault((old_op, g), old_rec)
+                if old_gid:
+                    by_op_gid[(old_op, old_gid)] = old_rec
 
     restored = 0
     for rec in records:
@@ -2630,11 +3117,21 @@ def preserve_bands_in_records(
         rec_id = str(rec.get("id") or "").strip()
         rec_op = str(rec.get("op") or "").strip()
         cand = by_id.get(rec_id)
+        if cand is not None and not isinstance(cand.get("bandas"), list):
+            cand = None
         if cand is None and rec_op:
             for g in get_record_gids(rec):
-                cand = by_op_gid.get((rec_op, g))
-                if cand is not None:
+                c = by_op_gid.get((rec_op, g))
+                if c is not None and isinstance(c.get("bandas"), list):
+                    cand = c
                     break
+                if all_by_op_gid is not None:
+                    for alt in all_by_op_gid.get((rec_op, g), ()):
+                        if isinstance(alt.get("bandas"), list):
+                            cand = alt
+                            break
+                    if cand is not None:
+                        break
         if cand is None:
             continue
 
@@ -2871,11 +3368,22 @@ def _diff_record_new_frequencies(
     if not isinstance(prior_conc, list) and not isinstance(prior_freqs, list):
         return []
 
-    scan_iso = _normalize_iso_utc(fetched_iso)
-    fecha_es = format_spain_datetime(scan_iso)
-    mun = str(rec.get("mun") or "").strip()
-    prov = str(rec.get("prov") or "").strip()
-    ubicacion = mun or prov
+    scan_iso: str | None = None
+    fecha_es: str | None = None
+    mun = ""
+    prov = ""
+    ubicacion = ""
+
+    def _ensure_emit_meta() -> tuple[str, str, str, str]:
+        nonlocal scan_iso, fecha_es, mun, prov, ubicacion
+        if scan_iso is None:
+            scan_iso = _normalize_iso_utc(fetched_iso)
+            fecha_es = format_spain_datetime(scan_iso)
+            mun = str(rec.get("mun") or "").strip()
+            prov = str(rec.get("prov") or "").strip()
+            ubicacion = mun or prov
+        assert fecha_es is not None
+        return scan_iso, fecha_es, ubicacion, prov
 
     emitted: list[dict[str, Any]] = []
     seen_new_keys: set[tuple[str, str, str]] = set()
@@ -2918,6 +3426,7 @@ def _diff_record_new_frequencies(
                 continue
             seen_new_keys.add(dedup_key)
 
+            s_iso, f_es, ubic, pr = _ensure_emit_meta()
             op_raw_entry = " ".join(str(entry.get("operador") or "").split()).strip()
             emitted.append(
                 {
@@ -2929,10 +3438,10 @@ def _diff_record_new_frequencies(
                     "antennaId": rec_id,
                     "codigoBanda": ref,
                     "frecuencia": format_exact_ministry_frequency(banda_raw),
-                    "ubicacion": ubicacion,
-                    "prov": prov,
-                    "scannedAt": scan_iso,
-                    "fecha": fecha_es,
+                    "ubicacion": ubic,
+                    "prov": pr,
+                    "scannedAt": s_iso,
+                    "fecha": f_es,
                 }
             )
     elif isinstance(prior_freqs, list):
@@ -2961,6 +3470,7 @@ def _diff_record_new_frequencies(
                 continue
             seen_new_keys.add(dedup_key)
 
+            s_iso, f_es, ubic, pr = _ensure_emit_meta()
             op_raw_entry = " ".join(str(entry.get("operador") or "").split()).strip()
             emitted.append(
                 {
@@ -2972,14 +3482,15 @@ def _diff_record_new_frequencies(
                     "antennaId": rec_id,
                     "codigoBanda": ref,
                     "frecuencia": format_exact_ministry_frequency(banda_raw),
-                    "ubicacion": ubicacion,
-                    "prov": prov,
-                    "scannedAt": scan_iso,
-                    "fecha": fecha_es,
+                    "ubicacion": ubic,
+                    "prov": pr,
+                    "scannedAt": s_iso,
+                    "fecha": f_es,
                 }
             )
 
-    emitted.sort(key=_novedad_freq_sort_key)
+    if len(emitted) > 1:
+        emitted.sort(key=_novedad_freq_sort_key)
     return emitted
 
 
@@ -3818,10 +4329,12 @@ class BandEnricher:
         self.last_requests_per_second: float = 0.0
         self.last_scanned_antennas: int = 0
         self.last_total_antennas: int = 0
+        self.saved_final_checkpoint: bool = False
         self.discovered_novedades: list[dict[str, Any]] = []
         self._seen_novedad_ids: set[str] = set()
         self._last_request_ts: float | None = None
         self._unsaved_requests: int = 0
+        self._last_saved_novedades_len: int = -1
 
     def _needs_band_scan(self, rec: dict[str, Any]) -> bool:
         if not isinstance(rec.get("bandas"), list) or not isinstance(
@@ -3854,6 +4367,7 @@ class BandEnricher:
         return (2, oldest_scanned)
 
     def _wait_rate_limit(self) -> None:
+        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
         if self._last_request_ts is not None and self.delay_seconds > 0:
             elapsed = self._clock() - self._last_request_ts
             remaining = self.delay_seconds - elapsed
@@ -3861,7 +4375,17 @@ class BandEnricher:
                 self._sleep(remaining)
 
     def _wait_worker_rate_limit(self) -> None:
-        self._http_client.wait_if_cooled_down(self._clock, self._sleep)
+        jitter_max = 0.35 if self._sleep is time.sleep else 0.0
+        self._http_client.wait_if_cooled_down(
+            self._clock, self._sleep, jitter_max=jitter_max
+        )
+        adaptive_delay = self._http_client.get_adaptive_delay()
+        if adaptive_delay > 0.0:
+            last_done_ts: float | None = getattr(self._worker_tls, "last_done_ts", None)
+            if last_done_ts is not None:
+                rem_adapt = adaptive_delay - (self._clock() - last_done_ts)
+                if rem_adapt > 0.0:
+                    self._sleep(rem_adapt)
         last_ts: float | None = getattr(self._worker_tls, "last_req_ts", None)
         if last_ts is not None and self.delay_seconds > 0:
             elapsed = self._clock() - last_ts
@@ -3910,12 +4434,14 @@ class BandEnricher:
                 self.requests_count += 1
                 self._unsaved_requests += 1
 
+            req_start_ts = self._clock()
             if self._custom_fetch_fn is not None:
                 try:
                     payload = self._custom_fetch_fn(gid)
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     html = (
@@ -3928,6 +4454,7 @@ class BandEnricher:
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     last_err = exc
@@ -3941,11 +4468,12 @@ class BandEnricher:
                     )
                     now_ts = self._clock()
                     if parallel_mode:
-                        self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_req_ts = req_start_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     html = decode_detalle_estacion_payload(raw_bytes)
-                    if not html.strip():
+                    if not html or html.isspace():
                         raise ValueError("Respuesta HTML vacía desde detalleEstacion.do")
                     return parse_detalle_estacion_html(html)
                 except (
@@ -3961,12 +4489,24 @@ class BandEnricher:
                     now_ts = self._clock()
                     if parallel_mode:
                         self._worker_tls.last_req_ts = now_ts
+                        self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     last_err = exc
 
+            if isinstance(last_err, urllib.error.HTTPError) and last_err.code in (
+                400,
+                401,
+                403,
+                404,
+                410,
+            ):
+                break
+
             if attempt < len(backoffs) - 1:
                 wait_s = backoffs[attempt]
+                if self._sleep is time.sleep:
+                    wait_s += random.uniform(0.0, 0.4)
                 logging.warning(
                     "Error en detalleEstacion emplazamiento=%s (intento %d/3): %s. Reintentando en %.1fs...",
                     gid,
@@ -3985,6 +4525,7 @@ class BandEnricher:
         dataset: dict[str, Any],
         *,
         populated_count: int | None = None,
+        force_novedades: bool = False,
     ) -> None:
         antenas = dataset.get("antenas") or []
         crawl_stats = dataset.setdefault("crawlStats", {})
@@ -3993,13 +4534,17 @@ class BandEnricher:
             if populated_count is not None
             else count_bands_populated(antenas)
         )
-        crawl_stats["bandRequestsCount"] = self.requests_count
+        with self._stats_lock:
+            crawl_stats["bandRequestsCount"] = self.requests_count
+            self._unsaved_requests = 0
         dataset["updatedAt"] = _utc_now_iso(self._now_utc)
         if self.checkpoint_path is not None:
             write_compact_dataset(dataset, self.checkpoint_path)
         if self._novedades_checkpoint_fn is not None:
-            self._novedades_checkpoint_fn(self.discovered_novedades)
-        self._unsaved_requests = 0
+            cur_nov_len = len(self.discovered_novedades)
+            if force_novedades or cur_nov_len != self._last_saved_novedades_len:
+                self._novedades_checkpoint_fn(self.discovered_novedades)
+                self._last_saved_novedades_len = cur_nov_len
 
     def _build_prioritized_units(
         self,
@@ -4127,10 +4672,13 @@ class BandEnricher:
         all_records_per_gid: dict[str, list[dict[str, Any]]],
         batch_patches: list[dict[str, Any]],
         batch_freq_novs: list[dict[str, Any]],
+        gids_by_idx: dict[int, list[str]] | None = None,
+        remaining_by_gid: dict[str, int] | None = None,
     ) -> tuple[int, int]:
         """
         Actualiza todas las antenas pendientes de `gid` cuyos GIDs asociados ya están en caché.
-        Devuelve `(newly_populated_delta, populated_count_delta)` en O(1).
+        Devuelve `(newly_populated_delta, populated_count_delta)` en O(1) y libera las entradas
+        de `gid_entries_cache` ya consumidas por completo para mantener la RAM acotada.
         """
         newly_delta = 0
         populated_delta = 0
@@ -4139,7 +4687,11 @@ class BandEnricher:
             if rec_idx in completed_pending_indices:
                 continue
             rec = antenas[rec_idx]
-            rec_gids = get_record_gids(rec)
+            rec_gids = (
+                gids_by_idx[rec_idx]
+                if gids_by_idx is not None and rec_idx in gids_by_idx
+                else get_record_gids(rec)
+            )
             if not all(g in gid_entries_cache for g in rec_gids):
                 continue
 
@@ -4153,6 +4705,14 @@ class BandEnricher:
                         all_records_per_gid.get(rg, [rec]),
                     )
                 )
+            if remaining_by_gid is not None:
+                for rg in rec_gids:
+                    rem = remaining_by_gid.get(rg, 0) - 1
+                    if rem <= 0:
+                        remaining_by_gid.pop(rg, None)
+                        gid_entries_cache.pop(rg, None)
+                    else:
+                        remaining_by_gid[rg] = rem
 
             was_bandas_list = isinstance(rec.get("bandas"), list)
             had_prior_bands = was_bandas_list
@@ -4244,24 +4804,27 @@ class BandEnricher:
     def enrich_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
         antenas: list[dict[str, Any]] = dataset.get("antenas") or []
         crawl_stats = dataset.setdefault("crawlStats", {})
+        self.saved_final_checkpoint = False
 
         all_records_per_gid: dict[str, list[dict[str, Any]]] = {}
-        for rec in antenas:
-            for g in get_record_gids(rec):
-                all_records_per_gid.setdefault(g, []).append(rec)
-
-        populated_count = count_bands_populated(antenas)
+        gids_by_idx: dict[int, list[str]] = {}
+        populated_count = 0
         zero_gid_populated = 0
         pending_indices: list[int] = []
         pending_by_gid: dict[str, list[int]] = {}
         for idx, rec in enumerate(antenas):
+            has_bandas = isinstance(rec.get("bandas"), list)
+            if has_bandas:
+                populated_count += 1
+            gids = get_record_gids(rec)
+            for g in gids:
+                all_records_per_gid.setdefault(g, []).append(rec)
             if not self._needs_band_scan(rec):
-                if isinstance(rec.get("bandas"), list):
+                if has_bandas:
                     rec["bandas"] = normalize_band_labels(rec["bandas"])
                 continue
-            gids = get_record_gids(rec)
             if not gids:
-                if not isinstance(rec.get("bandas"), list):
+                if not has_bandas:
                     populated_count += 1
                 rec["bandas"] = []
                 rec["frecuencias"] = []
@@ -4269,9 +4832,14 @@ class BandEnricher:
                 rec["bandsScannedAt"] = _utc_now_iso(self._now_utc)
                 zero_gid_populated += 1
                 continue
+            gids_by_idx[idx] = gids
             pending_indices.append(idx)
             for g in gids:
                 pending_by_gid.setdefault(g, []).append(idx)
+
+        remaining_by_gid: dict[str, int] = {
+            g: len(idxs) for g, idxs in pending_by_gid.items()
+        }
 
         total_antenas = len(antenas)
         already_scanned_in_cycle = total_antenas - len(pending_indices) - zero_gid_populated
@@ -4283,7 +4851,11 @@ class BandEnricher:
             crawl_stats["bandsPopulatedCount"] = populated_count
             crawl_stats["bandRequestsCount"] = 0
             if zero_gid_populated > 0:
-                self._save_dataset_checkpoint(dataset, populated_count=populated_count)
+                self._save_dataset_checkpoint(
+                    dataset, populated_count=populated_count, force_novedades=True
+                )
+                if self.checkpoint_path is not None:
+                    self.saved_final_checkpoint = True
             if self._progress_callback is not None:
                 self._progress_callback(
                     {
@@ -4297,6 +4869,7 @@ class BandEnricher:
 
         units = self._build_prioritized_units(antenas, pending_indices)
         gid_entries_cache: dict[str, list[dict[str, Any]]] = {}
+        fetched_gids: set[str] = set()
         completed_pending_indices: set[int] = set()
         failed_gids: set[str] = set()
         consecutive_failures = 0
@@ -4341,7 +4914,7 @@ class BandEnricher:
                     needed_gids = [
                         g
                         for g in unit_gids
-                        if g not in gid_entries_cache and g not in failed_gids
+                        if g not in fetched_gids and g not in failed_gids
                     ]
                     if not needed_gids:
                         continue
@@ -4353,7 +4926,7 @@ class BandEnricher:
                             < sum(
                                 1
                                 for g in later
-                                if g not in gid_entries_cache and g not in failed_gids
+                                if g not in fetched_gids and g not in failed_gids
                             )
                             <= remaining_reqs
                             for later in units[unit_cursor:]
@@ -4375,6 +4948,7 @@ class BandEnricher:
                             entries = self._http_fetch_detalle(gid, parallel_mode=False)
                             fetched_iso = _utc_now_iso(self._now_utc)
                             gid_entries_cache[gid] = entries
+                            fetched_gids.add(gid)
                             consecutive_failures = 0
                         except RuntimeError as exc:
                             self.failed_gids_count += 1
@@ -4404,6 +4978,8 @@ class BandEnricher:
                             all_records_per_gid=all_records_per_gid,
                             batch_patches=batch_patches,
                             batch_freq_novs=batch_freq_novs,
+                            gids_by_idx=gids_by_idx,
+                            remaining_by_gid=remaining_by_gid,
                         )
                         newly_populated += n_delta
                         populated_count += p_delta
@@ -4470,9 +5046,10 @@ class BandEnricher:
                                 seen_ordered_gids.add(g)
                                 ordered_gids.append(g)
 
-                max_in_flight = max(1, self.workers * 2)
+                max_in_flight = max(1, self.workers * 4)
                 max_consecutive_failures = max(15, self.workers * 2)
                 gid_cursor = 0
+                submitted_count = 0
                 total_gids = len(ordered_gids)
                 stop_submitting = False
                 last_progress_ts = run_start_ts
@@ -4492,12 +5069,11 @@ class BandEnricher:
                             return False
                         if len(in_flight) >= max_in_flight:
                             return False
-                        if (
-                            self.max_band_requests is not None
-                            and (self.requests_count + len(in_flight))
-                            >= self.max_band_requests
-                        ):
-                            return False
+                        if self.max_band_requests is not None:
+                            with self._stats_lock:
+                                cur_reqs_snap = self.requests_count
+                            if max(submitted_count, cur_reqs_snap) >= self.max_band_requests:
+                                return False
                         if self._would_exceed_time_budget(
                             run_start_ts, parallel_mode=True
                         ):
@@ -4507,6 +5083,7 @@ class BandEnricher:
                     while _can_submit_next():
                         next_gid = ordered_gids[gid_cursor]
                         gid_cursor += 1
+                        submitted_count += 1
                         fut = executor.submit(
                             self._http_fetch_detalle, next_gid, parallel_mode=True
                         )
@@ -4528,6 +5105,7 @@ class BandEnricher:
                                 entries = fut.result()
                                 fetched_iso = _utc_now_iso(self._now_utc)
                                 gid_entries_cache[gid] = entries
+                                fetched_gids.add(gid)
                                 consecutive_failures = 0
                             except RuntimeError as exc:
                                 self.failed_gids_count += 1
@@ -4560,6 +5138,8 @@ class BandEnricher:
                                 all_records_per_gid=all_records_per_gid,
                                 batch_patches=batch_patches,
                                 batch_freq_novs=batch_freq_novs,
+                                gids_by_idx=gids_by_idx,
+                                remaining_by_gid=remaining_by_gid,
                             )
                             newly_populated += n_delta
                             populated_count += p_delta
@@ -4567,14 +5147,18 @@ class BandEnricher:
                         while _can_submit_next():
                             next_gid = ordered_gids[gid_cursor]
                             gid_cursor += 1
+                            submitted_count += 1
                             fut = executor.submit(
                                 self._http_fetch_detalle, next_gid, parallel_mode=True
                             )
                             in_flight[fut] = next_gid
 
                         now = self._clock()
+                        with self._stats_lock:
+                            cur_reqs = self.requests_count
+                            unsaved_reqs = self._unsaved_requests
                         self.last_requests_per_second = round(
-                            self.requests_count / max(0.001, now - run_start_ts), 2
+                            cur_reqs / max(0.001, now - run_start_ts), 2
                         )
 
                         flushed_live = False
@@ -4601,11 +5185,11 @@ class BandEnricher:
                             )
                             last_progress_ts = now
 
-                        if self.requests_count - last_log_req >= 500:
-                            last_log_req = self.requests_count
+                        if cur_reqs - last_log_req >= 500:
+                            last_log_req = cur_reqs
                             logging.info(
                                 "[bandas req #%d | %.1f req/s] emplazamiento=%s -> +%d antenas en esta sesión (total con bandas=%d/%d)",
-                                self.requests_count,
+                                cur_reqs,
                                 self.last_requests_per_second,
                                 last_done_gid,
                                 newly_populated,
@@ -4614,7 +5198,7 @@ class BandEnricher:
                             )
 
                         if (
-                            self._unsaved_requests >= self.checkpoint_every
+                            unsaved_reqs >= self.checkpoint_every
                             and (now - last_ckpt_ts)
                             >= MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S
                         ):
@@ -4622,6 +5206,70 @@ class BandEnricher:
                                 dataset, populated_count=populated_count
                             )
                             last_ckpt_ts = self._clock()
+
+                # Ola suave de recuperación secuencial para fallos puntuales de red (evita lanzar Parte 2/2 por pocos GIDs)
+                if (
+                    failed_gids
+                    and not stop_submitting
+                    and not self.fail_fast
+                    and len(failed_gids) <= FAILED_GID_RECOVERY_MAX
+                    and not self._would_exceed_time_budget(run_start_ts, parallel_mode=True)
+                    and (
+                        self.max_band_requests is None
+                        or self.requests_count < self.max_band_requests
+                    )
+                ):
+                    recovery_list = sorted(failed_gids)
+                    logging.info(
+                        "Reintentando %d emplazamientos con fallo transitorio en modo suave...",
+                        len(recovery_list),
+                    )
+                    if self._sleep is time.sleep:
+                        self._sleep(1.5)
+                    rec_patches: list[dict[str, Any]] = []
+                    rec_novs: list[dict[str, Any]] = []
+                    recovered_count = 0
+                    for rgid in recovery_list:
+                        if self._would_exceed_time_budget(run_start_ts, parallel_mode=True):
+                            break
+                        if (
+                            self.max_band_requests is not None
+                            and self.requests_count >= self.max_band_requests
+                        ):
+                            break
+                        try:
+                            entries = self._http_fetch_detalle(rgid, parallel_mode=False)
+                            fetched_iso = _utc_now_iso(self._now_utc)
+                            gid_entries_cache[rgid] = entries
+                            fetched_gids.add(rgid)
+                            failed_gids.discard(rgid)
+                            self.failed_gids_count = max(0, self.failed_gids_count - 1)
+                            recovered_count += 1
+                            n_delta, p_delta = self._apply_completed_gid(
+                                rgid,
+                                fetched_iso,
+                                antenas=antenas,
+                                pending_by_gid=pending_by_gid,
+                                completed_pending_indices=completed_pending_indices,
+                                gid_entries_cache=gid_entries_cache,
+                                all_records_per_gid=all_records_per_gid,
+                                batch_patches=rec_patches,
+                                batch_freq_novs=rec_novs,
+                                gids_by_idx=gids_by_idx,
+                                remaining_by_gid=remaining_by_gid,
+                            )
+                            newly_populated += n_delta
+                            populated_count += p_delta
+                        except RuntimeError as exc:
+                            logging.error("Recuperación fallida para emplazamiento=%s: %s", rgid, exc)
+                    if recovered_count > 0:
+                        logging.info(
+                            "Recuperados %d/%d emplazamientos transitorios en la ola final.",
+                            recovered_count,
+                            len(recovery_list),
+                        )
+                        if self._live_stream is not None and (rec_patches or rec_novs):
+                            self._live_stream.record_band_updates(rec_patches, rec_novs)
         finally:
             self._http_client.close_all()
 
@@ -4630,10 +5278,19 @@ class BandEnricher:
 
         self.last_total_antennas = total_antenas
         self.last_scanned_antennas = already_scanned_in_cycle + newly_populated
+        with self._stats_lock:
+            final_reqs = self.requests_count
+        self.last_requests_per_second = round(
+            final_reqs / max(0.001, self._clock() - run_start_ts), 2
+        )
         crawl_stats["bandsPopulatedCount"] = populated_count
-        crawl_stats["bandRequestsCount"] = self.requests_count
-        if self.requests_count > 0 or zero_gid_populated > 0:
-            self._save_dataset_checkpoint(dataset, populated_count=populated_count)
+        crawl_stats["bandRequestsCount"] = final_reqs
+        if final_reqs > 0 or zero_gid_populated > 0:
+            self._save_dataset_checkpoint(
+                dataset, populated_count=populated_count, force_novedades=True
+            )
+            if self.checkpoint_path is not None:
+                self.saved_final_checkpoint = True
 
         if self._progress_callback is not None:
             self._progress_callback(
@@ -4836,13 +5493,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--delay",
         type=float,
         default=DEFAULT_DELAY_SECONDS,
-        help="Segundos mínimos de espera por hilo entre peticiones HTTP consecutivas (por defecto 0.02s).",
+        help="Segundos mínimos de espera por hilo entre peticiones HTTP consecutivas (por defecto 0.005s).",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=DEFAULT_BAND_WORKERS,
-        help="Hilos concurrentes Keep-Alive para detalleEstacion.do (por defecto 16).",
+        help="Hilos concurrentes Keep-Alive para detalleEstacion.do (por defecto 24).",
     )
     parser.add_argument(
         "--census-workers",
@@ -5301,13 +5958,13 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
-        if (
+        if not enricher.saved_final_checkpoint and (
             enricher.requests_count > 0
             or migrated_legacy_masmovil
             or output_path.resolve() != input_path.resolve()
         ):
             write_compact_dataset(dataset, output_path)
-        if nov_writer is not None:
+        if nov_writer is not None and not enricher.saved_final_checkpoint:
             nov_writer(enricher.discovered_novedades)
         if live_stream is not None:
             live_stream.flush_final()
@@ -5358,13 +6015,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     auto_checkpoint = False
-    if args.checkpoint:
-        checkpoint_path: Path | None = Path(args.checkpoint)
-    elif args.region == "all":
-        checkpoint_path = Path("/tmp/web_de_antenas_full_crawl.checkpoint.json")
-        auto_checkpoint = True
-    else:
-        checkpoint_path = None
+    checkpoint_path: Path | None = Path(args.checkpoint) if args.checkpoint else None
 
     preserve_path: Path | None
     if args.preserve_from:
@@ -5433,7 +6084,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if prior_dataset is not None:
-        restored = preserve_bands_in_records(dataset["antenas"], prior_dataset)
+        restored = preserve_bands_in_records(
+            dataset["antenas"],
+            prior_index if prior_index is not None else prior_dataset,
+        )
         dataset["crawlStats"]["bandsPopulatedCount"] = count_bands_populated(
             dataset["antenas"]
         )
@@ -5512,9 +6166,12 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=progress_cb,
         )
         enricher.enrich_dataset(dataset)
-        size_bytes = write_compact_dataset(dataset, output_path)
-        if nov_writer is not None:
-            nov_writer(enricher.discovered_novedades)
+        if enricher.saved_final_checkpoint and output_path.exists():
+            size_bytes = output_path.stat().st_size
+        else:
+            size_bytes = write_compact_dataset(dataset, output_path)
+            if nov_writer is not None:
+                nov_writer(enricher.discovered_novedades)
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:

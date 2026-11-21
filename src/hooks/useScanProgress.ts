@@ -975,7 +975,7 @@ export function computeInterpolatedScanMetrics(
   const extraAntennas = hasFastRate
     ? Math.floor(
         boundedElapsedSec *
-          Math.min(85, (status.requestsPerSecond ?? 0) * 0.9),
+          Math.min(150, (status.requestsPerSecond ?? 0) * 0.9),
       )
     : Math.floor(boundedElapsedSec * 0.9);
   const maxAllowed = Math.max(status.scannedAntennas, totalAntennas - 1);
@@ -1953,7 +1953,7 @@ async function fetchLiveScanMergedDelta(
         throw err;
       }
     }
-  });
+  })();
 
   await Promise.all([
     runTasksWithConcurrency(chunkTasks, LIVE_CHUNK_FETCH_CONCURRENCY),

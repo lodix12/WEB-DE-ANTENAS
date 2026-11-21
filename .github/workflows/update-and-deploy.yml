@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Configurar Python 3.12
         uses: actions/setup-python@v5
@@ -100,7 +100,7 @@ jobs:
             --status-file /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
             --mode watch \
-            --interval 8 \
+            --interval 15 \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
@@ -116,8 +116,8 @@ jobs:
           fi
           python3 scripts/fetch_antenas.py \
             --output public/data/antenas.json \
-            --delay 0.02 \
-            --workers 16 \
+            --delay 0.005 \
+            --workers 24 \
             --census-workers 8 \
             --preserve-from public/data/antenas.json \
             --fetch-bands \
@@ -146,14 +146,11 @@ jobs:
             cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
 
+          PUSHED="false"
           for ATTEMPT in 1 2 3; do
             git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
-            if [ "$ATTEMPT" -gt 1 ]; then
-              git fetch origin main
-              git reset --hard origin/main
-            else
-              git pull --rebase origin main
-            fi
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
             if [ -f /tmp/scan-commit-backup/novedades.json ]; then
               python3 scripts/fetch_antenas.py \
@@ -163,15 +160,21 @@ jobs:
             git add public/data/antenas.json public/data/novedades.json
             if git diff --cached --quiet; then
               echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              PUSHED="true"
               break
             fi
             git commit -m "chore(data): escaneo forzado Infoantenas (parte 1/2)"
             if git push origin HEAD:main; then
+              PUSHED="true"
               break
             fi
             echo "Reintentando push hacia main (intento $ATTEMPT/3)..."
             sleep 2
           done
+          if [ "$PUSHED" != "true" ]; then
+            echo "Error: no fue posible publicar los cambios de Parte 1/2 tras 3 intentos." >&2
+            exit 1
+          fi
 
       - name: Comprobar estaciones pendientes de escaneo de bandas
         id: check_remaining
@@ -236,7 +239,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Configurar Python 3.12
         uses: actions/setup-python@v5
@@ -261,7 +264,7 @@ jobs:
             --status-file /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
             --mode watch \
-            --interval 8 \
+            --interval 15 \
             --scan-id "$SCAN_ID" \
             --scan-trigger "$SCAN_TRIGGER" \
             --record-novedades "$RECORD_NOVEDADES" \
@@ -279,8 +282,8 @@ jobs:
             --enrich-bands-only \
             --input public/data/antenas.json \
             --output public/data/antenas.json \
-            --delay 0.02 \
-            --workers 16 \
+            --delay 0.005 \
+            --workers 24 \
             --max-band-seconds 18000 \
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
@@ -306,14 +309,11 @@ jobs:
             cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
 
+          PUSHED="false"
           for ATTEMPT in 1 2 3; do
             git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
-            if [ "$ATTEMPT" -gt 1 ]; then
-              git fetch origin main
-              git reset --hard origin/main
-            else
-              git pull --rebase origin main
-            fi
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
             if [ -f /tmp/scan-commit-backup/novedades.json ]; then
               python3 scripts/fetch_antenas.py \
@@ -323,15 +323,21 @@ jobs:
             git add public/data/antenas.json public/data/novedades.json
             if git diff --cached --quiet; then
               echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              PUSHED="true"
               break
             fi
             git commit -m "chore(data): escaneo forzado Infoantenas (parte 2/2)"
             if git push origin HEAD:main; then
+              PUSHED="true"
               break
             fi
             echo "Reintentando push hacia main (intento $ATTEMPT/3)..."
             sleep 2
           done
+          if [ "$PUSHED" != "true" ]; then
+            echo "Error: no fue posible publicar los cambios de Parte 2/2 tras 3 intentos." >&2
+            exit 1
+          fi
 
       - name: Comprobar estaciones pendientes de escaneo de bandas
         id: check_remaining

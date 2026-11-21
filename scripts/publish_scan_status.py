@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import re
 import signal
 import subprocess
 import sys
+import tarfile
 import time
 from typing import Any
 
@@ -31,7 +33,8 @@ GIT_ENV = {
 }
 
 LIVE_CHUNK_RE = re.compile(r"^live-chunk-(\d+)\.json$")
-MIN_PUSH_COOLDOWN_SECONDS = 2.5
+MIN_PUSH_COOLDOWN_SECONDS = 6.0
+MAX_HEARTBEAT_IDLE_SECONDS = 60.0
 POLL_STEP_SECONDS = 0.5
 
 
@@ -93,6 +96,32 @@ def _git_hash_bytes(raw_bytes: bytes, *, cwd: Path | str | None = None) -> str:
     return proc.stdout.decode("utf-8").strip()
 
 
+def _git_hash_files_batch(
+    paths: list[Path],
+    *,
+    cwd: Path | str | None = None,
+) -> list[str]:
+    """Hashea múltiples archivos en un único subproceso `git hash-object -w --stdin-paths`."""
+    if not paths:
+        return []
+    stdin_payload = "".join(f"{str(p.resolve())}\n" for p in paths).encode("utf-8")
+    proc = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin-paths"],
+        input=stdin_payload,
+        capture_output=True,
+        timeout=30,
+        env=GIT_ENV,
+        cwd=cwd,
+        check=True,
+    )
+    shas = [line.strip() for line in proc.stdout.decode("utf-8").splitlines() if line.strip()]
+    if len(shas) != len(paths):
+        raise RuntimeError(
+            f"git hash-object --stdin-paths devolvió {len(shas)} SHAs para {len(paths)} archivos"
+        )
+    return shas
+
+
 def _collect_live_files(live_dir: Path | None) -> tuple[Path | None, list[tuple[int, Path]]]:
     if live_dir is None or not live_dir.exists():
         return None, []
@@ -118,6 +147,7 @@ def push_status_to_branch(
     branch: str = "scan-status",
     blob_sha_cache: dict[str, str] | None = None,
     cwd: Path | str | None = None,
+    tail_sha_cache: dict[str, tuple[int, int, str]] | None = None,
 ) -> bool:
     payload = read_json_safe(status_path)
     if payload is None:
@@ -130,12 +160,32 @@ def push_status_to_branch(
         max_chunk_count = max(idx + 1 for idx, _ in chunk_files)
         if int(payload.get("chunkCount") or 0) < max_chunk_count:
             payload["chunkCount"] = max_chunk_count
+
+    tail_bytes: bytes | None = None
+    tail_stat_key: tuple[int, int] | None = None
+    cached_tail_sha: str | None = None
     if tail_path is not None:
-        tail_doc = read_json_safe(tail_path)
-        if tail_doc is not None:
-            tail_seq = int(tail_doc.get("seq") or 0)
-            if int(payload.get("deltaSeq") or 0) < tail_seq:
-                payload["deltaSeq"] = tail_seq
+        try:
+            st = tail_path.stat()
+            tail_stat_key = (st.st_mtime_ns, st.st_size)
+            if tail_sha_cache is not None:
+                entry = tail_sha_cache.get("live-tail.json")
+                if entry is not None and entry[0] == tail_stat_key[0] and entry[1] == tail_stat_key[1]:
+                    cached_tail_sha = entry[2]
+            if cached_tail_sha is None:
+                tail_bytes = tail_path.read_bytes()
+                if tail_bytes:
+                    try:
+                        tail_doc = json.loads(tail_bytes.decode("utf-8"))
+                        if isinstance(tail_doc, dict):
+                            tail_seq = int(tail_doc.get("seq") or 0)
+                            if int(payload.get("deltaSeq") or 0) < tail_seq:
+                                payload["deltaSeq"] = tail_seq
+                    except Exception:
+                        pass
+        except OSError:
+            tail_bytes = None
+            cached_tail_sha = None
 
     payload["updatedAt"] = utc_now_iso()
     status_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -145,16 +195,19 @@ def push_status_to_branch(
             ("scan-status.json", _git_hash_bytes(status_bytes, cwd=cwd))
         ]
 
-        if tail_path is not None:
-            try:
-                tail_bytes = tail_path.read_bytes()
-                if tail_bytes:
-                    tree_entries.append(
-                        ("live-tail.json", _git_hash_bytes(tail_bytes, cwd=cwd))
-                    )
-            except OSError:
-                pass
+        if cached_tail_sha:
+            tree_entries.append(("live-tail.json", cached_tail_sha))
+        elif tail_bytes:
+            tail_sha = _git_hash_bytes(tail_bytes, cwd=cwd)
+            if tail_sha_cache is not None and tail_stat_key is not None:
+                tail_sha_cache["live-tail.json"] = (
+                    tail_stat_key[0],
+                    tail_stat_key[1],
+                    tail_sha,
+                )
+            tree_entries.append(("live-tail.json", tail_sha))
 
+        uncached_chunks: list[tuple[str, Path]] = []
         for _, chunk_path in chunk_files:
             cname = chunk_path.name
             cached_sha = blob_sha_cache.get(cname) if blob_sha_cache is not None else None
@@ -162,15 +215,32 @@ def push_status_to_branch(
                 tree_entries.append((cname, cached_sha))
                 continue
             try:
-                chunk_bytes = chunk_path.read_bytes()
+                if chunk_path.stat().st_size <= 0:
+                    continue
             except OSError:
                 continue
-            if not chunk_bytes:
-                continue
-            csha = _git_hash_bytes(chunk_bytes, cwd=cwd)
-            if blob_sha_cache is not None:
-                blob_sha_cache[cname] = csha
-            tree_entries.append((cname, csha))
+            uncached_chunks.append((cname, chunk_path))
+
+        if len(uncached_chunks) == 1:
+            cname, cpath = uncached_chunks[0]
+            try:
+                chunk_bytes = cpath.read_bytes()
+            except OSError:
+                chunk_bytes = b""
+            if chunk_bytes:
+                csha = _git_hash_bytes(chunk_bytes, cwd=cwd)
+                if blob_sha_cache is not None:
+                    blob_sha_cache[cname] = csha
+                tree_entries.append((cname, csha))
+        elif len(uncached_chunks) > 1:
+            batch_shas = _git_hash_files_batch(
+                [cpath for _, cpath in uncached_chunks],
+                cwd=cwd,
+            )
+            for (cname, _), csha in zip(uncached_chunks, batch_shas):
+                if blob_sha_cache is not None:
+                    blob_sha_cache[cname] = csha
+                tree_entries.append((cname, csha))
 
         tree_entries.sort(key=lambda item: item[0])
         tree_input = "".join(
@@ -294,25 +364,47 @@ def restore_from_branch(
             cwd=cwd,
             check=True,
         )
-        names = [
+        target_names = [
             line.strip()
             for line in ls_proc.stdout.decode("utf-8").splitlines()
             if line.strip()
+            and (line.strip() == "live-tail.json" or LIVE_CHUNK_RE.match(line.strip()))
         ]
 
-        eff_live_dir.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            if name == "live-tail.json" or LIVE_CHUNK_RE.match(name):
-                show_proc = subprocess.run(
-                    ["git", "show", f"{remote_ref}:{name}"],
-                    capture_output=True,
-                    timeout=15,
-                    env=GIT_ENV,
-                    cwd=cwd,
-                    check=False,
-                )
-                if show_proc.returncode == 0 and show_proc.stdout:
-                    write_bytes_atomic(show_proc.stdout, eff_live_dir / name)
+        if target_names:
+            eff_live_dir.mkdir(parents=True, exist_ok=True)
+            archive_proc = subprocess.run(
+                ["git", "archive", "--format=tar", remote_ref, "--", *target_names],
+                capture_output=True,
+                timeout=30,
+                env=GIT_ENV,
+                cwd=cwd,
+                check=False,
+            )
+            if archive_proc.returncode == 0 and archive_proc.stdout:
+                with tarfile.open(fileobj=io.BytesIO(archive_proc.stdout), mode="r:") as tf:
+                    for member in tf.getmembers():
+                        if not member.isfile():
+                            continue
+                        fname = Path(member.name).name
+                        if fname == "live-tail.json" or LIVE_CHUNK_RE.match(fname):
+                            extracted = tf.extractfile(member)
+                            if extracted is not None:
+                                raw_data = extracted.read()
+                                if raw_data:
+                                    write_bytes_atomic(raw_data, eff_live_dir / fname)
+            else:
+                for name in target_names:
+                    show_proc = subprocess.run(
+                        ["git", "show", f"{remote_ref}:{name}"],
+                        capture_output=True,
+                        timeout=15,
+                        env=GIT_ENV,
+                        cwd=cwd,
+                        check=False,
+                    )
+                    if show_proc.returncode == 0 and show_proc.stdout:
+                        write_bytes_atomic(show_proc.stdout, eff_live_dir / name)
 
         return True
     except Exception as exc:
@@ -326,12 +418,14 @@ def restore_from_branch(
 def _snapshot_watch_signature(
     status_path: Path,
     live_dir: Path | None,
-) -> tuple[int, int, str, str, int]:
+) -> tuple[int, int, str, str, int, int, int]:
     doc = read_json_safe(status_path) or {}
     delta_seq = int(doc.get("deltaSeq") or 0)
     chunk_count = int(doc.get("chunkCount") or 0)
     phase = str(doc.get("phase") or "")
     state = str(doc.get("state") or "")
+    scanned_antennas = int(doc.get("scannedAntennas") or 0)
+    census_boxes = int(doc.get("censusBoxesVisited") or 0)
     tail_mtime_ns = 0
     if live_dir is not None:
         tail_path = live_dir / "live-tail.json"
@@ -339,7 +433,15 @@ def _snapshot_watch_signature(
             tail_mtime_ns = tail_path.stat().st_mtime_ns
         except OSError:
             tail_mtime_ns = 0
-    return (delta_seq, chunk_count, phase, state, tail_mtime_ns)
+    return (
+        delta_seq,
+        chunk_count,
+        phase,
+        state,
+        tail_mtime_ns,
+        scanned_antennas,
+        census_boxes,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -355,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=("watch", "finalize", "restore"),
         required=True,
     )
-    parser.add_argument("--interval", type=float, default=8.0)
+    parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--branch", default="scan-status")
     parser.add_argument("--scan-id", default="")
     parser.add_argument("--scan-trigger", default="workflow_dispatch")
@@ -518,7 +620,9 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _handle_sig)
 
     blob_sha_cache: dict[str, str] = {}
+    tail_sha_cache: dict[str, tuple[int, int, str]] = {}
     heartbeat_interval = max(MIN_PUSH_COOLDOWN_SECONDS, float(args.interval))
+    idle_heartbeat_interval = max(heartbeat_interval, MAX_HEARTBEAT_IDLE_SECONDS)
 
     push_status_to_branch(
         status_path,
@@ -526,6 +630,7 @@ def main(argv: list[str] | None = None) -> int:
         branch=args.branch,
         blob_sha_cache=blob_sha_cache,
         cwd=args.cwd,
+        tail_sha_cache=tail_sha_cache,
     )
     last_push_ts = time.monotonic()
     last_sig = _snapshot_watch_signature(status_path, eff_live_dir)
@@ -539,10 +644,13 @@ def main(argv: list[str] | None = None) -> int:
         now = time.monotonic()
         elapsed = now - last_push_ts
         cur_sig = _snapshot_watch_signature(status_path, eff_live_dir)
-        sig_changed = cur_sig != last_sig
+        urgent_changed = cur_sig[:5] != last_sig[:5]
+        any_changed = cur_sig != last_sig
 
-        if (sig_changed and elapsed >= MIN_PUSH_COOLDOWN_SECONDS) or (
-            elapsed >= heartbeat_interval
+        if (
+            (urgent_changed and elapsed >= MIN_PUSH_COOLDOWN_SECONDS)
+            or (any_changed and elapsed >= heartbeat_interval)
+            or (elapsed >= idle_heartbeat_interval)
         ):
             push_status_to_branch(
                 status_path,
@@ -550,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch=args.branch,
                 blob_sha_cache=blob_sha_cache,
                 cwd=args.cwd,
+                tail_sha_cache=tail_sha_cache,
             )
             last_push_ts = time.monotonic()
             last_sig = _snapshot_watch_signature(status_path, eff_live_dir)

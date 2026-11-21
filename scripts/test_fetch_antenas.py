@@ -4259,9 +4259,335 @@ class FetchAntenasUnitTests(unittest.TestCase):
             assert loaded_nov is not None
             self.assertEqual(loaded_nov["novedades"][0]["op"], "orange")
 
+    def test_keepalive_jsessionid_reuse_and_adaptive_backpressure(self) -> None:
+        received_cookies: list[str | None] = []
+        lock = threading.Lock()
+
+        class _SessionHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return None
+
+            def do_GET(self) -> None:  # noqa: N802
+                cookie_hdr = self.headers.get("Cookie")
+                with lock:
+                    received_cookies.append(cookie_hdr)
+                if self.path == "/server-busy":
+                    body = b"Service Unavailable"
+                    self.send_response(503)
+                    self.send_header("Retry-After", "1.0")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                body = b"<html>ok</html>"
+                self.send_response(200)
+                if not cookie_hdr:
+                    self.send_header(
+                        "Set-Cookie",
+                        "JSESSIONID=TESTSESSION12345; Path=/VCTEL; HttpOnly",
+                    )
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _SessionHandler)
+        port = server.server_address[1]
+        srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        srv_thread.start()
+        client = fa._ThreadLocalKeepAliveClient()
+
+        try:
+            url = f"http://127.0.0.1:{port}/detalle"
+            client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            self.assertEqual(received_cookies[0], None)
+            self.assertEqual(received_cookies[1], "JSESSIONID=TESTSESSION12345")
+            self.assertEqual(client.get_adaptive_delay(), 0.0)
+
+            # Congestión 503 activa enfriamiento compartido y retardo adaptativo > 0
+            fake_clock = FakeClock()
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                client.fetch_bytes(
+                    f"http://127.0.0.1:{port}/server-busy",
+                    headers={"User-Agent": "Test/1.0"},
+                    timeout=5.0,
+                    clock_fn=fake_clock.time,
+                )
+            ctx.exception.close()
+            self.assertGreater(client.get_adaptive_delay(), 0.0)
+
+            # Simulación de latencia elevada (> ADAPTIVE_LATENCY_HIGH_S) y recuperación progresiva
+            client._ewma_latency_s = 0.0
+            client._adaptive_delay_s = 0.0
+            client._record_success_latency(2.0)
+            elevated_delay = client.get_adaptive_delay()
+            self.assertGreater(elevated_delay, 0.0)
+            for _ in range(120):
+                client._record_success_latency(0.15)
+            self.assertLess(client.get_adaptive_delay(), elevated_delay)
+        finally:
+            client.close_all()
+            server.shutdown()
+            server.server_close()
+            srv_thread.join(timeout=3.0)
+
+    def test_fast_html_parser_matches_fallback_and_handles_edge_cases(self) -> None:
+        realistic_html = """
+        <html><head><title>Niveles de Exposici&oacute;n</title></head><body>
+        <table class="outer">
+            <tr><td><h2>LOCALIZACI&Oacute;N</h2></td></tr>
+            <tr><td><table><tr><td><h3>C&oacute;digo</h3></td><td><h3>Direcci&oacute;n</h3></td></tr>
+            <tr><td>TELEFONICA - 2800006</td><td>CL TEST, 1</td></tr></table></td></tr>
+            <tr><td><h2>CARACTERISTICAS T&Eacute;CNICAS</h2></td></tr>
+            <tr><td>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td><h3>Operador</h3></td><td><h3>Referencia</h3></td><td><h3>Banda Asignada (MHz)</h3></td></tr>
+                    <tr><td><p>TELEFONICA MOVILES ESPA&Ntilde;A, S.A.U.</p></td><td><p>M M -2200417</p></td><td><p>778.00 - 788.00</p></td></tr>
+                    <tr><td><p>DS MOBILE NETWORKS, S.L.</p></td><td><p>M M -2602236</p></td><td><p>2110.00 - 2120.00</p></td></tr>
+                    <tr><td><p>ORANGE ESPAGNE, S.A.U.</p></td><td><p>M M -2609999</p></td><td><p>25.70 - 26.70</p></td></tr>
+                </table>
+            </td></tr>
+            <tr><td><h2>NIVELES MEDIDOS EN EL ENTORNO</h2></td></tr>
+            <tr><td>
+                <table class="tablaDetalleEstacionNivelesMedidos">
+                    <tr><td>Distancia</td><td>Acimut</td><td>Valor Medido</td></tr>
+                    <tr><td>100.0</td><td>200.0</td><td>700.00 - 800.00</td></tr>
+                </table>
+            </td></tr>
+        </table></body></html>
+        """
+        fast_rows = fa._fast_parse_detalle_estacion_html(realistic_html)
+        self.assertIsNotNone(fast_rows)
+        assert fast_rows is not None
+        self.assertEqual(len(fast_rows), 3)
+        self.assertEqual(fast_rows[0]["operador"], "TELEFONICA MOVILES ESPAÑA, S.A.U.")
+        self.assertEqual(fast_rows[0]["op"], "movistar")
+        self.assertEqual(fast_rows[1]["op"], "digi")
+        self.assertEqual(fast_rows[2]["banda"], "26 GHz")
+
+        # Verificar paridad exacta con el parser HTMLParser completo
+        with mock.patch.object(fa, "_fast_parse_detalle_estacion_html", return_value=None):
+            fallback_rows = fa.parse_detalle_estacion_html(realistic_html)
+        self.assertEqual(fast_rows, fallback_rows)
+
+        # Tabla sin cabecera h2 -> ruta rápida devuelve None y delega en HTMLParser sin perder filas
+        headerless_html = """
+        <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-1</td><td>842.00 - 852.00</td></tr>
+        </table>
+        """
+        self.assertIsNone(fa._fast_parse_detalle_estacion_html(headerless_html))
+        parsed_fallback = fa.parse_detalle_estacion_html(headerless_html)
+        self.assertEqual(len(parsed_fallback), 1)
+        self.assertEqual(parsed_fallback[0]["op"], "vodafone")
+
+    def test_band_enricher_recovers_transient_failed_gids_and_reuses_prior_index(self) -> None:
+        records = [
+            {
+                "id": f"TELEFONICA MOVILES ESPAÑA, S.A.U. - 28000{i}",
+                "gid": f"28000{i}",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.40 + i * 0.01,
+                "lon": -3.70,
+                "dir": f"CL RECUPERACION, {i}",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            }
+            for i in range(4)
+        ]
+        ds = fa.build_dataset(
+            records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 0.1,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 0.0,
+            },
+        )
+
+        # El emplazamiento 280002 falla sus 3 intentos durante el barrido paralelo,
+        # pero responde correctamente en la ola final de recuperación suave.
+        attempts_by_gid: dict[str, int] = {}
+        attempts_lock = threading.Lock()
+
+        def flaky_fetch(gid: str) -> str:
+            with attempts_lock:
+                attempts_by_gid[gid] = attempts_by_gid.get(gid, 0) + 1
+                n = attempts_by_gid[gid]
+            if gid == "280002" and n <= 3:
+                raise urllib.error.URLError("transient network blip")
+            return """
+            <h2>CARACTERISTICAS TÉCNICAS</h2>
+            <table>
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>REF-OK</td><td>3460.00 - 3600.00</td></tr>
+            </table>
+            """
+
+        clock = FakeClock()
+        enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=4,
+            fetch_fn=flaky_fetch,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+        )
+        enricher.enrich_dataset(ds)
+
+        self.assertEqual(enricher.failed_gids_count, 0)
+        self.assertEqual(ds["crawlStats"]["bandsPopulatedCount"], 4)
+        for ant in ds["antenas"]:
+            self.assertEqual(ant["bandas"], ["3500 MHz"])
+        self.assertEqual(attempts_by_gid["280002"], 4)
+
+        # Verificar que preserve_bands_in_records acepta prior_index precalculado con idéntico resultado
+        prior_index = fa.build_prior_antenna_index(ds)
+        fresh = [
+            {k: v for k, v in a.items() if k not in ("bandas", "frecuencias", "concesiones", "bandsScannedAt")}
+            for a in ds["antenas"]
+        ]
+        restored = fa.preserve_bands_in_records(fresh, prior_index)
+        self.assertEqual(restored, 4)
+        for ant in fresh:
+            self.assertEqual(ant["bandas"], ["3500 MHz"])
+
+    def test_publish_scan_status_batched_chunks_tail_cache_and_archive_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bare_origin = tmp / "origin.git"
+            work_repo = tmp / "work"
+            work_repo.mkdir(parents=True)
+
+            subprocess.run(["git", "init", "--bare", str(bare_origin)], check=True, capture_output=True)
+            subprocess.run(["git", "init", str(work_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "remote", "add", "origin", str(bare_origin)], cwd=work_repo, check=True, capture_output=True)
+
+            live_dir = tmp / "live-batch"
+            live_dir.mkdir(parents=True)
+            status_path = live_dir / "scan-status.json"
+            tail_path = live_dir / "live-tail.json"
+
+            for idx in range(3):
+                (live_dir / f"live-chunk-{idx}.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "scanId": "scan-batch-1",
+                            "seq": idx + 1,
+                            "chunkIndex": idx,
+                            "isTail": False,
+                            "updatedAt": "2026-11-21T10:00:00Z",
+                            "recordNovedades": True,
+                            "previousScanAt": None,
+                            "replacesNewAntennas": False,
+                            "newAntennas": [],
+                            "bandPatches": [{"id": f"M-{idx}", "gid": f"28000{idx}", "bandas": ["700 MHz"]}],
+                            "novedades": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            tail_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "scanId": "scan-batch-1",
+                        "seq": 4,
+                        "chunkIndex": 3,
+                        "isTail": True,
+                        "updatedAt": "2026-11-21T10:01:00Z",
+                        "recordNovedades": True,
+                        "previousScanAt": None,
+                        "replacesNewAntennas": False,
+                        "newAntennas": [],
+                        "bandPatches": [],
+                        "novedades": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status_path.write_text(
+                json.dumps(
+                    fa.build_scan_status_payload(
+                        state="running",
+                        scan_id="scan-batch-1",
+                        trigger="workflow_dispatch",
+                        record_novedades=True,
+                        part="1/2",
+                        phase="frecuencias",
+                        started_at="2026-11-21T10:00:00Z",
+                        total_antennas=100,
+                        scanned_antennas=50,
+                        delta_seq=4,
+                        chunk_count=3,
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            blob_cache: dict[str, str] = {}
+            tail_cache: dict[str, tuple[int, int, str]] = {}
+            ok1 = pss.push_status_to_branch(
+                status_path,
+                live_dir=live_dir,
+                branch="scan-status",
+                blob_sha_cache=blob_cache,
+                cwd=work_repo,
+                tail_sha_cache=tail_cache,
+            )
+            self.assertTrue(ok1)
+            self.assertEqual(len(blob_cache), 3)
+            self.assertIn("live-tail.json", tail_cache)
+            first_tail_sha = tail_cache["live-tail.json"][2]
+
+            # Segundo push con live-tail sin cambios reutiliza exactamente el SHA en caché
+            ok2 = pss.push_status_to_branch(
+                status_path,
+                live_dir=live_dir,
+                branch="scan-status",
+                blob_sha_cache=blob_cache,
+                cwd=work_repo,
+                tail_sha_cache=tail_cache,
+            )
+            self.assertTrue(ok2)
+            self.assertEqual(tail_cache["live-tail.json"][2], first_tail_sha)
+
+            # Restaurar por lote mediante git archive y comprobar los 5 archivos
+            restore_dir = tmp / "restored-batch"
+            restored_ok = pss.restore_from_branch(
+                restore_dir / "scan-status.json",
+                live_dir=restore_dir,
+                branch="scan-status",
+                expected_scan_id="scan-batch-1",
+                cwd=work_repo,
+            )
+            self.assertTrue(restored_ok)
+            restored_files = sorted(p.name for p in restore_dir.iterdir())
+            self.assertEqual(
+                restored_files,
+                [
+                    "live-chunk-0.json",
+                    "live-chunk-1.json",
+                    "live-chunk-2.json",
+                    "live-tail.json",
+                    "scan-status.json",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
