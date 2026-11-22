@@ -4584,10 +4584,337 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 ],
             )
 
+    def test_inspect_detalle_estacion_html_detects_degraded_and_valid_pages(self) -> None:
+        valid_nested_html = """
+        <html><head><title>Niveles</title></head><body>
+          <table><tr><td><html><body>cabecera</body></html></td></tr></table>
+          <h2>LOCALIZACI&Oacute;N</h2>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -2301174</td><td>758.00 - 768.00</td></tr>
+          </table>
+        </body></html>
+        """
+        rows, status = fa.inspect_detalle_estacion_html(valid_nested_html)
+        self.assertEqual(status, "ok")
+        self.assertEqual(len(rows), 1)
+
+        # HTML truncado (2 <html abiertos y solo 1 </html> cerrado, incluso con fila parcial)
+        truncated_html = valid_nested_html.rsplit("</html>", 1)[0]
+        rows_trunc, status_trunc = fa.inspect_detalle_estacion_html(truncated_html)
+        self.assertEqual(rows_trunc, [])
+        self.assertEqual(status_trunc, "truncated_html")
+
+        # Página HTTP 200 de error de Tomcat / Oracle / WAF
+        tomcat_err_html = "<html><body><h1>HTTP Status 500 - Internal Server Error</h1><p>ORA-01017</p></body></html>"
+        self.assertEqual(
+            fa.inspect_detalle_estacion_html(tomcat_err_html),
+            ([], "error_page"),
+        )
+
+        # Página HTTP 200 de MINETUR cuando el backend devuelve estación nula bajo sobrecarga
+        invalid_emp_html = """
+        <html><body>
+          <h2>LOCALIZACI&Oacute;N</h2>
+          <b>C&oacute;digo de emplazamiento no v&aacute;lido</b>
+        </body></html>
+        """
+        self.assertEqual(
+            fa.inspect_detalle_estacion_html(invalid_emp_html),
+            ([], "invalid_emplazamiento"),
+        )
+
+        # Estación válida con rango no estándar (ej. separado por punto y coma, como los 428 legítimos)
+        nonstandard_html = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>C C -1400096</td><td>1910.00 - 1915.00; 2155.00 - 2170.00</td></tr>
+          </table>
+        </body></html>
+        """
+        self.assertEqual(
+            fa.inspect_detalle_estacion_html(nonstandard_html),
+            ([], "valid_table_no_standard_ranges"),
+        )
+
+        # Tabla técnica con cabecera pero 0 filas de datos
+        empty_table_html = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+          </table>
+        </body></html>
+        """
+        self.assertEqual(
+            fa.inspect_detalle_estacion_html(empty_table_html),
+            ([], "valid_table_empty_rows"),
+        )
+
+        # HTML genérico inesperado (WAF / proxy / login)
+        unexpected_html = "<html><body><div>Acceso temporalmente limitado</div></body></html>"
+        self.assertEqual(
+            fa.inspect_detalle_estacion_html(unexpected_html),
+            ([], "unexpected_html"),
+        )
+
+    def test_band_enricher_preserves_existing_bands_on_soft_200_anomalies_and_recovers(
+        self,
+    ) -> None:
+        old_ts = "2026-11-21T09:55:16Z"
+        ds = {
+            "updatedAt": old_ts,
+            "sourceUrl": fa.PORTAL_SOURCE_URL,
+            "total": 4,
+            "crawlStats": {
+                "requestsCount": 1,
+                "durationSeconds": 0.1,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 0.0,
+            },
+            "operators": {},
+            "provinces": [],
+            "antenas": [
+                {
+                    "id": "ORANGE ESPAGNE, S.A.U. - RECOVER1",
+                    "gid": "RECOVER1",
+                    "op": "orange",
+                    "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                    "lat": 40.40,
+                    "lon": -3.70,
+                    "dir": "CL A",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["700 MHz"],
+                    "frecuencias": ["758.00 - 768.00"],
+                    "concesiones": [{"ref": "M M -1", "freq": "758.00 - 768.00"}],
+                    "bandsScannedAt": old_ts,
+                },
+                {
+                    "id": "VODAFONE ESPAÑA, S.A. - PERSIST_EMPTY",
+                    "gid": "PERSIST_EMPTY",
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.",
+                    "lat": 40.41,
+                    "lon": -3.70,
+                    "dir": "CL B",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["800 MHz"],
+                    "frecuencias": ["842.00 - 852.00"],
+                    "concesiones": [{"ref": "ABAB-1", "freq": "842.00 - 852.00"}],
+                    "bandsScannedAt": old_ts,
+                },
+                {
+                    "id": "VODAFONE ESPAÑA, S.A.U. - 65660",
+                    "gid": "65660",
+                    "mergedGids": ["65660", "065660"],
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                    "lat": 40.42,
+                    "lon": -3.70,
+                    "dir": "CL C",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["700 MHz", "800 MHz"],
+                    "frecuencias": ["768.00 - 778.00", "842.00 - 852.00"],
+                    "concesiones": [
+                        {"ref": "V-1", "freq": "768.00 - 778.00"},
+                        {"ref": "V-2", "freq": "842.00 - 852.00"},
+                    ],
+                    "bandsScannedAt": old_ts,
+                },
+                {
+                    "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 1502140",
+                    "gid": "1502140",
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 42.80,
+                    "lon": -8.40,
+                    "dir": "LG TUNEL",
+                    "mun": "BOQUEIXÓN",
+                    "prov": "A CORUÑA",
+                    "bandas": [],
+                    "frecuencias": [],
+                    "concesiones": [],
+                    "bandsScannedAt": old_ts,
+                },
+            ],
+        }
+
+        invalid_emp = "<html><body><h2>LOCALIZACI&Oacute;N</h2><b>C&oacute;digo de emplazamiento no v&aacute;lido</b></body></html>"
+        tomcat_err = "<html><body><h1>Apache Tomcat - HTTP Status 500</h1></body></html>"
+        valid_recover1 = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -1</td><td>758.00 - 768.00</td></tr>
+          </table>
+        </body></html>
+        """
+        valid_065660 = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>VODAFONE ESPAÑA, S.A.U.</td><td>V-2</td><td>842.00 - 852.00</td></tr>
+          </table>
+        </body></html>
+        """
+        valid_nonstd = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+            <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>C C -1400096</td><td>1910.00 - 1915.00; 2155.00 - 2170.00</td></tr>
+          </table>
+        </body></html>
+        """
+
+        calls: dict[str, int] = {}
+        lock = threading.Lock()
+
+        def degraded_fetch(gid: str) -> str:
+            with lock:
+                calls[gid] = calls.get(gid, 0) + 1
+                n = calls[gid]
+            if gid == "RECOVER1":
+                return invalid_emp if n <= 2 else valid_recover1
+            if gid == "PERSIST_EMPTY":
+                return invalid_emp
+            if gid == "65660":
+                return tomcat_err
+            if gid == "065660":
+                return valid_065660
+            if gid == "1502140":
+                return valid_nonstd
+            raise AssertionError(f"GID inesperado: {gid}")
+
+        clock = FakeClock()
+        enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=4,
+            rescan_since="2026-11-22T23:00:00Z",
+            record_novedades=True,
+            fetch_fn=degraded_fetch,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+            now_utc_fn=lambda: datetime(2026, 11, 22, 23, 5, 0, tzinfo=timezone.utc),
+        )
+        enricher.enrich_dataset(ds)
+
+        by_gid = {a["gid"]: a for a in ds["antenas"]}
+        # RECOVER1 se recuperó en el 3er intento sin perder bandas ni emitir falsas novedades
+        self.assertEqual(calls["RECOVER1"], 3)
+        self.assertEqual(by_gid["RECOVER1"]["bandas"], ["700 MHz"])
+        self.assertEqual(by_gid["RECOVER1"]["bandsScannedAt"], "2026-11-22T23:05:00Z")
+
+        # PERSIST_EMPTY falló repetidamente con HTTP 200 degradado -> preserva intactas sus bandas previas
+        self.assertEqual(by_gid["PERSIST_EMPTY"]["bandas"], ["800 MHz"])
+        self.assertEqual(
+            by_gid["PERSIST_EMPTY"]["concesiones"],
+            [{"ref": "ABAB-1", "freq": "842.00 - 852.00"}],
+        )
+        self.assertEqual(by_gid["PERSIST_EMPTY"]["bandsScannedAt"], old_ts)
+
+        # 65660/065660 (mergedGids): al fallar 65660, NO sobrescribe parcialmente con solo 065660
+        self.assertEqual(by_gid["65660"]["bandas"], ["700 MHz", "800 MHz"])
+        self.assertEqual(len(by_gid["65660"]["concesiones"]), 2)
+        self.assertEqual(by_gid["65660"]["bandsScannedAt"], old_ts)
+
+        # 1502140 (rango no estándar legítimo) se acepta en 1 sola petición sin reintentos
+        self.assertEqual(calls["1502140"], 1)
+        self.assertEqual(by_gid["1502140"]["bandas"], [])
+        self.assertEqual(by_gid["1502140"]["bandsScannedAt"], "2026-11-22T23:05:00Z")
+
+        # Ninguna novedad falsa emitida y anomalías contabilizadas
+        self.assertEqual(enricher.discovered_novedades, [])
+        self.assertEqual(enricher.failed_gids_count, 2)
+        self.assertGreater(enricher.anomalous_responses_count, 0)
+
+    def test_keepalive_global_rps_cap_session_reset_and_soft_anomaly_burst_cooldown(
+        self,
+    ) -> None:
+        # 1) Valores por defecto seguros en CLI
+        default_args = fa.parse_args([])
+        self.assertEqual(default_args.workers, 16)
+        self.assertEqual(default_args.delay, 0.02)
+        self.assertEqual(default_args.max_band_rps, 75.0)
+
+        # 2) Límite global de RPS (pace_global_rate)
+        clock = FakeClock()
+        t0 = clock.time()
+        client = fa._ThreadLocalKeepAliveClient()
+        for _ in range(5):
+            client.pace_global_rate(10.0, clock_fn=clock.time, sleep_fn=clock.sleep)
+        self.assertAlmostEqual(clock.time() - t0, 0.4, places=4)
+
+        # 3) Ráfaga de anomalías blandas HTTP 200 (>= 3 en 15s) dispara cooldown global
+        c1, b1 = client.record_soft_anomaly(clock_fn=clock.time)
+        self.assertEqual((c1, b1), (1, False))
+        self.assertFalse(client.has_recent_soft_anomaly_burst(clock_fn=clock.time))
+        c2, b2 = client.record_soft_anomaly(clock_fn=clock.time)
+        self.assertEqual((c2, b2), (2, False))
+        c3, b3 = client.record_soft_anomaly(clock_fn=clock.time)
+        self.assertEqual((c3, b3), (3, True))
+        self.assertTrue(client.has_recent_soft_anomaly_burst(clock_fn=clock.time))
+        self.assertGreater(client._cooldown_until, clock.time())
+
+        # 4) discard_tls_session limpia cookie JSESSIONID y conexión para la siguiente petición
+        seen_cookies: list[str | None] = []
+        session_counter = 0
+
+        class _CookieResetHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return None
+
+            def do_GET(self) -> None:  # noqa: N802
+                nonlocal session_counter
+                cookie_hdr = self.headers.get("Cookie")
+                seen_cookies.append(cookie_hdr)
+                body = b"<html>ok</html>"
+                self.send_response(200)
+                if not cookie_hdr:
+                    session_counter += 1
+                    self.send_header(
+                        "Set-Cookie",
+                        f"JSESSIONID=SESS_{session_counter}; Path=/VCTEL; HttpOnly",
+                    )
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _CookieResetHandler)
+        port = server.server_address[1]
+        srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        srv_thread.start()
+        live_client = fa._ThreadLocalKeepAliveClient()
+        try:
+            url = f"http://127.0.0.1:{port}/detalle"
+            live_client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            live_client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            live_client.discard_tls_session()
+            live_client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            live_client.fetch_bytes(url, headers={"User-Agent": "Test/1.0"}, timeout=5.0)
+            self.assertEqual(
+                seen_cookies,
+                [None, "JSESSIONID=SESS_1", None, "JSESSIONID=SESS_2"],
+            )
+        finally:
+            live_client.close_all()
+            server.shutdown()
+            server.server_close()
+            srv_thread.join(timeout=3.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-

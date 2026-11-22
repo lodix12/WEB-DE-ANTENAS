@@ -57,8 +57,9 @@ DETAIL_ENDPOINT_URL = "https://geoportal.minetur.gob.es/VCTEL/detalleEstacion.do
 PORTAL_SOURCE_URL = "https://geoportal.minetur.gob.es/VCTEL/vcne.do"
 SERVER_FEATURE_CAP = 1000
 DEFAULT_ZOOM = 7
-DEFAULT_DELAY_SECONDS = 0.005
-DEFAULT_BAND_WORKERS = 24
+DEFAULT_DELAY_SECONDS = 0.02
+DEFAULT_BAND_WORKERS = 16
+DEFAULT_MAX_BAND_RPS = 75.0
 DEFAULT_CENSUS_WORKERS = 8
 LIVE_DELTA_CHUNK_CAPACITY = 2000
 MULTI_WORKER_CHECKPOINT_MIN_INTERVAL_S = 180.0
@@ -68,7 +69,9 @@ CONNECT_STAGGER_SECONDS = 0.05
 ADAPTIVE_LATENCY_HIGH_S = 1.2
 ADAPTIVE_LATENCY_RECOVER_S = 0.6
 ADAPTIVE_MAX_EXTRA_DELAY_S = 0.5
-FAILED_GID_RECOVERY_MAX = 100
+SOFT_ANOMALY_WINDOW_S = 15.0
+SOFT_ANOMALY_BURST_THRESHOLD = 3
+FAILED_GID_RECOVERY_MAX = 500
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
 MAX_SUBDIVISION_DEPTH = 9
@@ -792,15 +795,18 @@ class _ThreadLocalKeepAliveClient:
         self._tls = threading.local()
         self._lock = threading.Lock()
         self._connect_gate_lock = threading.Lock()
+        self._rate_gate_lock = threading.Lock()
         self._all_conns: list[http.client.HTTPConnection] = []
         self._ssl_ctx: ssl.SSLContext | None = None
         self._proxy_cache: dict[tuple[str, ...], str] = {}
         self._cooldown_until: float = 0.0
         self._next_connect_ts: float = 0.0
+        self._next_global_req_ts: float = 0.0
         self._connect_stagger_s: float = max(0.0, float(connect_stagger_seconds))
         self._ewma_latency_s: float = 0.0
         self._adaptive_delay_s: float = 0.0
         self._clean_streak: int = 0
+        self._soft_anomaly_ts: deque[float] = deque()
 
     def _get_ssl_context(self) -> ssl.SSLContext:
         with self._lock:
@@ -951,8 +957,39 @@ class _ThreadLocalKeepAliveClient:
             except Exception:
                 pass
 
+    def discard_tls_session(self) -> None:
+        """Cierra la conexión Keep-Alive y descarta la cookie JSESSIONID del hilo actual."""
+        self._discard_tls_conn()
+        self._tls.cookies = {}
+
     def get_adaptive_delay(self) -> float:
         return self._adaptive_delay_s
+
+    def pace_global_rate(
+        self,
+        max_rps: float,
+        clock_fn: Callable[[], float] = time.monotonic,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Limita de forma global el caudal agregado entre hilos para no saturar MINETUR."""
+        if max_rps <= 0.0:
+            return
+        min_interval = 1.0 / float(max_rps)
+        with self._rate_gate_lock:
+            now = clock_fn()
+            wait_s = self._next_global_req_ts - now
+            if wait_s <= 0.0:
+                wait_s = 0.0
+                self._next_global_req_ts = now + min_interval
+            else:
+                self._next_global_req_ts += min_interval
+        if wait_s > 0.0:
+            sleep_fn(wait_s)
+
+    def _align_rate_gate_to_cooldown(self, target_ts: float) -> None:
+        with self._rate_gate_lock:
+            if target_ts > self._next_global_req_ts:
+                self._next_global_req_ts = target_ts
 
     def _record_success_latency(self, duration_s: float) -> None:
         if duration_s < 0.0:
@@ -987,6 +1024,7 @@ class _ThreadLocalKeepAliveClient:
         cooldown_s: float = 0.0,
         clock_fn: Callable[[], float] = time.monotonic,
     ) -> None:
+        cooldown_target = 0.0
         with self._lock:
             self._adaptive_delay_s = min(
                 ADAPTIVE_MAX_EXTRA_DELAY_S,
@@ -998,6 +1036,9 @@ class _ThreadLocalKeepAliveClient:
                 target_ts = clock_fn() + clamped
                 if target_ts > self._cooldown_until:
                     self._cooldown_until = target_ts
+                    cooldown_target = target_ts
+        if cooldown_target > 0.0:
+            self._align_rate_gate_to_cooldown(cooldown_target)
 
     def record_throttle_signal(
         self,
@@ -1006,14 +1047,64 @@ class _ThreadLocalKeepAliveClient:
     ) -> None:
         clamped = max(0.5, min(15.0, float(wait_seconds)))
         target_ts = clock_fn() + clamped
+        cooldown_target = 0.0
         with self._lock:
             if target_ts > self._cooldown_until:
                 self._cooldown_until = target_ts
+                cooldown_target = target_ts
             self._adaptive_delay_s = min(
                 ADAPTIVE_MAX_EXTRA_DELAY_S,
                 max(0.05, (self._adaptive_delay_s * 1.5) + 0.03),
             )
             self._clean_streak = 0
+        if cooldown_target > 0.0:
+            self._align_rate_gate_to_cooldown(cooldown_target)
+
+    def record_soft_anomaly(
+        self,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> tuple[int, bool]:
+        """
+        Registra una respuesta HTTP 200 anómala (HTML de error/truncado o vaciado
+        sospechoso de concesiones previas) y dispara enfriamiento global si detecta ráfaga.
+        """
+        now = clock_fn()
+        cutoff = now - SOFT_ANOMALY_WINDOW_S
+        cooldown_target = 0.0
+        with self._lock:
+            while self._soft_anomaly_ts and self._soft_anomaly_ts[0] < cutoff:
+                self._soft_anomaly_ts.popleft()
+            self._soft_anomaly_ts.append(now)
+            recent_count = len(self._soft_anomaly_ts)
+            self._adaptive_delay_s = min(
+                ADAPTIVE_MAX_EXTRA_DELAY_S,
+                max(0.05, (self._adaptive_delay_s * 1.5) + 0.04),
+            )
+            self._clean_streak = 0
+            burst_active = recent_count >= SOFT_ANOMALY_BURST_THRESHOLD
+            if burst_active:
+                cooldown_s = min(
+                    15.0,
+                    3.0 + float(recent_count - SOFT_ANOMALY_BURST_THRESHOLD + 1) * 2.0,
+                )
+                target_ts = now + cooldown_s
+                if target_ts > self._cooldown_until:
+                    self._cooldown_until = target_ts
+                    cooldown_target = target_ts
+        if cooldown_target > 0.0:
+            self._align_rate_gate_to_cooldown(cooldown_target)
+        return recent_count, burst_active
+
+    def has_recent_soft_anomaly_burst(
+        self,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> bool:
+        now = clock_fn()
+        cutoff = now - SOFT_ANOMALY_WINDOW_S
+        with self._lock:
+            while self._soft_anomaly_ts and self._soft_anomaly_ts[0] < cutoff:
+                self._soft_anomaly_ts.popleft()
+            return len(self._soft_anomaly_ts) >= SOFT_ANOMALY_BURST_THRESHOLD
 
     def wait_if_cooled_down(
         self,
@@ -1124,6 +1215,7 @@ class _ThreadLocalKeepAliveClient:
                 if reused and not is_fresh_attempt:
                     # Socket Keep-Alive cerrado en servidor tras inactividad -> reabrir de inmediato
                     continue
+                self.discard_tls_session()
                 self._record_congestion_event(bump_delay_s=0.02, clock_fn=clock_fn)
                 raise
             except (
@@ -1132,7 +1224,7 @@ class _ThreadLocalKeepAliveClient:
                 TimeoutError,
                 OSError,
             ) as exc:
-                self._discard_tls_conn()
+                self.discard_tls_session()
                 if isinstance(exc, TimeoutError):
                     self._record_congestion_event(
                         bump_delay_s=0.03,
@@ -1154,6 +1246,7 @@ class _ThreadLocalKeepAliveClient:
 
             if resp.status >= 400:
                 if resp.status in (429, 503):
+                    self.discard_tls_session()
                     retry_after_hdr = (resp.getheader("Retry-After") or "").strip()
                     wait_s = 2.0
                     if retry_after_hdr:
@@ -1163,6 +1256,7 @@ class _ThreadLocalKeepAliveClient:
                             wait_s = 2.0
                     self.record_throttle_signal(wait_s, clock_fn=clock_fn)
                 elif resp.status in (500, 502, 504):
+                    self.discard_tls_session()
                     self._record_congestion_event(
                         bump_delay_s=0.03,
                         cooldown_s=1.0,
@@ -1461,7 +1555,7 @@ class InfoantenasCrawler:
                     )
                     now_ts = self._clock()
                     if parallel_mode:
-                        self._worker_tls.last_req_ts = req_start_ts
+                        self._worker_tls.last_req_ts = now_ts
                         self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
@@ -2664,19 +2758,45 @@ class _DetalleEstacionHTMLParser(HTMLParser):
 
 
 _CARACT_H2_RE = re.compile(r"<h2\b[^>]*>[^<]*CARACTER", re.IGNORECASE)
+_LOCALIZACION_H2_RE = re.compile(r"<h2\b[^>]*>[^<]*LOCALIZACI", re.IGNORECASE)
 _NIVELES_MEDIDOS_RE = re.compile(r"NIVELES\s+MEDIDOS", re.IGNORECASE)
 _TABLE_OPEN_RE = re.compile(r"<table\b[^>]*>", re.IGNORECASE)
 _TABLE_CLOSE_RE = re.compile(r"</table\s*>", re.IGNORECASE)
 _TR_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr\s*>", re.IGNORECASE | re.DOTALL)
 _TD_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_OPEN_TAG_RE = re.compile(r"<html\b", re.IGNORECASE)
+_HTML_CLOSE_TAG_RE = re.compile(r"</html\s*>", re.IGNORECASE)
+_ORACLE_ERR_RE = re.compile(r"\bora-\d{4,5}\b", re.IGNORECASE)
+_DETAIL_ERROR_MARKERS = (
+    "http status 4",
+    "http status 5",
+    "apache tomcat",
+    "error interno",
+    "se ha producido un error",
+    "service unavailable",
+    "temporarily unavailable",
+    "too many requests",
+    "bad gateway",
+    "gateway timeout",
+    "access denied",
+    "request blocked",
+    "sqlexception",
+    "nullpointerexception",
+    "java.lang.",
+    "sesion caducada",
+    "demasiadas peticiones",
+)
 
 
-def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
+def _fast_inspect_detalle_estacion_html(
+    html: str,
+) -> tuple[list[dict[str, Any]], bool] | None:
     """
     Ruta rápida basada en regex compiladas sobre la tabla `CARACTERISTICAS TÉCNICAS`
-    sin tokenizar `<head>`, cabecera ni `NIVELES MEDIDOS`. Devuelve `None` si detecta
-    estructura anidada o inesperada para delegar de forma segura en `_DetalleEstacionHTMLParser`.
+    sin tokenizar `<head>`, cabecera ni `NIVELES MEDIDOS`.
+    Devuelve `(extracted, has_nonempty_data_row)` o `None` si detecta estructura
+    anidada o inesperada para delegar de forma segura en `_DetalleEstacionHTMLParser`.
     """
     m_h2 = _CARACT_H2_RE.search(html)
     if m_h2 is None:
@@ -2725,6 +2845,7 @@ def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
         return None
 
     extracted: list[dict[str, Any]] = []
+    has_nonempty_data_row = False
     for row in rows[1:]:
         if len(row) < 3:
             continue
@@ -2733,6 +2854,7 @@ def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
         banda_raw = row[2]
         if not operador_raw or not banda_raw:
             continue
+        has_nonempty_data_row = True
         match = FREQ_RANGE_RE.match(banda_raw)
         if not match:
             continue
@@ -2754,7 +2876,145 @@ def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
                 "banda": classify_frequency_band(lo, hi),
             }
         )
-    return extracted
+    return extracted, has_nonempty_data_row
+
+
+def _fast_parse_detalle_estacion_html(html: str) -> list[dict[str, Any]] | None:
+    """
+    Ruta rápida basada en regex compiladas sobre la tabla `CARACTERISTICAS TÉCNICAS`
+    sin tokenizar `<head>`, cabecera ni `NIVELES MEDIDOS`. Devuelve `None` si detecta
+    estructura anidada o inesperada para delegar de forma segura en `_DetalleEstacionHTMLParser`.
+    """
+    inspected = _fast_inspect_detalle_estacion_html(html)
+    return inspected[0] if inspected is not None else None
+
+
+def inspect_detalle_estacion_html(html: str) -> tuple[list[dict[str, Any]], str]:
+    """
+    Analiza e inspecciona estructuralmente el HTML de `detalleEstacion.do`.
+    Devuelve `(entries, status)` donde `status` distingue entre respuestas válidas
+    (`'ok'`, `'valid_table_no_standard_ranges'`, `'valid_table_empty_rows'`,
+    `'valid_localization_only'`) y respuestas anómalas/degradadas del servidor
+    (`'empty_html'`, `'truncated_html'`, `'error_page'`, `'invalid_emplazamiento'`,
+    `'unexpected_html'`).
+    """
+    if not html or html.isspace():
+        return [], "empty_html"
+
+    open_html_cnt = len(_HTML_OPEN_TAG_RE.findall(html))
+    if open_html_cnt > 0:
+        close_html_cnt = len(_HTML_CLOSE_TAG_RE.findall(html))
+        if close_html_cnt < open_html_cnt:
+            return [], "truncated_html"
+
+    fast_inspected = _fast_inspect_detalle_estacion_html(html)
+    if fast_inspected is not None:
+        fast_entries, has_nonempty_data_row = fast_inspected
+        if fast_entries:
+            return fast_entries, "ok"
+        return (
+            [],
+            "valid_table_no_standard_ranges"
+            if has_nonempty_data_row
+            else "valid_table_empty_rows",
+        )
+
+    parser = _DetalleEstacionHTMLParser()
+    parser.feed(html)
+    parser.close()
+    parser.flush()
+
+    extracted: list[dict[str, Any]] = []
+    saw_tech_table = False
+    saw_tech_data_row = False
+    for tbl in parser.tables:
+        if tbl.has_child_tables or not tbl.rows:
+            continue
+
+        heading_norm = _strip_accents(tbl.heading.upper())
+        header_cells = [_strip_accents(c.upper()) for c in tbl.rows[0]]
+        header_joined = " | ".join(header_cells)
+
+        has_tech_headers = (
+            len(header_cells) >= 3
+            and "OPERADOR" in header_cells[0]
+            and any(tok in header_cells[2] for tok in ("BANDA", "FRECUENCIA", "MHZ"))
+        )
+        if has_tech_headers:
+            saw_tech_table = True
+
+        # Descartar siempre NIVELES MEDIDOS y LOCALIZACIÓN
+        if not has_tech_headers:
+            if "NIVELES MEDIDOS" in heading_norm or "LOCALIZACION" in heading_norm:
+                continue
+            if any(
+                tok in header_joined
+                for tok in ("DISTANCIA", "ACIMUT", "VALOR MEDIDO", "DIRECCION")
+            ):
+                continue
+
+        start_idx = 1 if has_tech_headers else 0
+        for row in tbl.rows[start_idx:]:
+            if len(row) < 3:
+                continue
+            operador_raw = row[0]
+            referencia_raw = row[1]
+            banda_raw = row[2]
+            if not operador_raw or not banda_raw:
+                continue
+            if has_tech_headers:
+                saw_tech_data_row = True
+            match = FREQ_RANGE_RE.match(banda_raw)
+            if not match:
+                continue
+            lo = float(match.group(1))
+            hi = float(match.group(2))
+            if not (math.isfinite(lo) and math.isfinite(hi)) or lo <= 0.0 or hi <= 0.0:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            frecuencia_clean = f"{_format_mhz(lo)} - {_format_mhz(hi)}"
+            extracted.append(
+                {
+                    "operador": operador_raw,
+                    "op": classify_operator(operador_raw),
+                    "referencia": referencia_raw,
+                    "frecuenciaDeclarada": banda_raw,
+                    "frecuencia": frecuencia_clean,
+                    "minMhz": lo,
+                    "maxMhz": hi,
+                    "banda": classify_frequency_band(lo, hi),
+                }
+            )
+
+    if extracted:
+        return extracted, "ok"
+
+    if saw_tech_table:
+        return (
+            [],
+            "valid_table_no_standard_ranges"
+            if saw_tech_data_row
+            else "valid_table_empty_rows",
+        )
+
+    plain_text = _HTML_TAG_RE.sub(" ", html)
+    if "&" in plain_text:
+        plain_text = html_lib.unescape(plain_text)
+    plain_norm = _strip_accents(" ".join(plain_text.split()).lower())
+
+    if any(marker in plain_norm for marker in _DETAIL_ERROR_MARKERS) or _ORACLE_ERR_RE.search(
+        plain_norm
+    ):
+        return [], "error_page"
+
+    if "codigo de emplazamiento no valido" in plain_norm:
+        return [], "invalid_emplazamiento"
+
+    if _LOCALIZACION_H2_RE.search(html) is not None:
+        return [], "valid_localization_only"
+
+    return [], "unexpected_html"
 
 
 def parse_detalle_estacion_html(html: str) -> list[dict[str, Any]]:
@@ -4281,6 +4541,7 @@ class BandEnricher:
         checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
         timeout_seconds: float = 30.0,
         workers: int = 1,
+        max_requests_per_second: float | None = None,
         fail_fast: bool = False,
         rescan_since: str | None = None,
         new_antenna_ids: set[str] | None = None,
@@ -4305,6 +4566,14 @@ class BandEnricher:
         self.checkpoint_every = max(1, int(checkpoint_every))
         self.timeout_seconds = float(timeout_seconds)
         self.workers = max(1, int(workers))
+        if max_requests_per_second is None:
+            self.max_requests_per_second = (
+                DEFAULT_MAX_BAND_RPS
+                if (fetch_fn is None and self.delay_seconds > 0.0)
+                else 0.0
+            )
+        else:
+            self.max_requests_per_second = max(0.0, float(max_requests_per_second))
         self.fail_fast = bool(fail_fast)
         self.rescan_since = (
             _normalize_iso_utc(rescan_since) if rescan_since else None
@@ -4326,6 +4595,7 @@ class BandEnricher:
 
         self.requests_count: int = 0
         self.failed_gids_count: int = 0
+        self.anomalous_responses_count: int = 0
         self.last_requests_per_second: float = 0.0
         self.last_scanned_antennas: int = 0
         self.last_total_antennas: int = 0
@@ -4368,6 +4638,10 @@ class BandEnricher:
 
     def _wait_rate_limit(self) -> None:
         self._http_client.wait_if_cooled_down(self._clock, self._sleep)
+        if self.max_requests_per_second > 0.0:
+            self._http_client.pace_global_rate(
+                self.max_requests_per_second, self._clock, self._sleep
+            )
         if self._last_request_ts is not None and self.delay_seconds > 0:
             elapsed = self._clock() - self._last_request_ts
             remaining = self.delay_seconds - elapsed
@@ -4392,6 +4666,10 @@ class BandEnricher:
             remaining = self.delay_seconds - elapsed
             if remaining > 0:
                 self._sleep(remaining)
+        if self.max_requests_per_second > 0.0:
+            self._http_client.pace_global_rate(
+                self.max_requests_per_second, self._clock, self._sleep
+            )
 
     def _would_exceed_time_budget(
         self,
@@ -4407,11 +4685,76 @@ class BandEnricher:
             wait_needed = max(0.0, self.delay_seconds - (now - self._last_request_ts))
         return (now + wait_needed - run_start_ts) >= self.max_band_seconds
 
+    def _evaluate_detalle_html(
+        self,
+        html: str,
+        *,
+        attempt: int,
+        expect_nonempty: bool,
+        live_http: bool,
+    ) -> list[dict[str, Any]]:
+        entries, html_status = inspect_detalle_estacion_html(html)
+        if html_status == "ok":
+            return entries
+
+        if html_status in (
+            "empty_html",
+            "truncated_html",
+            "error_page",
+            "unexpected_html",
+        ):
+            with self._stats_lock:
+                self.anomalous_responses_count += 1
+            self._http_client.discard_tls_session()
+            self._http_client.record_soft_anomaly(clock_fn=self._clock)
+            raise ValueError(
+                f"Respuesta HTML anómala desde detalleEstacion.do ({html_status})"
+            )
+
+        if html_status == "invalid_emplazamiento":
+            if expect_nonempty:
+                with self._stats_lock:
+                    self.anomalous_responses_count += 1
+                self._http_client.discard_tls_session()
+                self._http_client.record_soft_anomaly(clock_fn=self._clock)
+                raise ValueError(
+                    "Respuesta 'Código de emplazamiento no válido' en estación con bandas previas"
+                )
+            if live_http and (
+                attempt == 0
+                or self._http_client.has_recent_soft_anomaly_burst(
+                    clock_fn=self._clock
+                )
+            ):
+                self._http_client.discard_tls_session()
+                if attempt > 0:
+                    with self._stats_lock:
+                        self.anomalous_responses_count += 1
+                    self._http_client.record_soft_anomaly(clock_fn=self._clock)
+                raise ValueError(
+                    "Verificando respuesta 'Código de emplazamiento no válido' en detalleEstacion.do"
+                )
+            return []
+
+        if html_status == "valid_table_no_standard_ranges":
+            return []
+
+        if expect_nonempty:
+            with self._stats_lock:
+                self.anomalous_responses_count += 1
+            self._http_client.discard_tls_session()
+            self._http_client.record_soft_anomaly(clock_fn=self._clock)
+            raise ValueError(
+                f"Respuesta sin concesiones sospechosa para estación con bandas previas ({html_status})"
+            )
+        return []
+
     def _http_fetch_detalle(
         self,
         gid: str,
         *,
         parallel_mode: bool = False,
+        expect_nonempty: bool = False,
     ) -> list[dict[str, Any]]:
         url = build_detalle_estacion_url(gid)
         backoffs = (2.0, 4.0, 8.0)
@@ -4434,7 +4777,6 @@ class BandEnricher:
                 self.requests_count += 1
                 self._unsaved_requests += 1
 
-            req_start_ts = self._clock()
             if self._custom_fetch_fn is not None:
                 try:
                     payload = self._custom_fetch_fn(gid)
@@ -4449,7 +4791,12 @@ class BandEnricher:
                         if isinstance(payload, (bytes, bytearray))
                         else str(payload)
                     )
-                    return parse_detalle_estacion_html(html)
+                    return self._evaluate_detalle_html(
+                        html,
+                        attempt=attempt,
+                        expect_nonempty=expect_nonempty,
+                        live_http=False,
+                    )
                 except Exception as exc:
                     now_ts = self._clock()
                     if parallel_mode:
@@ -4468,14 +4815,17 @@ class BandEnricher:
                     )
                     now_ts = self._clock()
                     if parallel_mode:
-                        self._worker_tls.last_req_ts = req_start_ts
+                        self._worker_tls.last_req_ts = now_ts
                         self._worker_tls.last_done_ts = now_ts
                     else:
                         self._last_request_ts = now_ts
                     html = decode_detalle_estacion_payload(raw_bytes)
-                    if not html or html.isspace():
-                        raise ValueError("Respuesta HTML vacía desde detalleEstacion.do")
-                    return parse_detalle_estacion_html(html)
+                    return self._evaluate_detalle_html(
+                        html,
+                        attempt=attempt,
+                        expect_nonempty=expect_nonempty,
+                        live_http=True,
+                    )
                 except (
                     urllib.error.HTTPError,
                     urllib.error.URLError,
@@ -4808,6 +5158,7 @@ class BandEnricher:
 
         all_records_per_gid: dict[str, list[dict[str, Any]]] = {}
         gids_by_idx: dict[int, list[str]] = {}
+        prior_nonempty_gids: set[str] = set()
         populated_count = 0
         zero_gid_populated = 0
         pending_indices: list[int] = []
@@ -4819,6 +5170,16 @@ class BandEnricher:
             gids = get_record_gids(rec)
             for g in gids:
                 all_records_per_gid.setdefault(g, []).append(rec)
+            rec_has_prior_rf = bool(rec.get("concesiones")) or bool(rec.get("bandas"))
+            if not rec_has_prior_rf and self.prior_index is not None:
+                prior_rec = match_prior_antenna(rec, self.prior_index)
+                if prior_rec is not None:
+                    rec_has_prior_rf = bool(prior_rec.get("concesiones")) or bool(
+                        prior_rec.get("bandas")
+                    )
+            if rec_has_prior_rf:
+                for g in gids:
+                    prior_nonempty_gids.add(g)
             if not self._needs_band_scan(rec):
                 if has_bandas:
                     rec["bandas"] = normalize_band_labels(rec["bandas"])
@@ -4887,11 +5248,12 @@ class BandEnricher:
             )
 
         logging.info(
-            "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, workers=%d, delay=%.3fs)...",
+            "Iniciando enriquecimiento de bandas: %d antenas pendientes (%d unidades GID, workers=%d, delay=%.3fs, max_rps=%.1f)...",
             len(pending_indices),
             len(units),
             self.workers,
             self.delay_seconds,
+            self.max_requests_per_second,
         )
 
         try:
@@ -4945,7 +5307,11 @@ class BandEnricher:
                             break
 
                         try:
-                            entries = self._http_fetch_detalle(gid, parallel_mode=False)
+                            entries = self._http_fetch_detalle(
+                                gid,
+                                parallel_mode=False,
+                                expect_nonempty=(gid in prior_nonempty_gids),
+                            )
                             fetched_iso = _utc_now_iso(self._now_utc)
                             gid_entries_cache[gid] = entries
                             fetched_gids.add(gid)
@@ -5085,7 +5451,10 @@ class BandEnricher:
                         gid_cursor += 1
                         submitted_count += 1
                         fut = executor.submit(
-                            self._http_fetch_detalle, next_gid, parallel_mode=True
+                            self._http_fetch_detalle,
+                            next_gid,
+                            parallel_mode=True,
+                            expect_nonempty=(next_gid in prior_nonempty_gids),
                         )
                         in_flight[fut] = next_gid
 
@@ -5149,7 +5518,10 @@ class BandEnricher:
                             gid_cursor += 1
                             submitted_count += 1
                             fut = executor.submit(
-                                self._http_fetch_detalle, next_gid, parallel_mode=True
+                                self._http_fetch_detalle,
+                                next_gid,
+                                parallel_mode=True,
+                                expect_nonempty=(next_gid in prior_nonempty_gids),
                             )
                             in_flight[fut] = next_gid
 
@@ -5238,7 +5610,11 @@ class BandEnricher:
                         ):
                             break
                         try:
-                            entries = self._http_fetch_detalle(rgid, parallel_mode=False)
+                            entries = self._http_fetch_detalle(
+                                rgid,
+                                parallel_mode=False,
+                                expect_nonempty=(rgid in prior_nonempty_gids),
+                            )
                             fetched_iso = _utc_now_iso(self._now_utc)
                             gid_entries_cache[rgid] = entries
                             fetched_gids.add(rgid)
@@ -5303,12 +5679,14 @@ class BandEnricher:
             )
 
         logging.info(
-            "Enriquecimiento finalizado: %d peticiones HTTP (%.1f req/s), +%d antenas enriquecidas (%d/%d totales con bandas).",
+            "Enriquecimiento finalizado: %d peticiones HTTP (%.1f req/s), +%d antenas enriquecidas (%d/%d totales con bandas, fallos=%d, anomalias_html=%d).",
             self.requests_count,
             self.last_requests_per_second,
             newly_populated,
             crawl_stats["bandsPopulatedCount"],
             total_antenas,
+            self.failed_gids_count,
+            self.anomalous_responses_count,
         )
         return dataset
 
@@ -5321,6 +5699,7 @@ def enrich_dataset_bands(
     checkpoint_path: Path | None = None,
     checkpoint_every: int = DEFAULT_BAND_CHECKPOINT_EVERY,
     workers: int = 1,
+    max_requests_per_second: float | None = None,
     fail_fast: bool = False,
     rescan_since: str | None = None,
     new_antenna_ids: set[str] | None = None,
@@ -5342,6 +5721,7 @@ def enrich_dataset_bands(
         checkpoint_path=checkpoint_path,
         checkpoint_every=checkpoint_every,
         workers=workers,
+        max_requests_per_second=max_requests_per_second,
         fail_fast=fail_fast,
         rescan_since=rescan_since,
         new_antenna_ids=new_antenna_ids,
@@ -5493,13 +5873,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--delay",
         type=float,
         default=DEFAULT_DELAY_SECONDS,
-        help="Segundos mínimos de espera por hilo entre peticiones HTTP consecutivas (por defecto 0.005s).",
+        help="Segundos mínimos de espera por hilo tras cada respuesta HTTP (por defecto 0.02s).",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=DEFAULT_BAND_WORKERS,
-        help="Hilos concurrentes Keep-Alive para detalleEstacion.do (por defecto 24).",
+        help="Hilos concurrentes Keep-Alive para detalleEstacion.do (por defecto 16).",
+    )
+    parser.add_argument(
+        "--max-band-rps",
+        type=float,
+        default=DEFAULT_MAX_BAND_RPS,
+        help="Límite global de peticiones por segundo hacia detalleEstacion.do (por defecto 75; 0 desactiva el techo).",
     )
     parser.add_argument(
         "--census-workers",
@@ -5848,6 +6234,7 @@ def main(argv: list[str] | None = None) -> int:
     scan_started_iso = args.rescan_since or _utc_now_iso()
     delay = max(0.0, float(args.delay))
     band_workers = max(1, int(args.workers))
+    max_band_rps = max(0.0, float(args.max_band_rps))
     census_workers = max(1, int(args.census_workers))
 
     def _make_progress_emitter(
@@ -5950,6 +6337,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
             workers=band_workers,
+            max_requests_per_second=max_band_rps,
             rescan_since=args.rescan_since,
             new_antenna_ids=seeded_new_ant_ids,
             record_novedades=not args.skip_novedades,
@@ -6157,6 +6545,7 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_path=output_path,
             checkpoint_every=args.band_checkpoint_every,
             workers=band_workers,
+            max_requests_per_second=max_band_rps,
             rescan_since=args.rescan_since,
             new_antenna_ids=all_new_ant_ids,
             prior_index=prior_index,

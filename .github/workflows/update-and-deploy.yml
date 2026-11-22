@@ -116,8 +116,9 @@ jobs:
           fi
           python3 scripts/fetch_antenas.py \
             --output public/data/antenas.json \
-            --delay 0.005 \
-            --workers 24 \
+            --delay 0.02 \
+            --workers 16 \
+            --max-band-rps 75 \
             --census-workers 8 \
             --preserve-from public/data/antenas.json \
             --fetch-bands \
@@ -282,8 +283,9 @@ jobs:
             --enrich-bands-only \
             --input public/data/antenas.json \
             --output public/data/antenas.json \
-            --delay 0.005 \
-            --workers 24 \
+            --delay 0.02 \
+            --workers 16 \
+            --max-band-rps 75 \
             --max-band-seconds 18000 \
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
