@@ -3,7 +3,9 @@ import { OPERATOR_META, type AntennaRecord } from '../types/antena';
 import {
   ALL_BAND_CODES_ASC,
   BAND_CARD_KEY_PREFIX,
+  BAND_CARD_OPERATOR_ORDER,
   BAND_CARD_PIXEL_RATIO,
+  BAND_N78_PLUS_BG_COLOR,
   BAND_SEPARATOR_DOT_COLOR,
   BAND_SEPARATOR_DOT_RADIUS,
   BAND_SEPARATOR_GAP_PX,
@@ -66,6 +68,45 @@ function createMockCanvasEnvironment(options?: {
   const fillTexts: FillTextCapture[] = [];
   const arcs: ArcCapture[] = [];
   const pathOps: string[] = [];
+  const drawOrder: Array<
+    | {
+        kind: 'fill';
+        fillStyle: string;
+        shadowBlur: number;
+        bounds: { minX: number; maxX: number; minY: number; maxY: number } | null;
+      }
+    | {
+        kind: 'fillText';
+        text: string;
+        x: number;
+        y: number;
+        fillStyle: string;
+      }
+  > = [];
+
+  let currentPathPoints: Array<[number, number]> = [];
+  const recordPoint = (x?: number, y?: number) => {
+    if (typeof x === 'number' && typeof y === 'number') {
+      currentPathPoints.push([x, y]);
+    }
+  };
+  const computeCurrentBounds = () => {
+    if (currentPathPoints.length === 0) {
+      return null;
+    }
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < currentPathPoints.length; i++) {
+      const [px, py] = currentPathPoints[i];
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
+    return { minX, maxX, minY, maxY };
+  };
 
   let canvasWidth = 0;
   let canvasHeight = 0;
@@ -170,17 +211,24 @@ function createMockCanvasEnvironment(options?: {
       }
     }),
     beginPath: vi.fn(() => {
+      currentPathPoints = [];
       pathOps.push('beginPath');
     }),
-    moveTo: vi.fn(() => {
+    moveTo: vi.fn((x?: number, y?: number) => {
+      recordPoint(x, y);
       pathOps.push('moveTo');
     }),
-    lineTo: vi.fn(() => {
+    lineTo: vi.fn((x?: number, y?: number) => {
+      recordPoint(x, y);
       pathOps.push('lineTo');
     }),
-    quadraticCurveTo: vi.fn(() => {
-      pathOps.push('quadraticCurveTo');
-    }),
+    quadraticCurveTo: vi.fn(
+      (cpx?: number, cpy?: number, x?: number, y?: number) => {
+        recordPoint(cpx, cpy);
+        recordPoint(x, y);
+        pathOps.push('quadraticCurveTo');
+      },
+    ),
     arcTo: vi.fn(() => {
       pathOps.push('arcTo');
     }),
@@ -194,6 +242,12 @@ function createMockCanvasEnvironment(options?: {
         shadowBlur: state.shadowBlur,
         shadowOffsetX: state.shadowOffsetX,
         shadowOffsetY: state.shadowOffsetY,
+      });
+      drawOrder.push({
+        kind: 'fill',
+        fillStyle: state.fillStyle,
+        shadowBlur: state.shadowBlur,
+        bounds: computeCurrentBounds(),
       });
     }),
     stroke: vi.fn(() => {
@@ -216,6 +270,13 @@ function createMockCanvasEnvironment(options?: {
         textAlign: state.textAlign,
         textBaseline: state.textBaseline,
         shadowBlur: state.shadowBlur,
+      });
+      drawOrder.push({
+        kind: 'fillText',
+        text,
+        x,
+        y,
+        fillStyle: state.fillStyle,
       });
     }),
     getImageData: vi.fn((_sx: number, _sy: number, sw: number, sh: number) => ({
@@ -278,6 +339,7 @@ function createMockCanvasEnvironment(options?: {
     fillTexts,
     arcs,
     pathOps,
+    drawOrder,
     getCanvasSize: () => ({ width: canvasWidth, height: canvasHeight }),
   };
 }
@@ -761,7 +823,15 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
     expect(parseSiteBandCardKey(digiKey)).toEqual(digiRows);
   });
 
-  it('orders multi-operator < 15 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
+  it('orders multi-operator < 15 m shared sites with DIGI in 2nd row and upgrades Movistar N78 to N78+ when co-located with DIGI', () => {
+    expect(BAND_CARD_OPERATOR_ORDER).toEqual([
+      'movistar',
+      'digi',
+      'orange',
+      'vodafone',
+      'otros',
+    ]);
+
     // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~5 m (< 15 m)
     const rawAntennas: AntennaRecord[] = [
       makeAntenna({
@@ -809,7 +879,12 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
       {
         op: 'movistar',
         color: OPERATOR_META.movistar.color,
-        text: 'N78 B3 B20 N28',
+        text: 'N78+ B3 B20 N28',
+      },
+      {
+        op: 'digi',
+        color: OPERATOR_META.digi.color,
+        text: 'B1 B3',
       },
       {
         op: 'orange',
@@ -821,18 +896,141 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
         color: OPERATOR_META.vodafone.color,
         text: 'N78 B7 B38 G9 N28',
       },
-      {
-        op: 'digi',
-        color: OPERATOR_META.digi.color,
-        text: 'B1 B3',
-      },
     ]);
 
     const key = buildSiteBandCardKey(sites[0]);
     expect(key).toBe(
-      'bandcard:movistar:N78 B3 B20 N28|orange:N258 N78 N28|vodafone:N78 B7 B38 G9 N28|digi:B1 B3',
+      'bandcard:movistar:N78+ B3 B20 N28|digi:B1 B3|orange:N258 N78 N28|vodafone:N78 B7 B38 G9 N28',
     );
     expect(parseSiteBandCardKey(key)).toEqual(rows);
+  });
+
+  it('keeps Movistar N78 unchanged without DIGI, does not fabricate N78+ without 3500 MHz, and handles 5-operator & non-Movistar sites', () => {
+    // 1. Movistar + Orange + Vodafone (NO DIGI): Movistar keeps plain N78, order stays movistar -> orange -> vodafone
+    const noDigiSite = {
+      members: [
+        makeAntenna({
+          id: 'MOV-NO-DIGI',
+          gid: '2800401',
+          op: 'movistar',
+          bandas: ['3500 MHz', '1800 MHz'],
+        }),
+        makeAntenna({
+          id: 'ORA-NO-DIGI',
+          gid: '2800402',
+          op: 'orange',
+          bandas: ['3500 MHz', '700 MHz'],
+        }),
+        makeAntenna({
+          id: 'VOD-NO-DIGI',
+          gid: '2800403',
+          op: 'vodafone',
+          bandas: ['3500 MHz', '900 MHz'],
+        }),
+      ],
+    };
+    expect(buildSiteBandCardRows(noDigiSite)).toEqual([
+      { op: 'movistar', color: OPERATOR_META.movistar.color, text: 'N78 B3' },
+      { op: 'orange', color: OPERATOR_META.orange.color, text: 'N78 N28' },
+      { op: 'vodafone', color: OPERATOR_META.vodafone.color, text: 'N78 G9' },
+    ]);
+
+    // 2. Movistar + DIGI + Orange + Vodafone + Otros (5 operators): DIGI is 2nd row, N258 stays ahead of N78+
+    const fiveOpSite = {
+      members: [
+        makeAntenna({
+          id: 'OTR-5',
+          gid: '2800505',
+          op: 'otros',
+          bandas: ['900 MHz'],
+        }),
+        makeAntenna({
+          id: 'VOD-5',
+          gid: '2800504',
+          op: 'vodafone',
+          bandas: ['3500 MHz'],
+        }),
+        makeAntenna({
+          id: 'ORA-5',
+          gid: '2800503',
+          op: 'orange',
+          bandas: ['3500 MHz'],
+        }),
+        makeAntenna({
+          id: 'DIG-5',
+          gid: '2800502',
+          op: 'digi',
+          bandas: ['1800 MHz', '2100 MHz'],
+        }),
+        makeAntenna({
+          id: 'MOV-5',
+          gid: '2800501',
+          op: 'movistar',
+          bandas: ['26 GHz', '3500 MHz', '1800 MHz'],
+        }),
+      ],
+    };
+    expect(buildSiteBandCardRows(fiveOpSite)).toEqual([
+      {
+        op: 'movistar',
+        color: OPERATOR_META.movistar.color,
+        text: 'N258 N78+ B3',
+      },
+      { op: 'digi', color: OPERATOR_META.digi.color, text: 'B1 B3' },
+      { op: 'orange', color: OPERATOR_META.orange.color, text: 'N78' },
+      { op: 'vodafone', color: OPERATOR_META.vodafone.color, text: 'N78' },
+      { op: 'otros', color: OPERATOR_META.otros.color, text: 'G9' },
+    ]);
+
+    // 3. Orange + Vodafone + DIGI (no Movistar): DIGI precedes Orange & Vodafone, nobody gets N78+
+    const noMovistarSite = {
+      members: [
+        makeAntenna({
+          id: 'ORA-NM',
+          gid: '2800601',
+          op: 'orange',
+          bandas: ['3500 MHz'],
+        }),
+        makeAntenna({
+          id: 'VOD-NM',
+          gid: '2800602',
+          op: 'vodafone',
+          bandas: ['3500 MHz'],
+        }),
+        makeAntenna({
+          id: 'DIG-NM',
+          gid: '2800603',
+          op: 'digi',
+          bandas: ['3500 MHz', '1800 MHz'],
+        }),
+      ],
+    };
+    expect(buildSiteBandCardRows(noMovistarSite)).toEqual([
+      { op: 'digi', color: OPERATOR_META.digi.color, text: 'N78 B3' },
+      { op: 'orange', color: OPERATOR_META.orange.color, text: 'N78' },
+      { op: 'vodafone', color: OPERATOR_META.vodafone.color, text: 'N78' },
+    ]);
+
+    // 4. Movistar (with N78) + DIGI (empty bandas): Movistar still gets N78+ and empty DIGI row is omitted
+    const movWithEmptyDigiSite = {
+      members: [
+        makeAntenna({
+          id: 'MOV-ED',
+          gid: '2800701',
+          op: 'movistar',
+          frecuencias: ['3460.00 - 3560.00'],
+        }),
+        makeAntenna({
+          id: 'DIG-ED',
+          gid: '2800702',
+          op: 'digi',
+          bandas: [],
+        }),
+      ],
+    };
+    expect(buildSiteBandCardRows(movWithEmptyDigiSite)).toEqual([
+      { op: 'movistar', color: OPERATOR_META.movistar.color, text: 'N78+' },
+    ]);
   });
 
   it('skips members with empty bandas: [] in a multi-operator site', () => {
@@ -906,6 +1104,7 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     expect(BAND_SEPARATOR_DOT_COLOR).toBe('#1E293B');
     expect(BAND_SEPARATOR_DOT_RADIUS).toBe(2.2);
     expect(BAND_SEPARATOR_GAP_PX).toBe(14);
+    expect(BAND_N78_PLUS_BG_COLOR).toBe('#FFFF00');
 
     const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
     const rows: BandCardRow[] = [
@@ -995,6 +1194,70 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     ]);
   });
 
+  it('draws an electric yellow (#FFFF00) rounded pill behind Movistar N78+ only and keeps adjacent tokens/dots cleanly spaced', () => {
+    const env = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
+    const rows: BandCardRow[] = [
+      { op: 'movistar', color: '#0066CC', text: 'N258 N78+ B3' },
+      { op: 'digi', color: '#7C3AED', text: 'B1 B3' },
+      { op: 'orange', color: '#EA580C', text: 'N78 B3' },
+    ];
+
+    const sprite = renderBandCardSprite(rows);
+
+    // Row 0: N258 (48) + N78+ pill (48 + 10 = 58) + B3 (24) + 2 * 14 = 158px
+    // boxW = 158 + 28 = 186 -> canvasW = 186 + 16 = 202
+    // 3 rows * 26 + 16 = 94 -> canvasH = 94 + 4 + 10 = 108
+    expect(sprite.width).toBe(202);
+    expect(sprite.height).toBe(108);
+
+    const yellowFills = env.drawOrder.filter(
+      (entry) =>
+        entry.kind === 'fill' && entry.fillStyle === BAND_N78_PLUS_BG_COLOR,
+    );
+    expect(yellowFills).toHaveLength(1);
+    expect(yellowFills[0]).toEqual({
+      kind: 'fill',
+      fillStyle: '#FFFF00',
+      shadowBlur: 0,
+      bounds: {
+        minX: 84,
+        maxX: 142,
+        minY: 14,
+        maxY: 36,
+      },
+    });
+
+    // Yellow pill MUST be painted immediately before the Movistar 'N78+' text drawn inside it
+    const pillIdx = env.drawOrder.findIndex(
+      (entry) =>
+        entry.kind === 'fill' && entry.fillStyle === BAND_N78_PLUS_BG_COLOR,
+    );
+    const n78PlusTextIdx = env.drawOrder.findIndex(
+      (entry) => entry.kind === 'fillText' && entry.text === 'N78+',
+    );
+    expect(pillIdx).toBeGreaterThan(0);
+    expect(n78PlusTextIdx).toBe(pillIdx + 1);
+    expect(env.drawOrder[n78PlusTextIdx]).toEqual({
+      kind: 'fillText',
+      text: 'N78+',
+      x: 89,
+      y: 25,
+      fillStyle: '#0066CC',
+    });
+
+    // Separator dots around the yellow pill remain centered in the 14px gap (x=77 before, x=149 after)
+    expect(env.arcs.slice(0, 2).map((a) => [a.x, a.y])).toEqual([
+      [77, 25],
+      [149, 25],
+    ]);
+
+    // Total fills: 1 white card + 1 electric yellow pill + 4 separator dots
+    expect(env.fills).toHaveLength(6);
+    expect(
+      env.fills.filter((f) => f.fillStyle === BAND_N78_PLUS_BG_COLOR),
+    ).toHaveLength(1);
+  });
+
   it('draws 0 separator dots for single-band rows, keeps B7+ and N28+ intact, and falls back to quadratic curves without ctx.arc', () => {
     const singleEnv = createMockCanvasEnvironment({ measureWidthPerChar: 12 });
     renderBandCardSprite([{ op: 'vodafone', color: '#E60000', text: 'N28+' }]);
@@ -1074,5 +1337,14 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     expect(third).not.toBeNull();
     expect(third).not.toBe(first);
     expect(env.createElement).toHaveBeenCalledTimes(2);
+
+    // Distinct keys for Movistar N78 vs Movistar+DIGI N78+ stay isolated in cache
+    const plainMov = getOrCreateBandCardSprite('bandcard:movistar:N78 B3');
+    const boostedMov = getOrCreateBandCardSprite(
+      'bandcard:movistar:N78+ B3|digi:B1 B3',
+    );
+    expect(plainMov).not.toBeNull();
+    expect(boostedMov).not.toBeNull();
+    expect(boostedMov).not.toBe(plainMov);
   });
 });

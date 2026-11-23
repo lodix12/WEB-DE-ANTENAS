@@ -43,11 +43,27 @@ export interface BandCardRow {
   text: string;
 }
 
+export const BAND_CARD_OPERATOR_ORDER: readonly OperatorKey[] = [
+  'movistar',
+  'digi',
+  'orange',
+  'vodafone',
+  'otros',
+];
 export const BAND_CARD_KEY_PREFIX = 'bandcard:';
 export const BAND_CARD_PIXEL_RATIO = 2;
 export const BAND_SEPARATOR_DOT_COLOR = '#1E293B';
 export const BAND_SEPARATOR_DOT_RADIUS = 2.2;
 export const BAND_SEPARATOR_GAP_PX = 14;
+export const BAND_N78_PLUS_BG_COLOR = '#FFFF00';
+
+const BAND_CARD_OPERATOR_RANK: Record<OperatorKey, number> = {
+  movistar: 0,
+  digi: 1,
+  orange: 2,
+  vodafone: 3,
+  otros: 4,
+};
 
 const BAND_CARD_FONT =
   '700 21px "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif';
@@ -59,6 +75,9 @@ const SHADOW_PAD_X = 8;
 const SHADOW_PAD_TOP = 4;
 const SHADOW_PAD_BOTTOM = 10;
 const FALLBACK_CHAR_WIDTH = 12.2;
+const HIGHLIGHT_PILL_PAD_X = 5;
+const HIGHLIGHT_PILL_HEIGHT = 22;
+const HIGHLIGHT_PILL_RADIUS = 5;
 
 const DIRECT_BAND_CODE_RE =
   /^(N258|N78|B7\+|B7|B38|B1|B3|G9|B20|N28\+|N28)$/i;
@@ -447,24 +466,49 @@ export function formatAntennaBandsCompact(
 export function buildSiteBandCardRows(
   site: Pick<MapSiteEntry, 'members'>,
 ): BandCardRow[] {
-  const rows: BandCardRow[] = [];
   const members = site.members;
+  let hasMovistar = false;
+  let hasDigi = false;
+  for (let i = 0; i < members.length; i++) {
+    const op = members[i].op;
+    if (op === 'movistar') {
+      hasMovistar = true;
+    } else if (op === 'digi') {
+      hasDigi = true;
+    }
+  }
+  const hasMovistarAndDigi = hasMovistar && hasDigi;
+
+  const rows: BandCardRow[] = [];
   for (let i = 0; i < members.length; i++) {
     const member = members[i];
-    const text = formatAntennaBandsCompact(
+    const codes = extractAntennaBandCodes(
       member.bandas,
       member.frecuencias,
       member.concesiones,
     );
-    if (!text) {
+    if (codes.length === 0) {
       continue;
     }
+    const displayCodes =
+      hasMovistarAndDigi && member.op === 'movistar'
+        ? codes.map((code) => (code === 'N78' ? 'N78+' : code))
+        : codes;
     rows.push({
       op: member.op,
       color: OPERATOR_META[member.op]?.color ?? OPERATOR_META.otros.color,
-      text,
+      text: displayCodes.join(' '),
     });
   }
+
+  if (rows.length > 1) {
+    rows.sort(
+      (a, b) =>
+        (BAND_CARD_OPERATOR_RANK[a.op] ?? Number.MAX_SAFE_INTEGER) -
+        (BAND_CARD_OPERATOR_RANK[b.op] ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
+
   return rows;
 }
 
@@ -516,7 +560,12 @@ interface MeasuredBandCardRow {
   row: BandCardRow;
   tokens: string[];
   tokenWidths: number[];
+  tokenHighlighted: boolean[];
   rowTotalWidth: number;
+}
+
+function isHighlightedBandCardToken(op: OperatorKey, token: string): boolean {
+  return op === 'movistar' && token === 'N78+';
 }
 
 function measureTokenWidth(
@@ -566,10 +615,15 @@ export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
     const row = rows[i];
     const tokens = row.text.trim().split(/\s+/).filter(Boolean);
     const tokenWidths: number[] = [];
+    const tokenHighlighted: boolean[] = [];
     let tokensWidthSum = 0;
     for (let t = 0; t < tokens.length; t++) {
-      const w = measureTokenWidth(ctx, tokens[t]);
+      const highlighted = isHighlightedBandCardToken(row.op, tokens[t]);
+      const w =
+        measureTokenWidth(ctx, tokens[t]) +
+        (highlighted ? HIGHLIGHT_PILL_PAD_X * 2 : 0);
       tokenWidths.push(w);
+      tokenHighlighted.push(highlighted);
       tokensWidthSum += w;
     }
     const rowTotalWidth =
@@ -582,6 +636,7 @@ export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
       row,
       tokens,
       tokenWidths,
+      tokenHighlighted,
       rowTotalWidth,
     });
   }
@@ -623,13 +678,31 @@ export function renderBandCardSprite(rows: readonly BandCardRow[]): ImageData {
 
   const centerX = boxX + boxW / 2;
   for (let i = 0; i < measuredRows.length; i++) {
-    const { row, tokens, tokenWidths, rowTotalWidth } = measuredRows[i];
+    const { row, tokens, tokenWidths, tokenHighlighted, rowTotalWidth } =
+      measuredRows[i];
     let cursorX = centerX - rowTotalWidth / 2;
     const rowY = boxY + PAD_Y + i * LINE_HEIGHT + LINE_HEIGHT / 2;
 
     for (let t = 0; t < tokens.length; t++) {
+      if (tokenHighlighted[t]) {
+        traceRoundedRectPath(
+          ctx,
+          cursorX,
+          rowY - HIGHLIGHT_PILL_HEIGHT / 2,
+          tokenWidths[t],
+          HIGHLIGHT_PILL_HEIGHT,
+          HIGHLIGHT_PILL_RADIUS,
+        );
+        ctx.fillStyle = BAND_N78_PLUS_BG_COLOR;
+        ctx.fill();
+      }
+
       ctx.fillStyle = row.color;
-      ctx.fillText(tokens[t], cursorX, rowY);
+      ctx.fillText(
+        tokens[t],
+        cursorX + (tokenHighlighted[t] ? HIGHLIGHT_PILL_PAD_X : 0),
+        rowY,
+      );
       cursorX += tokenWidths[t];
 
       if (t < tokens.length - 1) {
