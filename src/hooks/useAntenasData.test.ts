@@ -5067,7 +5067,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
     expect(clusterCountLayerBlock).not.toMatch(/['"]k['"]/i);
   });
 
-  it('evaluateClusterCountLabel devuelve cadenas enteras exactas hasta la unidad con stationSum (incluyendo emplazamientos < 30 m) y con fallback a point_count', () => {
+  it('evaluateClusterCountLabel devuelve cadenas enteras exactas hasta la unidad con stationSum (incluyendo emplazamientos < 15 m) y con fallback a point_count', () => {
     const exactUnitCounts = [2, 49, 999, 1000, 1247, 5893, 15482, 62238];
 
     for (const exactCount of exactUnitCounts) {
@@ -5088,7 +5088,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       expect(fallbackPointCount).toBe(String(exactCount));
     }
 
-    // Caso representativo de emplazamientos compartidos (< 30 m) donde stationSum > point_count
+    // Caso representativo de emplazamientos compartidos (< 15 m) donde stationSum > point_count
     expect(
       AntenasMapModule.evaluateClusterCountLabel({
         stationSum: 1247,
@@ -5115,7 +5115,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
     ).toBe('0');
   });
 
-  it('groupColocatedAntennasForMap conserva la suma exacta de antenas hasta la unidad (stationCount) en datasets mixtos con emplazamientos compartidos < 30 m y estaciones individuales', () => {
+  it('groupColocatedAntennasForMap conserva la suma exacta de antenas hasta la unidad (stationCount) en datasets mixtos con emplazamientos compartidos < 15 m y estaciones individuales', () => {
     const makeStation = (
       id: string,
       gid: string,
@@ -5136,7 +5136,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
 
     const mixedAntenas: AntennaRecord[] = [];
 
-    // 1. 120 emplazamientos tri-operador (< 30 m: ~9 m de separación) => 360 antenas reales en 120 puntos GeoJSON
+    // 1. 120 emplazamientos tri-operador (< 15 m: ~10 m de separación) => 360 antenas reales en 120 puntos GeoJSON
     for (let i = 0; i < 120; i++) {
       const baseLat = 40.0 + i * 0.01;
       const baseLon = -3.9 + (i % 10) * 0.01;
@@ -5159,7 +5159,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       );
     }
 
-    // 2. 24 emplazamientos bi-operador (< 30 m: ~7 m de separación) => 48 antenas reales en 24 puntos GeoJSON
+    // 2. 24 emplazamientos bi-operador (< 15 m: ~6 m de separación) => 48 antenas reales en 24 puntos GeoJSON
     for (let i = 0; i < 24; i++) {
       const baseLat = 41.5 + i * 0.01;
       const baseLon = 2.0 + (i % 8) * 0.01;
@@ -5175,7 +5175,7 @@ describe('Conteo exacto hasta la unidad en clústeres del mapa sin redondeo', ()
       );
     }
 
-    // 3. Pareja de Telefónica/Movistar a < 30 m (~11 m): NUNCA se fusionan entre sí => 2 antenas en 2 puntos
+    // 3. Pareja de Telefónica/Movistar a < 15 m (~11 m): NUNCA se fusionan entre sí => 2 antenas en 2 puntos
     mixedAntenas.push(
       makeStation('MOV-PAIR-A', '460001', 'movistar', 39.4699, -0.3763),
       makeStation('MOV-PAIR-B', '460002', 'movistar', 39.47, -0.3763),
@@ -5705,14 +5705,14 @@ describe('Tabla Novedades compacta, frecuencia inicio/fin en dos líneas, diviso
   });
 });
 
-describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 30 m)', () => {
-  it('fija MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS en 30 m en AntenasMap y StationDetailDrawer (fusionando a ~28 m y separando a ~32 m)', () => {
-    expect(MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS).toBe(30);
+describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 15 m)', () => {
+  it('fija MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS en 15 m en AntenasMap y StationDetailDrawer (fusionando a ~12 m y separando a ~18 m)', () => {
+    expect(MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS).toBe(15);
     expect(antenasMapRawSource).toMatch(
       /groupColocatedAntennasForMap\(\s*antenas,\s*MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,?\s*\)/,
     );
     expect(antenasMapRawSource).not.toMatch(
-      /groupColocatedAntennasForMap\(\s*antenas,\s*35\b/,
+      /groupColocatedAntennasForMap\(\s*antenas,\s*(?:30|35)\b/,
     );
     expect(antenasMapRawSource).toContain(
       'Emplazamiento compartido (&lt; ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)',
@@ -5731,54 +5731,57 @@ describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 30 m)'
       mun: 'Madrid',
       prov: 'Madrid',
     };
-    const orange28m: AntennaRecord = {
+    const orange12m: AntennaRecord = {
       id: 'ORANGE ESPAGNE, S.A.U. - 2807702',
       gid: '2807702',
       op: 'orange',
       opRaw: 'ORANGE ESPAGNE, S.A.U.',
-      lat: baseLat + 0.000252, // ~28.0 m (< 30 m)
+      lat: baseLat + 0.000108, // ~12.0 m (< 15 m)
       lon: baseLon,
       dir: 'C/ Gran Vía, 28',
       mun: 'Madrid',
       prov: 'Madrid',
     };
-    const digi32m: AntennaRecord = {
+    const digi18m: AntennaRecord = {
       id: 'DIGI SPAIN TELECOM, S.L.U. - 2807703',
       gid: '2807703',
       op: 'digi',
       opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
-      lat: baseLat + 0.000288, // ~32.0 m (>= 30 m, antes < 35 m)
+      lat: baseLat + 0.000162, // ~18.0 m (>= 15 m, antes < 30 m)
       lon: baseLon,
       dir: 'C/ Gran Vía, 30',
       mun: 'Madrid',
       prov: 'Madrid',
     };
 
-    const htmlUnder30m = renderToStaticMarkup(
+    const htmlUnder15m = renderToStaticMarkup(
       createElement(StationDetailDrawer, {
         antenna: movistarBase,
-        allAntenas: [movistarBase, orange28m],
+        allAntenas: [movistarBase, orange12m],
         onClose: () => {},
         onSelectAntenna: () => {},
       }),
     );
-    expect(htmlUnder30m).toContain('integrated-operators-card');
-    expect(htmlUnder30m).toContain(
+    expect(htmlUnder15m).toContain('integrated-operators-card');
+    expect(htmlUnder15m).toContain(
+      'Operadores integrados en este icono (&lt; 15 m)',
+    );
+    expect(htmlUnder15m).not.toContain(
       'Operadores integrados en este icono (&lt; 30 m)',
     );
-    expect(htmlUnder30m).not.toContain(
+    expect(htmlUnder15m).not.toContain(
       'Operadores integrados en este icono (&lt; 35 m)',
     );
 
-    const htmlOver30m = renderToStaticMarkup(
+    const htmlOver15m = renderToStaticMarkup(
       createElement(StationDetailDrawer, {
         antenna: movistarBase,
-        allAntenas: [movistarBase, digi32m],
+        allAntenas: [movistarBase, digi18m],
         onClose: () => {},
         onSelectAntenna: () => {},
       }),
     );
-    expect(htmlOver30m).not.toContain('integrated-operators-card');
+    expect(htmlOver15m).not.toContain('integrated-operators-card');
   });
 });
 

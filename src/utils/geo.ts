@@ -167,7 +167,7 @@ export const SPAIN_REGION_PRESETS: RegionPreset[] = [
   { id: 'sevilla', label: 'Sevilla', lon: -5.9845, lat: 37.3891, zoom: 11.8 },
 ];
 
-export const MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS = 30;
+export const MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS = 15;
 const VODAFONE_DEFENSIVE_FUSION_METERS = 35;
 
 export interface MapSiteEntry {
@@ -177,7 +177,7 @@ export interface MapSiteEntry {
   lat: number;
   /** Longitud WGS84 del marcador (centroide en emplazamientos agrupados) */
   lon: number;
-  /** `true` cuando agrupa antenas de >= 2 operadores distintos a < 30 m */
+  /** `true` cuando agrupa antenas de >= 2 operadores distintos a < 15 m */
   isMultiOperator: boolean;
   /** Operadores integrados ordenados canónicamente según `OPERATOR_ORDER` */
   operators: OperatorKey[];
@@ -307,7 +307,7 @@ interface CandidateMultiOpEdge {
 }
 
 /**
- * Agrupa antenas de distintos operadores a `< maxDistanceMeters` (`30 m` por defecto) mediante
+ * Agrupa antenas de distintos operadores a `< maxDistanceMeters` (`15 m` por defecto) mediante
  * enlace completo (`complete-linkage`) recorriendo las aristas en orden de distancia ascendente:
  * - Las antenas de Telefónica (`movistar`) NUNCA se unen entre sí ni directa ni transitivamente
  *   (`!(hasMovistarA && hasMovistarB)`): ningún icono compartido puede contener más de 1 `movistar`.
@@ -553,7 +553,7 @@ function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
  * - Fusiona de forma defensiva registros residuales de Vodafone a `< 35 m`
  *   (`Math.max(maxDistanceMeters, VODAFONE_DEFENSIVE_FUSION_METERS)` cuando `maxDistanceMeters > 0`).
  * - Agrupa en 1 único `MapSiteEntry` multicolor antenas de `>= 2` operadores distintos situadas
- *   a `< maxDistanceMeters` (`30 m` por defecto, `MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS`) mediante
+ *   a `< maxDistanceMeters` (`15 m` por defecto, `MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS`) mediante
  *   enlace completo en orden de distancia creciente.
  * - Las antenas de Telefónica (`movistar`) NUNCA se fusionan con otra antena de Telefónica (`movistar`),
  *   ni directamente ni de forma transitiva a través de otro operador.
@@ -629,7 +629,7 @@ export function groupColocatedAntennasForMap(
     }
   }
 
-  // 2. Agrupación multi-operador a < maxDistanceMeters (30 m por defecto) con enlace completo y restricción estricta de Telefónica.
+  // 2. Agrupación multi-operador a < maxDistanceMeters (15 m por defecto) con enlace completo y restricción estricta de Telefónica.
   const components = clusterMultiOperatorSitesByCompleteLinkage(
     normalizedRecords,
     maxDistanceMeters,

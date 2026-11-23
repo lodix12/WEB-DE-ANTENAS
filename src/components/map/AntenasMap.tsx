@@ -718,7 +718,7 @@ export function AntenasMap(props: AntenasMapProps) {
     [styleId],
   );
 
-  // Agrupación espacial en memoria (< 30 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
+  // Agrupación espacial en memoria (< 15 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
   // hacia geometrías puntuales para el motor WebGL de MapLibre GL JS
   const { antenasGeoJson, antenasById, sitesById, multiIconKeys } =
     useMemo(() => {
@@ -1541,7 +1541,7 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 30 m o círculo individual)
+      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 15 m o círculo individual)
       if (unclusteredLayers.length > 0) {
         const stationFeatures = map.queryRenderedFeatures(event.point, {
           layers: unclusteredLayers,

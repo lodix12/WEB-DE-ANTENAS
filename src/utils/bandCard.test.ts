@@ -761,8 +761,8 @@ describe('buildSiteBandCardRows, buildSiteBandCardKey & parseSiteBandCardKey', (
     expect(parseSiteBandCardKey(digiKey)).toEqual(digiRows);
   });
 
-  it('orders multi-operator < 30 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
-    // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~10 m (< 30 m)
+  it('orders multi-operator < 15 m shared sites canonically with exact OPERATOR_META colors and descending band codes', () => {
+    // Input intentionally unsorted: Vodafone + Movistar + DIGI + Orange within ~5 m (< 15 m)
     const rawAntennas: AntennaRecord[] = [
       makeAntenna({
         id: 'VOD-1',

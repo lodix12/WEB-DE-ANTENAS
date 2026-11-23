@@ -198,7 +198,7 @@ export function StationDetailDrawer({
       </div>
 
       <div className="drawer-body">
-        {/* Operadores integrados en el mismo icono multicolor (< 30 m) */}
+        {/* Operadores integrados en el mismo icono multicolor (< 15 m) */}
         {integratedSite && (
           <section
             className="integrated-operators-card"
