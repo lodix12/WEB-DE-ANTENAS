@@ -2452,23 +2452,33 @@ export function mergeLiveDeltaIntoAntenasDataset(
     }
   }
 
+  const removedIds = delta.removedAntennaIds;
+  const hasRemovals = removedIds !== undefined && removedIds.size > 0;
+
   if (
     delta.newAntennas.length === 0 &&
     delta.bandPatchesById.size === 0 &&
-    delta.bandPatchesByGid.size === 0
+    delta.bandPatchesByGid.size === 0 &&
+    !hasRemovals
   ) {
     return baseDataset;
   }
 
   const baseAntenas = baseDataset.antenas;
-  const mergedAntenas: AntennaRecord[] = new Array(baseAntenas.length);
+  const mergedAntenas: AntennaRecord[] = [];
   const existingIndexById = new Map<string, number>();
   const existingIndexByOpGid = new Map<string, number>();
   let anyChanged = false;
   let normalizedBaseLegacyOp = false;
+  let removedCount = 0;
 
   for (let i = 0; i < baseAntenas.length; i++) {
     const rawBaseAnt = baseAntenas[i];
+    if (hasRemovals && removedIds.has(rawBaseAnt.id)) {
+      removedCount += 1;
+      anyChanged = true;
+      continue;
+    }
     const normBaseOp =
       normalizeOperatorKeyInput(rawBaseAnt.op, rawBaseAnt.opRaw) ??
       rawBaseAnt.op;
@@ -2481,15 +2491,16 @@ export function mergeLiveDeltaIntoAntenasDataset(
       normalizedBaseLegacyOp = true;
     }
 
-    existingIndexById.set(ant.id, i);
+    const outIdx = mergedAntenas.length;
+    existingIndexById.set(ant.id, outIdx);
     if (ant.gid) {
-      existingIndexByOpGid.set(`${ant.op}::${ant.gid}`, i);
+      existingIndexByOpGid.set(`${ant.op}::${ant.gid}`, outIdx);
     }
     if (ant.mergedGids) {
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const mgid = ant.mergedGids[g];
         if (mgid) {
-          existingIndexByOpGid.set(`${ant.op}::${mgid}`, i);
+          existingIndexByOpGid.set(`${ant.op}::${mgid}`, outIdx);
         }
       }
     }
@@ -2511,17 +2522,17 @@ export function mergeLiveDeltaIntoAntenasDataset(
 
     if (patch && isPatchNewerOrEqual(patch.bandsScannedAt, ant.bandsScannedAt)) {
       const nextMergedGids = patch.mergedGids ?? ant.mergedGids;
-      mergedAntenas[i] = {
+      mergedAntenas.push({
         ...ant,
         ...(nextMergedGids !== undefined ? { mergedGids: nextMergedGids } : {}),
         bandas: normalizeAntennaBandsList(patch.bandas),
         frecuencias: patch.frecuencias,
         concesiones: patch.concesiones,
         bandsScannedAt: patch.bandsScannedAt,
-      };
+      });
       anyChanged = true;
     } else {
-      mergedAntenas[i] = ant;
+      mergedAntenas.push(ant);
     }
   }
 
@@ -2652,7 +2663,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
     delta.updatedAt,
   );
 
-  if (addedCount === 0 && !normalizedBaseLegacyOp) {
+  if (addedCount === 0 && removedCount === 0 && !normalizedBaseLegacyOp) {
     let bandsPopulatedCount = 0;
     for (let i = 0; i < mergedAntenas.length; i++) {
       if (Array.isArray(mergedAntenas[i].bandas)) {

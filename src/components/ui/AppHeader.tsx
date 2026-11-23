@@ -9,9 +9,14 @@ import {
   Smartphone,
   Sparkles,
   Sun,
+  Trash2,
   X,
 } from 'lucide-react';
 import { useAntenasData } from '../../hooks/useAntenasData';
+import {
+  computeLatestScanEliminacionesCounts,
+  useEliminacionesData,
+} from '../../hooks/useEliminacionesData';
 import {
   computeLatestScanNovedadesCounts,
   useNovedadesData,
@@ -26,6 +31,7 @@ import {
 export function AppHeader() {
   const { derived, isLoading } = useAntenasData();
   const { data: novedadesData } = useNovedadesData();
+  const { data: eliminacionesData } = useEliminacionesData();
   const {
     theme,
     toggleTheme,
@@ -70,6 +76,9 @@ export function AppHeader() {
     : null;
   const latestNovedadesCounts = computeLatestScanNovedadesCounts(novedadesData);
   const novedadesCount = latestNovedadesCounts.total;
+  const latestEliminacionesCounts =
+    computeLatestScanEliminacionesCounts(eliminacionesData);
+  const eliminacionesCount = latestEliminacionesCounts.total;
   const relativeDate = derived
     ? formatRelativeDateEs(derived.dataset.updatedAt)
     : '';
@@ -176,6 +185,33 @@ export function AppHeader() {
                   </span>
                   <span className="sections-nav-sub">
                     Altas diarias de antenas y nuevas frecuencias
+                  </span>
+                </span>
+              </Link>
+
+              <Link
+                to="/eliminaciones"
+                id="nav-tab-eliminaciones"
+                className="sections-nav-item"
+                onClick={() => setSectionsMenuOpen(false)}
+              >
+                <span className="sections-nav-icon" aria-hidden="true">
+                  <Trash2 size={17} />
+                </span>
+                <span className="sections-nav-copy">
+                  <span className="sections-nav-title-row">
+                    <span className="sections-nav-title">Eliminaciones</span>
+                    {eliminacionesCount > 0 && (
+                      <span
+                        className="nav-tab-badge is-eliminaciones mono"
+                        title={`${eliminacionesCount.toLocaleString('es-ES')} eliminaciones detectadas en el último escaneo`}
+                      >
+                        {eliminacionesCount.toLocaleString('es-ES')}
+                      </span>
+                    )}
+                  </span>
+                  <span className="sections-nav-sub">
+                    Bajas de antenas y frecuencias retiradas en MINETUR
                   </span>
                 </span>
               </Link>

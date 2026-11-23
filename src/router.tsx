@@ -9,6 +9,7 @@ import {
   validateNovedadesSearch,
   type NovedadesRouteSearch,
 } from './hooks/useNovedadesData';
+import { EliminacionesView } from './views/EliminacionesView';
 import { EstadisticasView } from './views/EstadisticasView';
 import { MapaView } from './views/MapaView';
 import { NovedadesView } from './views/NovedadesView';
@@ -18,6 +19,24 @@ export type { NovedadesRouteSearch };
 export interface MapaRouteSearch {
   gid?: string;
   id?: string;
+  lat?: number;
+  lon?: number;
+}
+
+function parseFiniteCoord(raw: unknown, min: number, max: number): number | undefined {
+  let num: number | null = null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    num = raw;
+  } else if (typeof raw === 'string' && raw.trim().length > 0) {
+    const parsed = Number.parseFloat(raw.trim());
+    if (Number.isFinite(parsed)) {
+      num = parsed;
+    }
+  }
+  if (num !== null && num >= min && num <= max) {
+    return num;
+  }
+  return undefined;
 }
 
 const rootRoute = createRootRoute({
@@ -43,12 +62,19 @@ const mapaRoute = createRoute({
       id = rawId.trim();
     }
 
+    const lat = parseFiniteCoord(search.lat, -90, 90);
+    const lon = parseFiniteCoord(search.lon, -180, 180);
+
     const parsed: MapaRouteSearch = {};
     if (gid !== undefined) {
       parsed.gid = gid;
     }
     if (id !== undefined) {
       parsed.id = id;
+    }
+    if (lat !== undefined && lon !== undefined) {
+      parsed.lat = lat;
+      parsed.lon = lon;
     }
     return parsed;
   },
@@ -62,6 +88,13 @@ const novedadesRoute = createRoute({
   component: NovedadesView,
 });
 
+const eliminacionesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/eliminaciones',
+  validateSearch: validateNovedadesSearch,
+  component: EliminacionesView,
+});
+
 const estadisticasRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/estadisticas',
@@ -71,6 +104,7 @@ const estadisticasRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   mapaRoute,
   novedadesRoute,
+  eliminacionesRoute,
   estadisticasRoute,
 ]);
 

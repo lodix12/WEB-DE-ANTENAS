@@ -72,6 +72,10 @@ ADAPTIVE_MAX_EXTRA_DELAY_S = 0.5
 SOFT_ANOMALY_WINDOW_S = 15.0
 SOFT_ANOMALY_BURST_THRESHOLD = 3
 FAILED_GID_RECOVERY_MAX = 500
+EMPTY_VERIFICATION_MAX = 500
+EMPTY_VERIFICATION_CONFIRMATIONS = 2
+MAX_SAFE_CENSUS_DROP_RATIO = 0.25
+MIN_PRIOR_ANTENNAS_FOR_DROP_GUARD = 1000
 QUADRANT_OVERLAP_DEG = 0.0001
 MIN_QUADRANT_SPAN_DEG = 0.004
 MAX_SUBDIVISION_DEPTH = 9
@@ -2912,12 +2916,19 @@ def inspect_detalle_estacion_html(html: str) -> tuple[list[dict[str, Any]], str]
         fast_entries, has_nonempty_data_row = fast_inspected
         if fast_entries:
             return fast_entries, "ok"
-        return (
-            [],
-            "valid_table_no_standard_ranges"
-            if has_nonempty_data_row
-            else "valid_table_empty_rows",
-        )
+        if has_nonempty_data_row:
+            return [], "valid_table_no_standard_ranges"
+        plain_text = _HTML_TAG_RE.sub(" ", html)
+        if "&" in plain_text:
+            plain_text = html_lib.unescape(plain_text)
+        plain_norm = _strip_accents(" ".join(plain_text.split()).lower())
+        if any(marker in plain_norm for marker in _DETAIL_ERROR_MARKERS) or _ORACLE_ERR_RE.search(
+            plain_norm
+        ):
+            return [], "error_page"
+        if "codigo de emplazamiento no valido" in plain_norm:
+            return [], "invalid_emplazamiento"
+        return [], "valid_table_empty_rows"
 
     parser = _DetalleEstacionHTMLParser()
     parser.feed(html)
@@ -2990,13 +3001,8 @@ def inspect_detalle_estacion_html(html: str) -> tuple[list[dict[str, Any]], str]
     if extracted:
         return extracted, "ok"
 
-    if saw_tech_table:
-        return (
-            [],
-            "valid_table_no_standard_ranges"
-            if saw_tech_data_row
-            else "valid_table_empty_rows",
-        )
+    if saw_tech_table and saw_tech_data_row:
+        return [], "valid_table_no_standard_ranges"
 
     plain_text = _HTML_TAG_RE.sub(" ", html)
     if "&" in plain_text:
@@ -3010,6 +3016,9 @@ def inspect_detalle_estacion_html(html: str) -> tuple[list[dict[str, Any]], str]
 
     if "codigo de emplazamiento no valido" in plain_norm:
         return [], "invalid_emplazamiento"
+
+    if saw_tech_table:
+        return [], "valid_table_empty_rows"
 
     if _LOCALIZACION_H2_RE.search(html) is not None:
         return [], "valid_localization_only"
@@ -3242,6 +3251,7 @@ def build_prior_antenna_index(
         "by_id": by_id,
         "by_op_gid": by_op_gid,
         "all_by_op_gid": all_by_op_gid,
+        "records": prior_records,
     }
 
 
@@ -3317,6 +3327,161 @@ def diff_new_antennas(
         )
 
     return novedades, new_ids
+
+
+def diff_removed_antennas(
+    records: list[dict[str, Any]],
+    prior_source: dict[str, Any] | list[dict[str, Any]] | Path | str | None,
+    scanned_at_iso: str | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """
+    Compara el censo anterior (`prior_source`) contra el censo actual (`records`) y devuelve
+    `(eliminaciones_antenas_y_frecuencias, removed_antenna_ids)`.
+    Comprueba tanto `id` como cada `(op, gid)` en `get_record_gids` para que las fusiones
+    de Vodafone (< 35 m) o Xfera en Orange jamás generen bajas falsas.
+    """
+    if prior_source is None:
+        return [], set()
+
+    prior_index = build_prior_antenna_index(prior_source)
+    prior_records: list[dict[str, Any]] = (
+        list(prior_index["records"])
+        if isinstance(prior_index.get("records"), list)
+        else list((prior_index.get("by_id") or {}).values())
+    )
+    if not prior_records:
+        return [], set()
+
+    current_ids: set[str] = set()
+    current_op_gids: set[tuple[str, str]] = set()
+    for cur in records:
+        if not isinstance(cur, dict):
+            continue
+        cur_id = str(cur.get("id") or "").strip()
+        cur_op = _normalize_operator_key(cur.get("op"), cur.get("opRaw"))
+        if cur_id:
+            current_ids.add(cur_id)
+        if cur_op:
+            for g in get_record_gids(cur):
+                current_op_gids.add((cur_op, g))
+
+    scan_iso = _normalize_iso_utc(scanned_at_iso) if scanned_at_iso else _utc_now_iso()
+    fecha_es = format_spain_datetime(scan_iso)
+
+    eliminaciones: list[dict[str, Any]] = []
+    removed_ids: set[str] = set()
+
+    for old_rec in prior_records:
+        if not isinstance(old_rec, dict):
+            continue
+        old_id = str(old_rec.get("id") or "").strip()
+        if not old_id or old_id in removed_ids or old_id in current_ids:
+            continue
+        old_op = _normalize_operator_key(old_rec.get("op"), old_rec.get("opRaw"))
+        old_gids = get_record_gids(old_rec)
+        if old_op and any((old_op, g) in current_op_gids for g in old_gids):
+            continue
+
+        removed_ids.add(old_id)
+        old_gid = str(old_rec.get("gid") or (old_gids[0] if old_gids else "")).strip()
+        old_op_raw = str(old_rec.get("opRaw") or "")
+        mun = str(old_rec.get("mun") or "").strip()
+        prov = str(old_rec.get("prov") or "").strip()
+        ubicacion = mun or prov
+        lat_val = _parse_float(old_rec.get("lat"))
+        lon_val = _parse_float(old_rec.get("lon"))
+
+        ant_row: dict[str, Any] = {
+            "id": f"del-ant:{old_id}",
+            "tipo": "antena",
+            "op": old_op,
+            "opRaw": old_op_raw,
+            "codigo": old_gid,
+            "antennaId": old_id,
+            "codigoBanda": "",
+            "frecuencia": "",
+            "ubicacion": ubicacion,
+            "prov": prov,
+            "scannedAt": scan_iso,
+            "fecha": fecha_es,
+        }
+        if lat_val is not None and lon_val is not None:
+            ant_row["lat"] = round(lat_val, 6)
+            ant_row["lon"] = round(lon_val, 6)
+        eliminaciones.append(ant_row)
+
+        prior_conc = old_rec.get("concesiones")
+        prior_freqs = old_rec.get("frecuencias")
+        assoc_freqs: list[dict[str, Any]] = []
+        seen_freq_keys: set[tuple[str, str, str]] = set()
+
+        if isinstance(prior_conc, list) and prior_conc:
+            for c in prior_conc:
+                if not isinstance(c, dict):
+                    continue
+                c_ref = " ".join(str(c.get("ref") or "").split()).strip()
+                c_freq_raw = " ".join(str(c.get("freq") or "").split()).strip()
+                c_freq_norm = _norm_freq_str(c_freq_raw)
+                if not c_freq_raw or not c_freq_norm:
+                    continue
+                dedup_key = (old_id, c_ref, c_freq_raw)
+                if dedup_key in seen_freq_keys:
+                    continue
+                seen_freq_keys.add(dedup_key)
+                freq_row: dict[str, Any] = {
+                    "id": f"del-freq:{old_id}:{c_ref}:{c_freq_raw}",
+                    "tipo": "frecuencia",
+                    "op": old_op,
+                    "opRaw": old_op_raw,
+                    "codigo": old_gid,
+                    "antennaId": old_id,
+                    "codigoBanda": c_ref,
+                    "frecuencia": format_exact_ministry_frequency(c_freq_raw),
+                    "ubicacion": ubicacion,
+                    "prov": prov,
+                    "scannedAt": scan_iso,
+                    "fecha": fecha_es,
+                }
+                if lat_val is not None and lon_val is not None:
+                    freq_row["lat"] = round(lat_val, 6)
+                    freq_row["lon"] = round(lon_val, 6)
+                assoc_freqs.append(freq_row)
+        elif isinstance(prior_freqs, list) and prior_freqs:
+            for f_str in prior_freqs:
+                if not isinstance(f_str, str):
+                    continue
+                f_raw = " ".join(f_str.split()).strip()
+                f_norm = _norm_freq_str(f_raw)
+                if not f_raw or not f_norm:
+                    continue
+                dedup_key = (old_id, "", f_raw)
+                if dedup_key in seen_freq_keys:
+                    continue
+                seen_freq_keys.add(dedup_key)
+                freq_row = {
+                    "id": f"del-freq:{old_id}::{f_raw}",
+                    "tipo": "frecuencia",
+                    "op": old_op,
+                    "opRaw": old_op_raw,
+                    "codigo": old_gid,
+                    "antennaId": old_id,
+                    "codigoBanda": "",
+                    "frecuencia": format_exact_ministry_frequency(f_raw),
+                    "ubicacion": ubicacion,
+                    "prov": prov,
+                    "scannedAt": scan_iso,
+                    "fecha": fecha_es,
+                }
+                if lat_val is not None and lon_val is not None:
+                    freq_row["lat"] = round(lat_val, 6)
+                    freq_row["lon"] = round(lon_val, 6)
+                assoc_freqs.append(freq_row)
+
+        if len(assoc_freqs) > 1:
+            assoc_freqs.sort(key=_novedad_freq_sort_key)
+        eliminaciones.extend(assoc_freqs)
+
+    return eliminaciones, removed_ids
 
 
 def preserve_bands_in_records(
@@ -3754,6 +3919,193 @@ def _diff_record_new_frequencies(
     return emitted
 
 
+def _diff_record_removed_frequencies(
+    rec: dict[str, Any],
+    matched_entries: list[dict[str, Any]],
+    fetched_iso: str,
+    new_antenna_ids: set[str] | None = None,
+    prior_index: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Detecta concesiones/frecuencias que existían previamente en `rec` (o en `prior_index`)
+    y han desaparecido en el re-escaneo verificado (`matched_entries`).
+    Nunca emite bajas para antenas nuevas ni para antenas que aún no tenían un escaneo previo.
+    """
+    rec_id = str(rec.get("id") or "").strip()
+    if not rec_id:
+        return []
+    if new_antenna_ids and rec_id in new_antenna_ids:
+        return []
+
+    prior_conc: list[dict[str, Any]] | None = (
+        rec["concesiones"] if isinstance(rec.get("concesiones"), list) else None
+    )
+    prior_freqs: list[str] | None = (
+        rec["frecuencias"] if isinstance(rec.get("frecuencias"), list) else None
+    )
+
+    if prior_conc is None and prior_freqs is None and prior_index is not None:
+        matched_priors: list[dict[str, Any]] = []
+        seen_prior_objs: set[int] = set()
+        primary_old = match_prior_antenna(rec, prior_index)
+        if primary_old is not None:
+            seen_prior_objs.add(id(primary_old))
+            matched_priors.append(primary_old)
+        all_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] = (
+            prior_index.get("all_by_op_gid") or {}
+        )
+        rec_op = str(rec.get("op") or "").strip()
+        if rec_op:
+            for g in get_record_gids(rec):
+                for cand in all_by_op_gid.get((rec_op, g), ()):
+                    if id(cand) not in seen_prior_objs:
+                        seen_prior_objs.add(id(cand))
+                        matched_priors.append(cand)
+
+        conc_acc: list[dict[str, Any]] = []
+        freq_acc: list[str] = []
+        any_conc = False
+        any_freq = False
+        for old_rec in matched_priors:
+            if isinstance(old_rec.get("concesiones"), list):
+                any_conc = True
+                conc_acc.extend(
+                    c for c in old_rec["concesiones"] if isinstance(c, dict)
+                )
+            elif isinstance(old_rec.get("frecuencias"), list):
+                any_freq = True
+                for f_str in old_rec["frecuencias"]:
+                    if isinstance(f_str, str):
+                        freq_acc.append(f_str)
+
+        if any_conc:
+            prior_conc = conc_acc
+        elif any_freq:
+            prior_freqs = freq_acc
+
+    if not isinstance(prior_conc, list) and not isinstance(prior_freqs, list):
+        return []
+
+    current_pairs: set[tuple[str, str]] = set()
+    current_freq_only: set[str] = set()
+    current_blank_ref_freqs: set[str] = set()
+    for entry in matched_entries:
+        ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+        banda_raw = " ".join(
+            str(
+                entry.get("frecuenciaDeclarada")
+                or entry.get("frecuencia")
+                or ""
+            ).split()
+        ).strip()
+        freq_clean = _norm_freq_str(str(entry.get("frecuencia") or banda_raw))
+        if freq_clean:
+            current_pairs.add((ref, freq_clean))
+            current_freq_only.add(freq_clean)
+            if ref == "":
+                current_blank_ref_freqs.add(freq_clean)
+
+    scan_iso: str | None = None
+    fecha_es: str | None = None
+    mun = ""
+    prov = ""
+    ubicacion = ""
+    lat_val = _parse_float(rec.get("lat"))
+    lon_val = _parse_float(rec.get("lon"))
+
+    def _ensure_emit_meta() -> tuple[str, str, str, str]:
+        nonlocal scan_iso, fecha_es, mun, prov, ubicacion
+        if scan_iso is None:
+            scan_iso = _normalize_iso_utc(fetched_iso)
+            fecha_es = format_spain_datetime(scan_iso)
+            mun = str(rec.get("mun") or "").strip()
+            prov = str(rec.get("prov") or "").strip()
+            ubicacion = mun or prov
+        assert fecha_es is not None
+        return scan_iso, fecha_es, ubicacion, prov
+
+    emitted: list[dict[str, Any]] = []
+    seen_del_keys: set[tuple[str, str, str]] = set()
+
+    if isinstance(prior_conc, list):
+        for c in prior_conc:
+            if not isinstance(c, dict):
+                continue
+            c_ref = " ".join(str(c.get("ref") or "").split()).strip()
+            c_freq_raw = " ".join(str(c.get("freq") or "").split()).strip()
+            c_freq_norm = _norm_freq_str(c_freq_raw)
+            if not c_freq_raw or not c_freq_norm:
+                continue
+            if (c_ref, c_freq_norm) in current_pairs:
+                continue
+            if c_ref == "" and c_freq_norm in current_freq_only:
+                continue
+            if c_freq_norm in current_blank_ref_freqs:
+                continue
+
+            dedup_key = (rec_id, c_ref, c_freq_raw)
+            if dedup_key in seen_del_keys:
+                continue
+            seen_del_keys.add(dedup_key)
+
+            s_iso, f_es, ubic, pr = _ensure_emit_meta()
+            row: dict[str, Any] = {
+                "id": f"del-freq:{rec_id}:{c_ref}:{c_freq_raw}",
+                "tipo": "frecuencia",
+                "op": rec["op"],
+                "opRaw": rec["opRaw"],
+                "codigo": rec["gid"],
+                "antennaId": rec_id,
+                "codigoBanda": c_ref,
+                "frecuencia": format_exact_ministry_frequency(c_freq_raw),
+                "ubicacion": ubic,
+                "prov": pr,
+                "scannedAt": s_iso,
+                "fecha": f_es,
+            }
+            if lat_val is not None and lon_val is not None:
+                row["lat"] = round(lat_val, 6)
+                row["lon"] = round(lon_val, 6)
+            emitted.append(row)
+    elif isinstance(prior_freqs, list):
+        for f_str in prior_freqs:
+            if not isinstance(f_str, str):
+                continue
+            f_raw = " ".join(f_str.split()).strip()
+            f_norm = _norm_freq_str(f_raw)
+            if not f_raw or not f_norm or f_norm in current_freq_only:
+                continue
+
+            dedup_key = (rec_id, "", f_raw)
+            if dedup_key in seen_del_keys:
+                continue
+            seen_del_keys.add(dedup_key)
+
+            s_iso, f_es, ubic, pr = _ensure_emit_meta()
+            row = {
+                "id": f"del-freq:{rec_id}::{f_raw}",
+                "tipo": "frecuencia",
+                "op": rec["op"],
+                "opRaw": rec["opRaw"],
+                "codigo": rec["gid"],
+                "antennaId": rec_id,
+                "codigoBanda": "",
+                "frecuencia": format_exact_ministry_frequency(f_raw),
+                "ubicacion": ubic,
+                "prov": pr,
+                "scannedAt": s_iso,
+                "fecha": f_es,
+            }
+            if lat_val is not None and lon_val is not None:
+                row["lat"] = round(lat_val, 6)
+                row["lon"] = round(lon_val, 6)
+            emitted.append(row)
+
+    if len(emitted) > 1:
+        emitted.sort(key=_novedad_freq_sort_key)
+    return emitted
+
+
 def _novedad_timestamp(item: dict[str, Any]) -> float:
     scanned_at = str(item.get("scannedAt") or "")
     try:
@@ -4104,13 +4456,199 @@ def merge_novedades_files(target_path: Path, incoming_path: Path) -> None:
     write_novedades_dataset(merged_doc, target_path)
 
 
+def sort_eliminaciones_grouped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Deduplica eliminaciones por `id` preservando registros históricos originales y las ordena
+    por lote de escaneo (lote más reciente primero), agrupando cada antena eliminada seguida
+    de sus frecuencias retiradas y después las frecuencias retiradas de antenas aún activas.
+    """
+    return sort_novedades_grouped(items)
+
+
+def load_eliminaciones_dataset(path: Path | str | None) -> dict[str, Any] | None:
+    """Carga un `EliminacionesDataset` existente desde disco si es válido."""
+    if path is None:
+        return None
+    target = Path(path)
+    if not target.exists():
+        return None
+    try:
+        loaded = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and isinstance(loaded.get("eliminaciones"), list):
+            normalized_items: list[dict[str, Any]] = []
+            for item in loaded["eliminaciones"]:
+                if isinstance(item, dict):
+                    item_copy = dict(item)
+                    item_copy["op"] = _normalize_operator_key(
+                        item_copy.get("op"), item_copy.get("opRaw")
+                    )
+                    normalized_items.append(item_copy)
+            loaded["eliminaciones"] = normalized_items
+            return loaded
+    except Exception as exc:
+        logging.warning("No se pudo leer eliminaciones previas en %s: %s", target, exc)
+    return None
+
+
+def build_eliminaciones_dataset(
+    eliminaciones: list[dict[str, Any]],
+    *,
+    scan_id: str = "",
+    previous_scan_at: str | None = None,
+    updated_at: str | None = None,
+    is_baseline_scan: bool = False,
+) -> dict[str, Any]:
+    """
+    Construye un `EliminacionesDataset` compatible al 100% con `src/types/antena.ts`,
+    deduplicado por `id` y ordenado por lote de escaneo y antena.
+    """
+    ts = _normalize_iso_utc(updated_at) if updated_at else _utc_now_iso()
+    effective_scan_id = str(scan_id or "").strip() or f"scan-{ts}"
+
+    if is_baseline_scan:
+        return {
+            "updatedAt": ts,
+            "scanId": effective_scan_id,
+            "previousScanAt": previous_scan_at,
+            "isBaselineScan": True,
+            "total": 0,
+            "antenasEliminadas": 0,
+            "frecuenciasEliminadas": 0,
+            "eliminaciones": [],
+        }
+
+    sorted_items = sort_eliminaciones_grouped(eliminaciones)
+    antenas_eliminadas = sum(1 for e in sorted_items if e.get("tipo") == "antena")
+    frecuencias_eliminadas = sum(
+        1 for e in sorted_items if e.get("tipo") == "frecuencia"
+    )
+
+    return {
+        "updatedAt": ts,
+        "scanId": effective_scan_id,
+        "previousScanAt": previous_scan_at,
+        "isBaselineScan": False,
+        "total": len(sorted_items),
+        "antenasEliminadas": antenas_eliminadas,
+        "frecuenciasEliminadas": frecuencias_eliminadas,
+        "eliminaciones": sorted_items,
+    }
+
+
+def write_eliminaciones_dataset(
+    eliminaciones_dataset: dict[str, Any], output_path: Path
+) -> int:
+    """Escribe `eliminaciones_dataset` en JSON UTF-8 de forma atómica."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    encoded = json.dumps(
+        eliminaciones_dataset, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    tmp_path.write_bytes(encoded)
+    os.replace(tmp_path, output_path)
+    return len(encoded)
+
+
+def _extract_stamped_eliminaciones_from_doc(
+    doc: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(doc, dict):
+        return []
+    raw_items = [
+        dict(item)
+        for item in (doc.get("eliminaciones") or [])
+        if isinstance(item, dict)
+    ]
+    if doc.get("isBaselineScan") and not raw_items:
+        return []
+    doc_scan_id = str(doc.get("scanId") or "").strip()
+    can_stamp = bool(doc_scan_id and not doc_scan_id.startswith("baseline"))
+    for item in raw_items:
+        item["op"] = _normalize_operator_key(item.get("op"), item.get("opRaw"))
+        if can_stamp and not str(item.get("scanId") or "").strip():
+            item["scanId"] = doc_scan_id
+    return raw_items
+
+
+def merge_eliminaciones_datasets(
+    base_doc: dict[str, Any] | None,
+    incoming_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Fusiona sin pérdidas dos documentos `EliminacionesDataset` (`base_doc` e `incoming_doc`),
+    conservando permanentemente todas las eliminaciones históricas y las nuevas agrupadas por escaneo.
+    """
+    if base_doc is None and incoming_doc is None:
+        return build_eliminaciones_dataset([], is_baseline_scan=False)
+
+    base_items = _extract_stamped_eliminaciones_from_doc(base_doc)
+    incoming_items = _extract_stamped_eliminaciones_from_doc(incoming_doc)
+    combined_items = [*base_items, *incoming_items]
+
+    base_ts = _doc_updated_timestamp(base_doc)
+    inc_ts = _doc_updated_timestamp(incoming_doc)
+    if incoming_doc is not None and (base_doc is None or inc_ts >= base_ts):
+        newest_doc = incoming_doc
+        older_doc = base_doc
+    else:
+        assert base_doc is not None
+        newest_doc = base_doc
+        older_doc = incoming_doc
+
+    scan_id = (
+        str(newest_doc.get("scanId") or "").strip()
+        or str((older_doc or {}).get("scanId") or "").strip()
+    )
+    updated_at_raw = str(newest_doc.get("updatedAt") or "").strip() or str(
+        (older_doc or {}).get("updatedAt") or ""
+    ).strip()
+    updated_at = updated_at_raw or None
+    if "previousScanAt" in newest_doc:
+        previous_scan_at = newest_doc.get("previousScanAt")
+    elif older_doc is not None and "previousScanAt" in older_doc:
+        previous_scan_at = older_doc.get("previousScanAt")
+    else:
+        previous_scan_at = None
+
+    is_baseline = bool(
+        not combined_items
+        and incoming_doc is not None
+        and incoming_doc.get("isBaselineScan")
+        and (base_doc is None or base_doc.get("isBaselineScan"))
+    )
+
+    return build_eliminaciones_dataset(
+        combined_items,
+        scan_id=scan_id,
+        previous_scan_at=previous_scan_at,
+        updated_at=updated_at,
+        is_baseline_scan=is_baseline,
+    )
+
+
+def merge_eliminaciones_files(target_path: Path, incoming_path: Path) -> None:
+    """Fusiona de forma atómica y sin pérdidas `incoming_path` sobre `target_path`."""
+    incoming_doc = load_eliminaciones_dataset(incoming_path)
+    if incoming_doc is None:
+        return
+    if (
+        target_path.exists()
+        and incoming_path.exists()
+        and target_path.read_bytes() == incoming_path.read_bytes()
+    ):
+        return
+    base_doc = load_eliminaciones_dataset(target_path)
+    merged_doc = merge_eliminaciones_datasets(base_doc, incoming_doc)
+    write_eliminaciones_dataset(merged_doc, target_path)
+
+
 _LIVE_CHUNK_RE = re.compile(r"^live-chunk-(\d+)\.json$")
 
 
 class LiveDeltaStreamWriter:
     """
     Emisor atómico en tiempo real de lotes incrementales (`live-chunk-{k}.json` + `live-tail.json`)
-    para sincronización instantánea con el mapa interactivo y la pestaña Novedades.
+    para sincronización instantánea con el mapa interactivo, Novedades y Eliminaciones.
     """
 
     def __init__(
@@ -4142,10 +4680,14 @@ class LiveDeltaStreamWriter:
         self._seen_new_antenna_ids: set[str] = set()
         self._seen_updated_antenna_ids: set[str] = set()
         self._seen_novedad_ids: set[str] = set()
+        self._seen_removed_antenna_ids: set[str] = set()
+        self._seen_eliminacion_ids: set[str] = set()
 
         self._tail_new_antennas: dict[str, dict[str, Any]] = {}
         self._tail_band_patches: dict[str, dict[str, Any]] = {}
         self._tail_novedades: dict[str, dict[str, Any]] = {}
+        self._tail_removed_antenna_ids: set[str] = set()
+        self._tail_eliminaciones: dict[str, dict[str, Any]] = {}
         self._tail_replaces_new_antennas: bool = False
         self._had_provisional_items: bool = False
         self._chunk_just_sealed: bool = False
@@ -4168,6 +4710,10 @@ class LiveDeltaStreamWriter:
     @property
     def total_novedades(self) -> int:
         return len(self._seen_novedad_ids)
+
+    @property
+    def total_eliminaciones(self) -> int:
+        return len(self._seen_eliminacion_ids)
 
     @property
     def seen_new_antenna_ids(self) -> set[str]:
@@ -4200,10 +4746,16 @@ class LiveDeltaStreamWriter:
         for patch in doc.get("bandPatches") or ():
             if isinstance(patch, dict) and patch.get("id"):
                 self._seen_updated_antenna_ids.add(str(patch["id"]))
+        for rid in doc.get("removedAntennaIds") or ():
+            if isinstance(rid, str) and rid.strip():
+                self._seen_removed_antenna_ids.add(rid.strip())
         if self.record_novedades:
             for nov in doc.get("novedades") or ():
                 if isinstance(nov, dict) and nov.get("id"):
                     self._seen_novedad_ids.add(str(nov["id"]))
+            for elim in doc.get("eliminaciones") or ():
+                if isinstance(elim, dict) and elim.get("id"):
+                    self._seen_eliminacion_ids.add(str(elim["id"]))
 
     def _load_existing_append_state(self) -> None:
         chunk_files: list[tuple[int, Path]] = []
@@ -4258,6 +4810,9 @@ class LiveDeltaStreamWriter:
                 for patch in tdoc.get("bandPatches") or ():
                     if isinstance(patch, dict) and patch.get("id"):
                         self._tail_band_patches[str(patch["id"])] = dict(patch)
+                for rid in tdoc.get("removedAntennaIds") or ():
+                    if isinstance(rid, str) and rid.strip():
+                        self._tail_removed_antenna_ids.add(rid.strip())
                 if self.record_novedades:
                     for nov in tdoc.get("novedades") or ():
                         if isinstance(nov, dict) and nov.get("id"):
@@ -4266,6 +4821,13 @@ class LiveDeltaStreamWriter:
                                 nov_copy.get("op"), nov_copy.get("opRaw")
                             )
                             self._tail_novedades[str(nov["id"])] = nov_copy
+                    for elim in tdoc.get("eliminaciones") or ():
+                        if isinstance(elim, dict) and elim.get("id"):
+                            elim_copy = dict(elim)
+                            elim_copy["op"] = _normalize_operator_key(
+                                elim_copy.get("op"), elim_copy.get("opRaw")
+                            )
+                            self._tail_eliminaciones[str(elim["id"])] = elim_copy
 
         status_path = self.live_dir / "scan-status.json"
         if status_path.exists():
@@ -4286,10 +4848,12 @@ class LiveDeltaStreamWriter:
             len(self._tail_new_antennas)
             + len(self._tail_band_patches)
             + len(self._tail_novedades)
+            + len(self._tail_removed_antenna_ids)
+            + len(self._tail_eliminaciones)
         )
 
     def _build_chunk_payload(self, *, chunk_index: int, is_tail: bool) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schemaVersion": 1,
             "scanId": self.scan_id,
             "seq": self.delta_seq,
@@ -4307,6 +4871,13 @@ class LiveDeltaStreamWriter:
                 else []
             ),
         }
+        if self._tail_removed_antenna_ids:
+            payload["removedAntennaIds"] = sorted(self._tail_removed_antenna_ids)
+        if self.record_novedades and self._tail_eliminaciones:
+            payload["eliminaciones"] = sort_eliminaciones_grouped(
+                list(self._tail_eliminaciones.values())
+            )
+        return payload
 
     @staticmethod
     def _write_atomic(payload: dict[str, Any], target_path: Path) -> None:
@@ -4327,6 +4898,8 @@ class LiveDeltaStreamWriter:
         self._tail_new_antennas.clear()
         self._tail_band_patches.clear()
         self._tail_novedades.clear()
+        self._tail_removed_antenna_ids.clear()
+        self._tail_eliminaciones.clear()
         self._tail_replaces_new_antennas = False
         self._chunk_just_sealed = True
         self._dirty = False
@@ -4382,6 +4955,34 @@ class LiveDeltaStreamWriter:
             nov_copy["scanId"] = self.scan_id
         self._seen_novedad_ids.add(nov_id)
         self._tail_novedades[nov_id] = nov_copy
+        self._dirty = True
+        if self._tail_item_count() >= self.chunk_capacity:
+            self._seal_current_tail_as_chunk()
+
+    def _insert_removed_antenna_id(self, ant_id: str) -> None:
+        clean_id = str(ant_id or "").strip()
+        if not clean_id:
+            return
+        self._seen_removed_antenna_ids.add(clean_id)
+        self._tail_removed_antenna_ids.add(clean_id)
+        self._dirty = True
+        if self._tail_item_count() >= self.chunk_capacity:
+            self._seal_current_tail_as_chunk()
+
+    def _insert_eliminacion(self, elim: dict[str, Any]) -> None:
+        if not self.record_novedades:
+            return
+        elim_id = str(elim.get("id") or "").strip()
+        if not elim_id:
+            return
+        elim_copy = dict(elim)
+        elim_copy["op"] = _normalize_operator_key(
+            elim_copy.get("op"), elim_copy.get("opRaw")
+        )
+        if self.scan_id and not str(elim_copy.get("scanId") or "").strip():
+            elim_copy["scanId"] = self.scan_id
+        self._seen_eliminacion_ids.add(elim_id)
+        self._tail_eliminaciones[elim_id] = elim_copy
         self._dirty = True
         if self._tail_item_count() >= self.chunk_capacity:
             self._seal_current_tail_as_chunk()
@@ -4489,15 +5090,34 @@ class LiveDeltaStreamWriter:
 
         return self._maybe_flush_after_insert(force_flush=True, urgent=True)
 
+    def record_removed_antennas(
+        self,
+        removed_antenna_ids: set[str] | list[str],
+        eliminaciones: list[dict[str, Any]],
+    ) -> bool:
+        eff_elims = eliminaciones if self.record_novedades else []
+        if not removed_antenna_ids and not eff_elims:
+            return False
+
+        for rid in sorted(removed_antenna_ids):
+            self._insert_removed_antenna_id(rid)
+        for elim in eff_elims:
+            if isinstance(elim, dict):
+                self._insert_eliminacion(elim)
+
+        return self._maybe_flush_after_insert(force_flush=True, urgent=True)
+
     def record_band_updates(
         self,
         patches: list[dict[str, Any]],
         freq_novedades: list[dict[str, Any]],
+        freq_eliminaciones: list[dict[str, Any]] | None = None,
         *,
         force_flush: bool = False,
     ) -> bool:
         eff_novs = freq_novedades if self.record_novedades else []
-        if not patches and not eff_novs:
+        eff_elims = (freq_eliminaciones or []) if self.record_novedades else []
+        if not patches and not eff_novs and not eff_elims:
             if force_flush and self._dirty:
                 self._write_tail_file(bump_seq=True)
                 return True
@@ -4509,10 +5129,13 @@ class LiveDeltaStreamWriter:
         for nov in eff_novs:
             if isinstance(nov, dict):
                 self._insert_novedad(nov)
+        for elim in eff_elims:
+            if isinstance(elim, dict):
+                self._insert_eliminacion(elim)
 
         return self._maybe_flush_after_insert(
             force_flush=force_flush,
-            urgent=bool(eff_novs),
+            urgent=bool(eff_novs or eff_elims),
         )
 
     def flush_final(self) -> bool:
@@ -4524,6 +5147,10 @@ class LiveDeltaStreamWriter:
             self._write_tail_file(bump_seq=False)
             return True
         return False
+
+
+class _PendingEmptyBandsVerification(Exception):
+    """Indica que una estación con bandas previas devolvió una tabla técnica limpia sin filas y requiere confirmación secuencial en calma."""
 
 
 class BandEnricher:
@@ -4548,6 +5175,7 @@ class BandEnricher:
         prior_index: dict[str, Any] | None = None,
         record_novedades: bool = True,
         novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+        eliminaciones_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
         live_stream: LiveDeltaStreamWriter | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         fetch_fn: Callable[[str], str | bytes] | None = None,
@@ -4582,6 +5210,7 @@ class BandEnricher:
         self.prior_index = prior_index
         self.record_novedades = bool(record_novedades)
         self._novedades_checkpoint_fn = novedades_checkpoint_fn
+        self._eliminaciones_checkpoint_fn = eliminaciones_checkpoint_fn
         self._live_stream = live_stream
         self._progress_callback = progress_callback
         self._custom_fetch_fn = fetch_fn
@@ -4596,15 +5225,19 @@ class BandEnricher:
         self.requests_count: int = 0
         self.failed_gids_count: int = 0
         self.anomalous_responses_count: int = 0
+        self.verified_empty_removals_count: int = 0
         self.last_requests_per_second: float = 0.0
         self.last_scanned_antennas: int = 0
         self.last_total_antennas: int = 0
         self.saved_final_checkpoint: bool = False
         self.discovered_novedades: list[dict[str, Any]] = []
         self._seen_novedad_ids: set[str] = set()
+        self.discovered_eliminaciones: list[dict[str, Any]] = []
+        self._seen_eliminacion_ids: set[str] = set()
         self._last_request_ts: float | None = None
         self._unsaved_requests: int = 0
         self._last_saved_novedades_len: int = -1
+        self._last_saved_eliminaciones_len: int = -1
 
     def _needs_band_scan(self, rec: dict[str, Any]) -> bool:
         if not isinstance(rec.get("bandas"), list) or not isinstance(
@@ -4739,6 +5372,14 @@ class BandEnricher:
         if html_status == "valid_table_no_standard_ranges":
             return []
 
+        if html_status == "valid_table_empty_rows":
+            if not expect_nonempty:
+                return []
+            self._http_client.discard_tls_session()
+            raise _PendingEmptyBandsVerification(
+                "Tabla CARACTERISTICAS TÉCNICAS válida sin filas en estación con bandas previas"
+            )
+
         if expect_nonempty:
             with self._stats_lock:
                 self.anomalous_responses_count += 1
@@ -4747,6 +5388,111 @@ class BandEnricher:
             raise ValueError(
                 f"Respuesta sin concesiones sospechosa para estación con bandas previas ({html_status})"
             )
+        return []
+
+    def _verify_genuine_empty_detalle(
+        self,
+        gid: str,
+        *,
+        required_confirmations: int = EMPTY_VERIFICATION_CONFIRMATIONS,
+    ) -> list[dict[str, Any]]:
+        """
+        Verifica de forma secuencial, calmada y con sesiones limpias si una estación
+        con bandas previas realmente ya no muestra concesiones en MINETUR
+        (`valid_table_empty_rows`).
+        - Exige `required_confirmations` (por defecto 2) respuestas consecutivas limpias
+          sin ninguna ráfaga activa de anomalías.
+        - Si en cualquier comprobación reaparecen concesiones (`ok`), las devuelve sin borrar nada.
+        - Si ocurre cualquier error HTTP/HTML o ráfaga de anomalías, lanza `RuntimeError`
+          para preservar intactas las bandas previas.
+        """
+        if self._http_client.has_recent_soft_anomaly_burst(clock_fn=self._clock):
+            raise RuntimeError(
+                f"Ráfaga reciente de anomalías activa; omitiendo vaciado de bandas en emplazamiento={gid!r}"
+            )
+
+        url = build_detalle_estacion_url(gid)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*",
+        }
+
+        confirmations = 0
+        needed = max(1, int(required_confirmations))
+        for check_idx in range(needed):
+            if (
+                self.max_band_requests is not None
+                and self.requests_count >= self.max_band_requests
+            ):
+                raise RuntimeError(
+                    f"Presupuesto de peticiones agotado antes de confirmar vaciado en emplazamiento={gid!r}"
+                )
+            if check_idx > 0 and self._sleep is time.sleep:
+                self._sleep(1.0)
+            self._http_client.discard_tls_session()
+            self._wait_rate_limit()
+            with self._stats_lock:
+                self.requests_count += 1
+                self._unsaved_requests += 1
+
+            try:
+                if self._custom_fetch_fn is not None:
+                    payload = self._custom_fetch_fn(gid)
+                    self._last_request_ts = self._clock()
+                    html = (
+                        decode_detalle_estacion_payload(payload)
+                        if isinstance(payload, (bytes, bytearray))
+                        else str(payload)
+                    )
+                else:
+                    raw_bytes = self._http_client.fetch_bytes(
+                        url,
+                        headers=headers,
+                        timeout=self.timeout_seconds,
+                        clock_fn=self._clock,
+                    )
+                    self._last_request_ts = self._clock()
+                    html = decode_detalle_estacion_payload(raw_bytes)
+            except Exception as exc:
+                self._last_request_ts = self._clock()
+                self._http_client.discard_tls_session()
+                raise RuntimeError(
+                    f"Error durante verificación en calma de emplazamiento={gid!r}: {exc}"
+                ) from exc
+
+            entries, html_status = inspect_detalle_estacion_html(html)
+            if html_status == "ok":
+                return entries
+            if html_status == "valid_table_no_standard_ranges":
+                return []
+            if html_status == "valid_table_empty_rows":
+                if self._http_client.has_recent_soft_anomaly_burst(
+                    clock_fn=self._clock
+                ):
+                    raise RuntimeError(
+                        f"Ráfaga de anomalías durante verificación en calma de emplazamiento={gid!r}"
+                    )
+                confirmations += 1
+                continue
+
+            with self._stats_lock:
+                self.anomalous_responses_count += 1
+            self._http_client.discard_tls_session()
+            self._http_client.record_soft_anomaly(clock_fn=self._clock)
+            raise RuntimeError(
+                f"Respuesta anómala ({html_status}) al verificar vaciado en emplazamiento={gid!r}"
+            )
+
+        with self._stats_lock:
+            self.verified_empty_removals_count += 1
+        logging.info(
+            "Confirmada retirada real de todas las bandas en emplazamiento=%s (%d/%d verificaciones limpias).",
+            gid,
+            confirmations,
+            needed,
+        )
         return []
 
     def _http_fetch_detalle(
@@ -4797,6 +5543,12 @@ class BandEnricher:
                         expect_nonempty=expect_nonempty,
                         live_http=False,
                     )
+                except _PendingEmptyBandsVerification:
+                    if not parallel_mode:
+                        return self._verify_genuine_empty_detalle(gid)
+                    if attempt >= 1:
+                        raise
+                    last_err = _PendingEmptyBandsVerification(gid)
                 except Exception as exc:
                     now_ts = self._clock()
                     if parallel_mode:
@@ -4826,6 +5578,12 @@ class BandEnricher:
                         expect_nonempty=expect_nonempty,
                         live_http=True,
                     )
+                except _PendingEmptyBandsVerification:
+                    if not parallel_mode:
+                        return self._verify_genuine_empty_detalle(gid)
+                    if attempt >= 1:
+                        raise
+                    last_err = _PendingEmptyBandsVerification(gid)
                 except (
                     urllib.error.HTTPError,
                     urllib.error.URLError,
@@ -4895,6 +5653,11 @@ class BandEnricher:
             if force_novedades or cur_nov_len != self._last_saved_novedades_len:
                 self._novedades_checkpoint_fn(self.discovered_novedades)
                 self._last_saved_novedades_len = cur_nov_len
+        if self._eliminaciones_checkpoint_fn is not None:
+            cur_elim_len = len(self.discovered_eliminaciones)
+            if force_novedades or cur_elim_len != self._last_saved_eliminaciones_len:
+                self._eliminaciones_checkpoint_fn(self.discovered_eliminaciones)
+                self._last_saved_eliminaciones_len = cur_elim_len
 
     def _build_prioritized_units(
         self,
@@ -5022,6 +5785,7 @@ class BandEnricher:
         all_records_per_gid: dict[str, list[dict[str, Any]]],
         batch_patches: list[dict[str, Any]],
         batch_freq_novs: list[dict[str, Any]],
+        batch_freq_elims: list[dict[str, Any]] | None = None,
         gids_by_idx: dict[int, list[str]] | None = None,
         remaining_by_gid: dict[str, int] | None = None,
     ) -> tuple[int, int]:
@@ -5095,6 +5859,7 @@ class BandEnricher:
                     )
 
             new_freq_novs: list[dict[str, Any]] = []
+            new_freq_elims: list[dict[str, Any]] = []
             if self.record_novedades:
                 new_freq_novs = _diff_record_new_frequencies(
                     rec,
@@ -5108,6 +5873,19 @@ class BandEnricher:
                     if nov_id not in self._seen_novedad_ids:
                         self._seen_novedad_ids.add(nov_id)
                         self.discovered_novedades.append(nov)
+
+                new_freq_elims = _diff_record_removed_frequencies(
+                    rec,
+                    matched_entries,
+                    fetched_iso=fetched_iso,
+                    new_antenna_ids=self.new_antenna_ids,
+                    prior_index=self.prior_index,
+                )
+                for elim in new_freq_elims:
+                    elim_id = elim["id"]
+                    if elim_id not in self._seen_eliminacion_ids:
+                        self._seen_eliminacion_ids.add(elim_id)
+                        self.discovered_eliminaciones.append(elim)
 
             combined_ranges = [
                 (float(e["minMhz"]), float(e["maxMhz"]))
@@ -5132,6 +5910,7 @@ class BandEnricher:
                     or (old_concs != concs_sorted)
                     or (rec["id"] in self.new_antenna_ids)
                     or bool(new_freq_novs)
+                    or bool(new_freq_elims)
                 )
                 if rf_changed:
                     patch: dict[str, Any] = {
@@ -5148,6 +5927,8 @@ class BandEnricher:
                     batch_patches.append(patch)
                 if new_freq_novs:
                     batch_freq_novs.extend(new_freq_novs)
+                if new_freq_elims and batch_freq_elims is not None:
+                    batch_freq_elims.extend(new_freq_elims)
 
         return newly_delta, populated_delta
 
@@ -5233,6 +6014,7 @@ class BandEnricher:
         fetched_gids: set[str] = set()
         completed_pending_indices: set[int] = set()
         failed_gids: set[str] = set()
+        pending_empty_verify_gids: set[str] = set()
         consecutive_failures = 0
         newly_populated = zero_gid_populated
         run_start_ts = self._clock()
@@ -5334,6 +6116,7 @@ class BandEnricher:
 
                         batch_patches: list[dict[str, Any]] = []
                         batch_freq_novs: list[dict[str, Any]] = []
+                        batch_freq_elims: list[dict[str, Any]] = []
                         n_delta, p_delta = self._apply_completed_gid(
                             gid,
                             fetched_iso,
@@ -5344,6 +6127,7 @@ class BandEnricher:
                             all_records_per_gid=all_records_per_gid,
                             batch_patches=batch_patches,
                             batch_freq_novs=batch_freq_novs,
+                            batch_freq_elims=batch_freq_elims,
                             gids_by_idx=gids_by_idx,
                             remaining_by_gid=remaining_by_gid,
                         )
@@ -5357,10 +6141,12 @@ class BandEnricher:
 
                         flushed_live = False
                         if self._live_stream is not None and (
-                            batch_patches or batch_freq_novs
+                            batch_patches or batch_freq_novs or batch_freq_elims
                         ):
                             flushed_live = self._live_stream.record_band_updates(
-                                batch_patches, batch_freq_novs
+                                batch_patches,
+                                batch_freq_novs,
+                                batch_freq_elims,
                             )
 
                         if self._progress_callback is not None and (
@@ -5465,6 +6251,7 @@ class BandEnricher:
                         )
                         batch_patches = []
                         batch_freq_novs = []
+                        batch_freq_elims = []
                         last_done_gid = ""
 
                         for fut in done:
@@ -5476,6 +6263,9 @@ class BandEnricher:
                                 gid_entries_cache[gid] = entries
                                 fetched_gids.add(gid)
                                 consecutive_failures = 0
+                            except _PendingEmptyBandsVerification:
+                                pending_empty_verify_gids.add(gid)
+                                continue
                             except RuntimeError as exc:
                                 self.failed_gids_count += 1
                                 failed_gids.add(gid)
@@ -5507,6 +6297,7 @@ class BandEnricher:
                                 all_records_per_gid=all_records_per_gid,
                                 batch_patches=batch_patches,
                                 batch_freq_novs=batch_freq_novs,
+                                batch_freq_elims=batch_freq_elims,
                                 gids_by_idx=gids_by_idx,
                                 remaining_by_gid=remaining_by_gid,
                             )
@@ -5535,10 +6326,12 @@ class BandEnricher:
 
                         flushed_live = False
                         if self._live_stream is not None and (
-                            batch_patches or batch_freq_novs
+                            batch_patches or batch_freq_novs or batch_freq_elims
                         ):
                             flushed_live = self._live_stream.record_band_updates(
-                                batch_patches, batch_freq_novs
+                                batch_patches,
+                                batch_freq_novs,
+                                batch_freq_elims,
                             )
 
                         if self._progress_callback is not None and (
@@ -5579,19 +6372,112 @@ class BandEnricher:
                             )
                             last_ckpt_ts = self._clock()
 
+                # Verificación secuencial en calma para estaciones cuya tabla técnica quedó vacía
+                failed_empty_verify_gids: set[str] = set()
+                if pending_empty_verify_gids:
+                    if len(pending_empty_verify_gids) > EMPTY_VERIFICATION_MAX:
+                        logging.warning(
+                            "Se detectaron %d estaciones con tabla técnica vacía (> límite seguro %d); omitiendo vaciado masivo para proteger datos previos.",
+                            len(pending_empty_verify_gids),
+                            EMPTY_VERIFICATION_MAX,
+                        )
+                        for egid in pending_empty_verify_gids:
+                            failed_empty_verify_gids.add(egid)
+                            failed_gids.add(egid)
+                            self.failed_gids_count += 1
+                    elif (
+                        not stop_submitting
+                        and not self.fail_fast
+                        and not self._would_exceed_time_budget(
+                            run_start_ts, parallel_mode=True
+                        )
+                        and (
+                            self.max_band_requests is None
+                            or self.requests_count < self.max_band_requests
+                        )
+                    ):
+                        verify_list = sorted(pending_empty_verify_gids)
+                        logging.info(
+                            "Verificando en modo secuencial calmado %d emplazamientos sin concesiones declaradas...",
+                            len(verify_list),
+                        )
+                        if self._sleep is time.sleep:
+                            self._sleep(1.5)
+                        ver_patches: list[dict[str, Any]] = []
+                        ver_novs: list[dict[str, Any]] = []
+                        ver_elims: list[dict[str, Any]] = []
+                        for egid in verify_list:
+                            if self._would_exceed_time_budget(
+                                run_start_ts, parallel_mode=True
+                            ):
+                                failed_empty_verify_gids.add(egid)
+                                failed_gids.add(egid)
+                                self.failed_gids_count += 1
+                                continue
+                            if (
+                                self.max_band_requests is not None
+                                and self.requests_count >= self.max_band_requests
+                            ):
+                                failed_empty_verify_gids.add(egid)
+                                failed_gids.add(egid)
+                                self.failed_gids_count += 1
+                                continue
+                            try:
+                                entries = self._verify_genuine_empty_detalle(egid)
+                                fetched_iso = _utc_now_iso(self._now_utc)
+                                gid_entries_cache[egid] = entries
+                                fetched_gids.add(egid)
+                                n_delta, p_delta = self._apply_completed_gid(
+                                    egid,
+                                    fetched_iso,
+                                    antenas=antenas,
+                                    pending_by_gid=pending_by_gid,
+                                    completed_pending_indices=completed_pending_indices,
+                                    gid_entries_cache=gid_entries_cache,
+                                    all_records_per_gid=all_records_per_gid,
+                                    batch_patches=ver_patches,
+                                    batch_freq_novs=ver_novs,
+                                    batch_freq_elims=ver_elims,
+                                    gids_by_idx=gids_by_idx,
+                                    remaining_by_gid=remaining_by_gid,
+                                )
+                                newly_populated += n_delta
+                                populated_count += p_delta
+                            except RuntimeError as exc:
+                                failed_empty_verify_gids.add(egid)
+                                failed_gids.add(egid)
+                                self.failed_gids_count += 1
+                                logging.warning(
+                                    "No se confirmó vaciado en emplazamiento=%s (se preservan bandas previas): %s",
+                                    egid,
+                                    exc,
+                                )
+                        if self._live_stream is not None and (
+                            ver_patches or ver_novs or ver_elims
+                        ):
+                            self._live_stream.record_band_updates(
+                                ver_patches, ver_novs, ver_elims
+                            )
+                    else:
+                        for egid in pending_empty_verify_gids:
+                            failed_empty_verify_gids.add(egid)
+                            failed_gids.add(egid)
+                            self.failed_gids_count += 1
+
                 # Ola suave de recuperación secuencial para fallos puntuales de red (evita lanzar Parte 2/2 por pocos GIDs)
+                transient_failed_gids = failed_gids - failed_empty_verify_gids
                 if (
-                    failed_gids
+                    transient_failed_gids
                     and not stop_submitting
                     and not self.fail_fast
-                    and len(failed_gids) <= FAILED_GID_RECOVERY_MAX
+                    and len(transient_failed_gids) <= FAILED_GID_RECOVERY_MAX
                     and not self._would_exceed_time_budget(run_start_ts, parallel_mode=True)
                     and (
                         self.max_band_requests is None
                         or self.requests_count < self.max_band_requests
                     )
                 ):
-                    recovery_list = sorted(failed_gids)
+                    recovery_list = sorted(transient_failed_gids)
                     logging.info(
                         "Reintentando %d emplazamientos con fallo transitorio en modo suave...",
                         len(recovery_list),
@@ -5600,6 +6486,7 @@ class BandEnricher:
                         self._sleep(1.5)
                     rec_patches: list[dict[str, Any]] = []
                     rec_novs: list[dict[str, Any]] = []
+                    rec_elims: list[dict[str, Any]] = []
                     recovered_count = 0
                     for rgid in recovery_list:
                         if self._would_exceed_time_budget(run_start_ts, parallel_mode=True):
@@ -5631,6 +6518,7 @@ class BandEnricher:
                                 all_records_per_gid=all_records_per_gid,
                                 batch_patches=rec_patches,
                                 batch_freq_novs=rec_novs,
+                                batch_freq_elims=rec_elims,
                                 gids_by_idx=gids_by_idx,
                                 remaining_by_gid=remaining_by_gid,
                             )
@@ -5644,8 +6532,12 @@ class BandEnricher:
                             recovered_count,
                             len(recovery_list),
                         )
-                        if self._live_stream is not None and (rec_patches or rec_novs):
-                            self._live_stream.record_band_updates(rec_patches, rec_novs)
+                        if self._live_stream is not None and (
+                            rec_patches or rec_novs or rec_elims
+                        ):
+                            self._live_stream.record_band_updates(
+                                rec_patches, rec_novs, rec_elims
+                            )
         finally:
             self._http_client.close_all()
 
@@ -5679,7 +6571,7 @@ class BandEnricher:
             )
 
         logging.info(
-            "Enriquecimiento finalizado: %d peticiones HTTP (%.1f req/s), +%d antenas enriquecidas (%d/%d totales con bandas, fallos=%d, anomalias_html=%d).",
+            "Enriquecimiento finalizado: %d peticiones HTTP (%.1f req/s), +%d antenas enriquecidas (%d/%d totales con bandas, fallos=%d, anomalias_html=%d, bajas_freq=%d, vaciados_confirmados=%d).",
             self.requests_count,
             self.last_requests_per_second,
             newly_populated,
@@ -5687,6 +6579,8 @@ class BandEnricher:
             total_antenas,
             self.failed_gids_count,
             self.anomalous_responses_count,
+            len(self.discovered_eliminaciones),
+            self.verified_empty_removals_count,
         )
         return dataset
 
@@ -5706,6 +6600,7 @@ def enrich_dataset_bands(
     prior_index: dict[str, Any] | None = None,
     record_novedades: bool = True,
     novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
+    eliminaciones_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
     live_stream: LiveDeltaStreamWriter | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     fetch_fn: Callable[[str], str | bytes] | None = None,
@@ -5728,6 +6623,7 @@ def enrich_dataset_bands(
         prior_index=prior_index,
         record_novedades=record_novedades,
         novedades_checkpoint_fn=novedades_checkpoint_fn,
+        eliminaciones_checkpoint_fn=eliminaciones_checkpoint_fn,
         live_stream=live_stream,
         progress_callback=progress_callback,
         fetch_fn=fetch_fn,
@@ -5959,14 +6855,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Fusiona de forma atómica y sin pérdidas el archivo NovedadesDataset indicado sobre --novedades-output y finaliza.",
     )
     parser.add_argument(
+        "--eliminaciones-output",
+        default=None,
+        help="Ruta opcional donde escribir el archivo EliminacionesDataset (ej. public/data/eliminaciones.json).",
+    )
+    parser.add_argument(
+        "--eliminaciones-mode",
+        choices=("append", "reset"),
+        default="append",
+        help="Modo de escritura de eliminaciones: 'append' (por defecto) conserva permanentemente el historial de bajas previas y añade las nuevas; 'reset' reinicia el archivo desde cero.",
+    )
+    parser.add_argument(
+        "--merge-eliminaciones-from",
+        default=None,
+        help="Fusiona de forma atómica y sin pérdidas el archivo EliminacionesDataset indicado sobre --eliminaciones-output y finaliza.",
+    )
+    parser.add_argument(
         "--skip-novedades",
         action="store_true",
-        help="No contabilizar este escaneo en la sección Novedades (escaneo forzado de línea base).",
+        help="No contabilizar este escaneo en las secciones Novedades ni Eliminaciones (escaneo forzado de línea base).",
     )
     parser.add_argument(
         "--scan-id",
         default="",
-        help="Identificador único del lote de escaneo para NovedadesDataset.",
+        help="Identificador único del lote de escaneo para NovedadesDataset y EliminacionesDataset.",
     )
     parser.add_argument(
         "--status-output",
@@ -5976,7 +6888,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--live-dir",
         default=None,
-        help="Directorio donde emitir en tiempo real live-chunk-*.json y live-tail.json para sincronización instantánea con el mapa y novedades.",
+        help="Directorio donde emitir en tiempo real live-chunk-*.json y live-tail.json para sincronización instantánea con el mapa, novedades y eliminaciones.",
     )
     parser.add_argument(
         "--live-mode",
@@ -6015,6 +6927,7 @@ def build_scan_status_payload(
     live_new_antennas_count: int = 0,
     live_updated_antennas_count: int = 0,
     live_novedades_count: int = 0,
+    live_eliminaciones_count: int = 0,
     requests_per_second: float = 0.0,
     completed_dataset_updated_at: str = "",
     updated_at: str | None = None,
@@ -6072,6 +6985,8 @@ def build_scan_status_payload(
         "liveNovedadesCount": max(0, int(live_novedades_count)),
         "requestsPerSecond": round(max(0.0, float(requests_per_second)), 2),
     }
+    if live_eliminaciones_count > 0:
+        payload["liveEliminacionesCount"] = int(live_eliminaciones_count)
     if completed_dataset_updated_at:
         payload["completedDatasetUpdatedAt"] = _normalize_iso_utc(completed_dataset_updated_at)
     return payload
@@ -6212,6 +7127,125 @@ def _prepare_novedades_writer(
     return _write_current, seeded_new_ant_ids
 
 
+def _prepare_eliminaciones_writer(
+    *,
+    eliminaciones_output: str | Path | None,
+    eliminaciones_mode: str,
+    skip_novedades: bool,
+    scan_id: str,
+    previous_scan_at: str | None,
+    initial_eliminaciones: list[dict[str, Any]] | None = None,
+) -> Callable[[list[dict[str, Any]]], None] | None:
+    """
+    Configura la persistencia atómica de `eliminaciones.json` para modos `'append'` y `'reset'`
+    (incluyendo `--skip-novedades`) y devuelve `checkpoint_writer_fn`.
+    """
+    if not eliminaciones_output:
+        return None
+
+    elim_path = Path(eliminaciones_output)
+    effective_scan_id = str(scan_id or "").strip()
+
+    if skip_novedades:
+        if eliminaciones_mode == "reset" or not elim_path.exists():
+            baseline_doc = build_eliminaciones_dataset(
+                [],
+                scan_id=effective_scan_id or "baseline-scan",
+                previous_scan_at=previous_scan_at,
+                is_baseline_scan=True,
+            )
+            write_eliminaciones_dataset(baseline_doc, elim_path)
+        return None
+
+    historical_items: list[dict[str, Any]] = []
+    current_scan_prior_items: list[dict[str, Any]] = []
+    effective_prev_scan_at = previous_scan_at
+
+    if eliminaciones_mode == "append":
+        existing_doc = load_eliminaciones_dataset(elim_path)
+        if existing_doc is not None:
+            raw_existing = [
+                dict(item)
+                for item in (existing_doc.get("eliminaciones") or [])
+                if isinstance(item, dict)
+            ]
+            existing_items = (
+                raw_existing
+                if (not existing_doc.get("isBaselineScan") or raw_existing)
+                else []
+            )
+            doc_scan_id = str(existing_doc.get("scanId") or "").strip()
+            same_scan_doc = bool(
+                (effective_scan_id and doc_scan_id == effective_scan_id)
+                or (not effective_scan_id and not existing_doc.get("isBaselineScan"))
+            )
+            if not effective_scan_id and doc_scan_id and same_scan_doc:
+                effective_scan_id = doc_scan_id
+
+            if same_scan_doc and "previousScanAt" in existing_doc:
+                effective_prev_scan_at = existing_doc.get("previousScanAt")
+            elif effective_prev_scan_at is None:
+                prev_updated = existing_doc.get("updatedAt")
+                if isinstance(prev_updated, str) and prev_updated.strip():
+                    effective_prev_scan_at = prev_updated
+
+            can_stamp_doc_scan = bool(
+                doc_scan_id
+                and doc_scan_id != effective_scan_id
+                and not doc_scan_id.startswith("baseline")
+            )
+            for item in existing_items:
+                item_scan_id = str(item.get("scanId") or "").strip()
+                if (effective_scan_id and item_scan_id == effective_scan_id) or (
+                    same_scan_doc and not item_scan_id
+                ):
+                    current_scan_prior_items.append(item)
+                else:
+                    if not item_scan_id and can_stamp_doc_scan:
+                        item["scanId"] = doc_scan_id
+                    historical_items.append(item)
+
+    def _stamp_current(raw_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stamped: list[dict[str, Any]] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            copy_item = dict(item)
+            if effective_scan_id and not str(copy_item.get("scanId") or "").strip():
+                copy_item["scanId"] = effective_scan_id
+            stamped.append(copy_item)
+        return stamped
+
+    historical_ids = {
+        str(item.get("id") or "").strip()
+        for item in historical_items
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+
+    def _write_current(discovered: list[dict[str, Any]]) -> None:
+        stamped_current = [
+            item
+            for item in _stamp_current(
+                [
+                    *current_scan_prior_items,
+                    *(initial_eliminaciones or []),
+                    *discovered,
+                ]
+            )
+            if str(item.get("id") or "").strip() not in historical_ids
+        ]
+        elim_doc = build_eliminaciones_dataset(
+            [*historical_items, *stamped_current],
+            scan_id=effective_scan_id,
+            previous_scan_at=effective_prev_scan_at,
+            is_baseline_scan=False,
+        )
+        write_eliminaciones_dataset(elim_doc, elim_path)
+
+    _write_current([])
+    return _write_current
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -6219,15 +7253,25 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
     args = parse_args(argv)
-    if args.merge_novedades_from:
-        if not args.novedades_output:
-            logging.error(
-                "Se requiere --novedades-output junto con --merge-novedades-from."
+    if args.merge_novedades_from or args.merge_eliminaciones_from:
+        if args.merge_novedades_from:
+            if not args.novedades_output:
+                logging.error(
+                    "Se requiere --novedades-output junto con --merge-novedades-from."
+                )
+                return 1
+            merge_novedades_files(
+                Path(args.novedades_output), Path(args.merge_novedades_from)
             )
-            return 1
-        merge_novedades_files(
-            Path(args.novedades_output), Path(args.merge_novedades_from)
-        )
+        if args.merge_eliminaciones_from:
+            if not args.eliminaciones_output:
+                logging.error(
+                    "Se requiere --eliminaciones-output junto con --merge-eliminaciones-from."
+                )
+                return 1
+            merge_eliminaciones_files(
+                Path(args.eliminaciones_output), Path(args.merge_eliminaciones_from)
+            )
         return 0
     output_path = Path(args.output)
     status_path = Path(args.status_output) if args.status_output else None
@@ -6276,6 +7320,9 @@ def main(argv: list[str] | None = None) -> int:
                 live_novedades_count=(
                     live_stream_ref.total_novedades if live_stream_ref is not None else 0
                 ),
+                live_eliminaciones_count=(
+                    live_stream_ref.total_eliminaciones if live_stream_ref is not None else 0
+                ),
                 requests_per_second=float(info.get("requestsPerSecond") or 0.0),
                 completed_dataset_updated_at=str(
                     info.get("completedDatasetUpdatedAt") or ""
@@ -6314,6 +7361,13 @@ def main(argv: list[str] | None = None) -> int:
             scan_id=args.scan_id,
             previous_scan_at=prev_updated_at,
         )
+        elim_writer = _prepare_eliminaciones_writer(
+            eliminaciones_output=args.eliminaciones_output,
+            eliminaciones_mode=args.eliminaciones_mode,
+            skip_novedades=args.skip_novedades,
+            scan_id=args.scan_id,
+            previous_scan_at=prev_updated_at,
+        )
         live_stream: LiveDeltaStreamWriter | None = None
         if args.live_dir:
             live_stream = LiveDeltaStreamWriter(
@@ -6342,6 +7396,7 @@ def main(argv: list[str] | None = None) -> int:
             new_antenna_ids=seeded_new_ant_ids,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            eliminaciones_checkpoint_fn=elim_writer,
             live_stream=live_stream,
             progress_callback=progress_cb,
         )
@@ -6354,6 +7409,8 @@ def main(argv: list[str] | None = None) -> int:
             write_compact_dataset(dataset, output_path)
         if nov_writer is not None and not enricher.saved_final_checkpoint:
             nov_writer(enricher.discovered_novedades)
+        if elim_writer is not None and not enricher.saved_final_checkpoint:
+            elim_writer(enricher.discovered_eliminaciones)
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:
@@ -6382,6 +7439,9 @@ def main(argv: list[str] | None = None) -> int:
                     live_novedades_count=(
                         live_stream.total_novedades if live_stream is not None else 0
                     ),
+                    live_eliminaciones_count=(
+                        live_stream.total_eliminaciones if live_stream is not None else 0
+                    ),
                     requests_per_second=enricher.last_requests_per_second,
                     completed_dataset_updated_at=(
                         str(dataset.get("updatedAt") or "") if is_all_done else ""
@@ -6391,7 +7451,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0.0
         logging.info(
-            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP a %.1f req/s, +%d novedades de frecuencia).",
+            "Modo --enrich-bands-only completado: %d/%d antenas con bandas en %s (%.2f MB, %d peticiones HTTP a %.1f req/s, +%d novedades, -%d bajas de frecuencia).",
             dataset["crawlStats"].get("bandsPopulatedCount", 0),
             dataset["total"],
             output_path,
@@ -6399,6 +7459,7 @@ def main(argv: list[str] | None = None) -> int:
             enricher.requests_count,
             enricher.last_requests_per_second,
             len(enricher.discovered_novedades),
+            len(enricher.discovered_eliminaciones),
         )
         return 0
 
@@ -6461,6 +7522,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     dataset = crawler.crawl(region=args.region)
 
+    is_full_national_crawl = args.region == "all" and not bool(
+        dataset["crawlStats"].get("isPartialSeed")
+    )
+    if (
+        is_full_national_crawl
+        and prior_index is not None
+        and isinstance(prior_index.get("records"), list)
+    ):
+        prior_count = len(prior_index["records"])
+        current_count = len(dataset["antenas"])
+        if prior_count >= MIN_PRIOR_ANTENNAS_FOR_DROP_GUARD and current_count < int(
+            prior_count * (1.0 - MAX_SAFE_CENSUS_DROP_RATIO)
+        ):
+            logging.error(
+                "Caída anómala del censo nacional (%d -> %d antenas; caída > %.0f%%). "
+                "Se aborta sin sobrescribir %s para evitar borrados falsos por fallo de MINETUR.",
+                prior_count,
+                current_count,
+                MAX_SAFE_CENSUS_DROP_RATIO * 100.0,
+                output_path,
+            )
+            return 1
+
     detected_ant_novedades, new_antenna_ids = (
         diff_new_antennas(
             dataset["antenas"],
@@ -6468,6 +7552,15 @@ def main(argv: list[str] | None = None) -> int:
             scanned_at_iso=dataset["updatedAt"],
         )
         if prior_index is not None
+        else ([], set())
+    )
+    detected_ant_eliminaciones, removed_antenna_ids = (
+        diff_removed_antennas(
+            dataset["antenas"],
+            prior_index,
+            scanned_at_iso=dataset["updatedAt"],
+        )
+        if (is_full_national_crawl and prior_index is not None)
         else ([], set())
     )
 
@@ -6483,10 +7576,11 @@ def main(argv: list[str] | None = None) -> int:
         if prior_band_reqs is not None and not args.fetch_bands:
             dataset["crawlStats"]["bandRequestsCount"] = int(prior_band_reqs)
         logging.info(
-            "Preservadas bandas previas de %d antenas desde %s (antenas nuevas detectadas=%d).",
+            "Preservadas bandas previas de %d antenas desde %s (antenas nuevas=%d, antenas eliminadas=%d).",
             restored,
             preserve_path,
             len(new_antenna_ids),
+            len(removed_antenna_ids),
         )
 
     if live_stream is not None and prior_index is not None:
@@ -6497,7 +7591,13 @@ def main(argv: list[str] | None = None) -> int:
             canonical_new_antennas,
             [] if args.skip_novedades else detected_ant_novedades,
         )
-        if reconciled and progress_cb is not None:
+        recorded_removals = False
+        if removed_antenna_ids or detected_ant_eliminaciones:
+            recorded_removals = live_stream.record_removed_antennas(
+                removed_antenna_ids,
+                [] if args.skip_novedades else detected_ant_eliminaciones,
+            )
+        if (reconciled or recorded_removals) and progress_cb is not None:
             census_dur = max(0.001, float(dataset["crawlStats"].get("durationSeconds") or 1.0))
             census_rps = round(
                 int(dataset["crawlStats"].get("requestsCount") or 0) / census_dur, 2
@@ -6535,6 +7635,14 @@ def main(argv: list[str] | None = None) -> int:
         previous_scan_at=previous_scan_at,
         initial_novedades=[] if args.skip_novedades else detected_ant_novedades,
     )
+    elim_writer = _prepare_eliminaciones_writer(
+        eliminaciones_output=args.eliminaciones_output,
+        eliminaciones_mode=args.eliminaciones_mode,
+        skip_novedades=args.skip_novedades,
+        scan_id=full_crawl_scan_id,
+        previous_scan_at=previous_scan_at,
+        initial_eliminaciones=[] if args.skip_novedades else detected_ant_eliminaciones,
+    )
     all_new_ant_ids = new_antenna_ids | seeded_new_ant_ids
 
     if args.fetch_bands:
@@ -6551,6 +7659,7 @@ def main(argv: list[str] | None = None) -> int:
             prior_index=prior_index,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
+            eliminaciones_checkpoint_fn=elim_writer,
             live_stream=live_stream,
             progress_callback=progress_cb,
         )
@@ -6561,6 +7670,8 @@ def main(argv: list[str] | None = None) -> int:
             size_bytes = write_compact_dataset(dataset, output_path)
             if nov_writer is not None:
                 nov_writer(enricher.discovered_novedades)
+            if elim_writer is not None:
+                elim_writer(enricher.discovered_eliminaciones)
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:
@@ -6590,6 +7701,9 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     live_novedades_count=(
                         live_stream.total_novedades if live_stream is not None else 0
+                    ),
+                    live_eliminaciones_count=(
+                        live_stream.total_eliminaciones if live_stream is not None else 0
                     ),
                     requests_per_second=enricher.last_requests_per_second,
                     completed_dataset_updated_at=(
@@ -6631,6 +7745,9 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                     live_novedades_count=(
                         live_stream.total_novedades if live_stream is not None else 0
+                    ),
+                    live_eliminaciones_count=(
+                        live_stream.total_eliminaciones if live_stream is not None else 0
                     ),
                     requests_per_second=census_rps,
                     completed_dataset_updated_at=str(dataset.get("updatedAt") or ""),

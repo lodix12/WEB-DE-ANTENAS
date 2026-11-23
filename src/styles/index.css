@@ -3754,6 +3754,101 @@ code {
 }
 
 /* ==========================================================================
+   EliminacionesView — Distintivos específicos de bajas (/eliminaciones)
+   ========================================================================== */
+
+.nav-tab-badge.is-eliminaciones {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.28);
+}
+
+[data-theme='dark'] .nav-tab-badge.is-eliminaciones {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.sections-nav-item.active .nav-tab-badge.is-eliminaciones,
+.sections-nav-item[data-status='active'] .nav-tab-badge.is-eliminaciones {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #dc2626;
+}
+
+.novedades-filter-pill.is-active.is-eliminaciones {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
+[data-theme='dark'] .novedades-filter-pill.is-active.is-eliminaciones {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: #f87171;
+  color: #fca5a5;
+}
+
+.novedades-filter-pill.is-active.is-eliminaciones .novedades-pill-count {
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.28);
+}
+
+[data-theme='dark']
+  .novedades-filter-pill.is-active.is-eliminaciones
+  .novedades-pill-count {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.eliminaciones-badge.is-antena {
+  color: #b91c1c;
+}
+
+.eliminaciones-badge.is-frecuencia {
+  color: #9a3412;
+}
+
+.eliminaciones-antena-cell-icon {
+  color: #b91c1c;
+}
+
+.eliminaciones-code-coords-link {
+  gap: 3.5px;
+  color: #9a3412;
+}
+
+.eliminaciones-code-coords-link:hover {
+  background: #9a3412;
+  border-color: #9a3412;
+  color: #ffffff;
+}
+
+.eliminaciones-code-static {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px dashed rgba(15, 23, 42, 0.24);
+  white-space: nowrap;
+}
+
+.novedades-empty-icon.is-eliminaciones {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+  border-color: rgba(220, 38, 38, 0.26);
+}
+
+[data-theme='dark'] .novedades-empty-icon.is-eliminaciones {
+  background: rgba(248, 113, 113, 0.14);
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* ==========================================================================
    Modo Standalone PWA (Android / iOS sin barra de navegación)
    ========================================================================== */
 

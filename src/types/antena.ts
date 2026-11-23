@@ -143,6 +143,60 @@ export interface NovedadesDataset {
   novedades: NovedadRecord[];
 }
 
+export type EliminacionTipo = 'antena' | 'frecuencia';
+
+export interface EliminacionRecord {
+  /** Identificador único determinista de la eliminación */
+  id: string;
+  /** Tipo de eliminación: antena retirada o frecuencia retirada */
+  tipo: EliminacionTipo;
+  /** Clave normalizada del operador asociado */
+  op: OperatorKey;
+  /** Razón social original declarada en MINETUR */
+  opRaw: string;
+  /** Código asociado a la antena (Gis_ID, ej. "2800006") */
+  codigo: string;
+  /** Identificador completo de la antena en antenas.json */
+  antennaId: string;
+  /** Código oficial asociado a la frecuencia/banda retirada (Referencia MINETUR), o "" si es antena retirada */
+  codigoBanda: string;
+  /** Frecuencia exacta retirada con rango completo sin abreviación, o "" si es antena retirada */
+  frecuencia: string;
+  /** Ciudad / municipio de la antena o frecuencia retirada */
+  ubicacion: string;
+  /** Provincia normalizada */
+  prov?: string;
+  /** Última latitud WGS84 conocida para localizar el emplazamiento en el mapa */
+  lat?: number;
+  /** Última longitud WGS84 conocida para localizar el emplazamiento en el mapa */
+  lon?: number;
+  /** Identificador del lote/ejecución de escaneo en el que se detectó la eliminación */
+  scanId?: string;
+  /** Marca temporal ISO 8601 UTC exacta del escaneo */
+  scannedAt: string;
+  /** Fecha formateada en Dia/Mes/Año y hora exacta (Europe/Madrid): "DD/MM/YYYY HH:MM:SS" */
+  fecha: string;
+}
+
+export interface EliminacionesDataset {
+  /** Marca temporal ISO 8601 UTC de generación del archivo de eliminaciones */
+  updatedAt: string;
+  /** Identificador del lote/ejecución de escaneo */
+  scanId: string;
+  /** Marca temporal ISO 8601 UTC del escaneo anterior frente al que se ha comparado */
+  previousScanAt: string | null;
+  /** Si el escaneo fue forzado como línea base sin contabilizar eliminaciones */
+  isBaselineScan?: boolean;
+  /** Total de filas de eliminaciones */
+  total: number;
+  /** Total de antenas eliminadas */
+  antenasEliminadas: number;
+  /** Total de frecuencias eliminadas */
+  frecuenciasEliminadas: number;
+  /** Listado histórico permanente de antenas y frecuencias eliminadas */
+  eliminaciones: EliminacionRecord[];
+}
+
 export type ScanLifecycleState =
   | 'running'
   | 'handoff'
@@ -193,6 +247,8 @@ export interface ScanStatusPayload {
   liveUpdatedAntennasCount?: number;
   /** Total acumulado de filas de novedades emitidas en el flujo en vivo */
   liveNovedadesCount?: number;
+  /** Total acumulado de filas de eliminaciones emitidas en el flujo en vivo */
+  liveEliminacionesCount?: number;
   /** Cadencia real medida de peticiones HTTP por segundo en el escáner */
   requestsPerSecond?: number;
   /** Marca temporal ISO 8601 UTC del dataset estático generado al completar el escaneo */
@@ -222,6 +278,8 @@ export interface LiveScanDeltaChunk {
   newAntennas: AntennaRecord[];
   bandPatches: LiveBandPatch[];
   novedades: NovedadRecord[];
+  removedAntennaIds?: string[];
+  eliminaciones?: EliminacionRecord[];
 }
 
 export interface OperatorMeta {

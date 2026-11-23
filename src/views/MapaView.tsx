@@ -84,17 +84,20 @@ export function MapaView() {
     };
   }, [mobilePanelOpen]);
 
-  // Soporte de enlace directo #/?gid=3600449&id=...
+  // Soporte de enlace directo #/?gid=3600449&id=... y respaldo por coordenadas #/?lat=...&lon=...
   useEffect(() => {
     const targetId = searchParams.id;
     const targetGid = searchParams.gid;
-    if (!targetId && !targetGid) {
+    const targetLat = searchParams.lat;
+    const targetLon = searchParams.lon;
+    const hasCoords = targetLat !== undefined && targetLon !== undefined;
+    if (!targetId && !targetGid && !hasCoords) {
       appliedGidRef.current = null;
       return;
     }
     if (!derived) return;
 
-    const targetKey = `${targetId ?? ''}|${targetGid ?? ''}`;
+    const targetKey = `${targetId ?? ''}|${targetGid ?? ''}|${targetLat ?? ''}|${targetLon ?? ''}`;
     if (appliedGidRef.current === targetKey) return;
 
     const found =
@@ -122,10 +125,15 @@ export function MapaView() {
         setSearchQuery('');
       }
       focusAntennaOnMap(found);
+    } else if (hasCoords) {
+      appliedGidRef.current = targetKey;
+      triggerFlyTo(targetLat, targetLon, 16);
     }
   }, [
     searchParams.id,
     searchParams.gid,
+    searchParams.lat,
+    searchParams.lon,
     derived,
     selectedComunidad,
     selectedProvince,
@@ -138,6 +146,7 @@ export function MapaView() {
     setExclusiveBands,
     setSearchQuery,
     focusAntennaOnMap,
+    triggerFlyTo,
   ]);
 
   const filteredAntenas = useFilteredAntenas({

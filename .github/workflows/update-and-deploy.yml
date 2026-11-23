@@ -126,6 +126,8 @@ jobs:
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
+            --eliminaciones-output public/data/eliminaciones.json \
+            --eliminaciones-mode append \
             --scan-id "$SCAN_ID" \
             --status-output /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
@@ -146,10 +148,13 @@ jobs:
           if [ -f public/data/novedades.json ]; then
             cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
+          if [ -f public/data/eliminaciones.json ]; then
+            cp -f public/data/eliminaciones.json /tmp/scan-commit-backup/eliminaciones.json
+          fi
 
           PUSHED="false"
           for ATTEMPT in 1 2 3; do
-            git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
+            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json 2>/dev/null || true
             git fetch --depth=1 origin main
             git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
@@ -158,9 +163,14 @@ jobs:
                 --merge-novedades-from /tmp/scan-commit-backup/novedades.json \
                 --novedades-output public/data/novedades.json
             fi
-            git add public/data/antenas.json public/data/novedades.json
+            if [ -f /tmp/scan-commit-backup/eliminaciones.json ]; then
+              python3 scripts/fetch_antenas.py \
+                --merge-eliminaciones-from /tmp/scan-commit-backup/eliminaciones.json \
+                --eliminaciones-output public/data/eliminaciones.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json
             if git diff --cached --quiet; then
-              echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json ni public/data/eliminaciones.json"
               PUSHED="true"
               break
             fi
@@ -290,6 +300,8 @@ jobs:
             --rescan-since "$SCAN_STARTED_AT" \
             --novedades-output public/data/novedades.json \
             --novedades-mode append \
+            --eliminaciones-output public/data/eliminaciones.json \
+            --eliminaciones-mode append \
             --scan-id "$SCAN_ID" \
             --status-output /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
@@ -310,10 +322,13 @@ jobs:
           if [ -f public/data/novedades.json ]; then
             cp -f public/data/novedades.json /tmp/scan-commit-backup/novedades.json
           fi
+          if [ -f public/data/eliminaciones.json ]; then
+            cp -f public/data/eliminaciones.json /tmp/scan-commit-backup/eliminaciones.json
+          fi
 
           PUSHED="false"
           for ATTEMPT in 1 2 3; do
-            git checkout -- public/data/antenas.json public/data/novedades.json 2>/dev/null || true
+            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json 2>/dev/null || true
             git fetch --depth=1 origin main
             git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
@@ -322,9 +337,14 @@ jobs:
                 --merge-novedades-from /tmp/scan-commit-backup/novedades.json \
                 --novedades-output public/data/novedades.json
             fi
-            git add public/data/antenas.json public/data/novedades.json
+            if [ -f /tmp/scan-commit-backup/eliminaciones.json ]; then
+              python3 scripts/fetch_antenas.py \
+                --merge-eliminaciones-from /tmp/scan-commit-backup/eliminaciones.json \
+                --eliminaciones-output public/data/eliminaciones.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json
             if git diff --cached --quiet; then
-              echo "Sin cambios en public/data/antenas.json ni public/data/novedades.json"
+              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json ni public/data/eliminaciones.json"
               PUSHED="true"
               break
             fi

@@ -8,6 +8,8 @@ import {
   normalizeOperatorKeyInput,
   type AntennaRecord,
   type ConcesionBanda,
+  type EliminacionRecord,
+  type EliminacionTipo,
   type LiveBandPatch,
   type LiveScanDeltaChunk,
   type NovedadRecord,
@@ -241,6 +243,8 @@ export interface LiveScanMergedDelta {
   bandPatchesById: Map<string, LiveBandPatch>;
   bandPatchesByGid: Map<string, LiveBandPatch>;
   novedades: NovedadRecord[];
+  removedAntennaIds: Set<string>;
+  eliminaciones: EliminacionRecord[];
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -354,6 +358,11 @@ export function parseScanStatusPayload(raw: unknown): ScanStatusPayload | null {
     Number.isFinite(raw.liveNovedadesCount)
       ? Math.max(0, Math.round(raw.liveNovedadesCount))
       : undefined;
+  const liveEliminacionesCount =
+    typeof raw.liveEliminacionesCount === 'number' &&
+    Number.isFinite(raw.liveEliminacionesCount)
+      ? Math.max(0, Math.round(raw.liveEliminacionesCount))
+      : undefined;
   const requestsPerSecond =
     typeof raw.requestsPerSecond === 'number' &&
     Number.isFinite(raw.requestsPerSecond) &&
@@ -407,6 +416,7 @@ export function parseScanStatusPayload(raw: unknown): ScanStatusPayload | null {
       ? { liveUpdatedAntennasCount }
       : {}),
     ...(liveNovedadesCount !== undefined ? { liveNovedadesCount } : {}),
+    ...(liveEliminacionesCount !== undefined ? { liveEliminacionesCount } : {}),
     ...(requestsPerSecond !== undefined ? { requestsPerSecond } : {}),
     ...(completedDatasetUpdatedAt !== undefined
       ? { completedDatasetUpdatedAt }
@@ -620,6 +630,68 @@ function validateLiveNovedadRecord(item: unknown): NovedadRecord | null {
   };
 }
 
+function validateLiveEliminacionRecord(
+  item: unknown,
+): EliminacionRecord | null {
+  if (!isPlainObject(item)) {
+    return null;
+  }
+  assertNotGeoJson(item);
+
+  const normalizedOp =
+    typeof item.op === 'string'
+      ? normalizeOperatorKeyInput(item.op, item.opRaw)
+      : null;
+
+  if (
+    typeof item.id !== 'string' ||
+    typeof item.tipo !== 'string' ||
+    !VALID_NOVEDAD_TIPOS.has(item.tipo) ||
+    typeof item.op !== 'string' ||
+    normalizedOp === null ||
+    typeof item.opRaw !== 'string' ||
+    typeof item.codigo !== 'string' ||
+    typeof item.antennaId !== 'string' ||
+    typeof item.codigoBanda !== 'string' ||
+    typeof item.frecuencia !== 'string' ||
+    typeof item.ubicacion !== 'string' ||
+    (item.prov !== undefined && typeof item.prov !== 'string') ||
+    (item.lat !== undefined &&
+      (typeof item.lat !== 'number' || !Number.isFinite(item.lat))) ||
+    (item.lon !== undefined &&
+      (typeof item.lon !== 'number' || !Number.isFinite(item.lon))) ||
+    (item.scanId !== undefined && typeof item.scanId !== 'string') ||
+    typeof item.scannedAt !== 'string' ||
+    typeof item.fecha !== 'string'
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    tipo: item.tipo as EliminacionTipo,
+    op: normalizedOp,
+    opRaw: item.opRaw,
+    codigo: item.codigo,
+    antennaId: item.antennaId,
+    codigoBanda: item.codigoBanda,
+    frecuencia: item.frecuencia,
+    ubicacion: item.ubicacion,
+    ...(item.prov !== undefined ? { prov: item.prov } : {}),
+    ...(typeof item.lat === 'number' && Number.isFinite(item.lat)
+      ? { lat: item.lat }
+      : {}),
+    ...(typeof item.lon === 'number' && Number.isFinite(item.lon)
+      ? { lon: item.lon }
+      : {}),
+    ...(item.scanId !== undefined && item.scanId.trim()
+      ? { scanId: item.scanId.trim() }
+      : {}),
+    scannedAt: item.scannedAt,
+    fecha: item.fecha,
+  };
+}
+
 /**
  * Valida y normaliza un bloque de delta en vivo (`live-chunk-*.json` o `live-tail.json`)
  * exigiendo estrictamente el esquema JSON propio y rechazando cualquier entidad GeoJSON.
@@ -661,6 +733,16 @@ export function parseLiveScanDeltaChunk(raw: unknown): LiveScanDeltaChunk | null
     return null;
   }
   if (
+    raw.removedAntennaIds !== undefined &&
+    (!Array.isArray(raw.removedAntennaIds) ||
+      !raw.removedAntennaIds.every((rid): rid is string => typeof rid === 'string'))
+  ) {
+    return null;
+  }
+  if (raw.eliminaciones !== undefined && !Array.isArray(raw.eliminaciones)) {
+    return null;
+  }
+  if (
     raw.previousScanAt !== undefined &&
     raw.previousScanAt !== null &&
     typeof raw.previousScanAt !== 'string'
@@ -692,6 +774,20 @@ export function parseLiveScanDeltaChunk(raw: unknown): LiveScanDeltaChunk | null
     novedades[i] = validated;
   }
 
+  let eliminaciones: EliminacionRecord[] | undefined;
+  if (raw.eliminaciones !== undefined) {
+    const rawElims = raw.eliminaciones;
+    eliminaciones = new Array(rawElims.length);
+    for (let i = 0; i < rawElims.length; i++) {
+      const validated = validateLiveEliminacionRecord(rawElims[i]);
+      if (!validated) return null;
+      eliminaciones[i] = validated;
+    }
+  }
+
+  const removedAntennaIds: string[] | undefined =
+    raw.removedAntennaIds !== undefined ? raw.removedAntennaIds : undefined;
+
   return {
     schemaVersion:
       typeof raw.schemaVersion === 'number' && Number.isFinite(raw.schemaVersion)
@@ -718,13 +814,15 @@ export function parseLiveScanDeltaChunk(raw: unknown): LiveScanDeltaChunk | null
     newAntennas,
     bandPatches,
     novedades,
+    ...(removedAntennaIds !== undefined ? { removedAntennaIds } : {}),
+    ...(eliminaciones !== undefined ? { eliminaciones } : {}),
   };
 }
 
 /**
  * Acumula de forma pura y determinista la secuencia ordenada de bloques de delta en vivo
  * aplicando fusiones canónicas (`replacesNewAntennas`), enriquecimiento instantáneo de bandas
- * sobre antenas recién descubiertas y ordenación cronológica inversa de novedades.
+ * sobre antenas recién descubiertas y ordenación cronológica inversa de novedades y eliminaciones.
  */
 export function accumulateLiveDeltaChunks(
   chunks: readonly LiveScanDeltaChunk[],
@@ -736,6 +834,8 @@ export function accumulateLiveDeltaChunks(
   const bandPatchesById = new Map<string, LiveBandPatch>();
   const bandPatchesByGid = new Map<string, LiveBandPatch>();
   const novedadesMap = new Map<string, NovedadRecord>();
+  const removedAntennaIds = new Set<string>();
+  const eliminacionesMap = new Map<string, EliminacionRecord>();
 
   let resolvedScanId = targetScanId;
   let deltaSeq = 0;
@@ -778,6 +878,17 @@ export function accumulateLiveDeltaChunks(
       const ant =
         normOp && normOp !== rawAnt.op ? { ...rawAnt, op: normOp } : rawAnt;
       newAntennasMap.set(ant.id, ant);
+      removedAntennaIds.delete(ant.id);
+    }
+
+    if (chunk.removedAntennaIds) {
+      for (let r = 0; r < chunk.removedAntennaIds.length; r++) {
+        const rid = chunk.removedAntennaIds[r].trim();
+        if (rid) {
+          removedAntennaIds.add(rid);
+          newAntennasMap.delete(rid);
+        }
+      }
     }
 
     for (let p = 0; p < chunk.bandPatches.length; p++) {
@@ -806,6 +917,22 @@ export function accumulateLiveDeltaChunks(
       const stampedNov =
         !nov.scanId && chunk.scanId ? { ...nov, scanId: chunk.scanId } : nov;
       novedadesMap.set(stampedNov.id, stampedNov);
+    }
+
+    if (chunk.eliminaciones) {
+      for (let e = 0; e < chunk.eliminaciones.length; e++) {
+        const rawElim = chunk.eliminaciones[e];
+        const normElimOp = normalizeOperatorKeyInput(rawElim.op, rawElim.opRaw);
+        const elim =
+          normElimOp && normElimOp !== rawElim.op
+            ? { ...rawElim, op: normElimOp }
+            : rawElim;
+        const stampedElim =
+          !elim.scanId && chunk.scanId
+            ? { ...elim, scanId: chunk.scanId }
+            : elim;
+        eliminacionesMap.set(stampedElim.id, stampedElim);
+      }
     }
   }
 
@@ -854,6 +981,14 @@ export function accumulateLiveDeltaChunks(
     return safeB - safeA;
   });
 
+  const eliminaciones = Array.from(eliminacionesMap.values()).sort((a, b) => {
+    const msA = Date.parse(a.scannedAt);
+    const msB = Date.parse(b.scannedAt);
+    const safeA = Number.isFinite(msA) ? msA : 0;
+    const safeB = Number.isFinite(msB) ? msB : 0;
+    return safeB - safeA;
+  });
+
   return {
     scanId: resolvedScanId,
     deltaSeq,
@@ -865,6 +1000,8 @@ export function accumulateLiveDeltaChunks(
     bandPatchesById,
     bandPatchesByGid,
     novedades,
+    removedAntennaIds,
+    eliminaciones,
   };
 }
 
@@ -2028,6 +2165,9 @@ function useInvalidateDatasetsOnScanCompletion(
       if (invalidatedCompletedScanByClient.get(queryClient) !== status.scanId) {
         invalidatedCompletedScanByClient.set(queryClient, status.scanId);
         void queryClient.invalidateQueries({ queryKey: ['novedades-dataset'] });
+        void queryClient.invalidateQueries({
+          queryKey: ['eliminaciones-dataset'],
+        });
         void queryClient.invalidateQueries({ queryKey: ['antenas-dataset'] });
       }
     }
