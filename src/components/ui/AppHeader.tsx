@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Map as MapIcon,
   Moon,
+  RadioTower,
   Smartphone,
   Sparkles,
   Sun,
@@ -22,6 +23,7 @@ import {
   useNovedadesData,
 } from '../../hooks/useNovedadesData';
 import { usePwaInstall } from '../../hooks/usePwaInstall';
+import { formatUnicoInt, useUnico5gData } from '../../hooks/useUnico5gData';
 import { useWorkspace } from '../../hooks/useWorkspace';
 import {
   formatDateTimeEs,
@@ -32,6 +34,7 @@ export function AppHeader() {
   const { derived, isLoading } = useAntenasData();
   const { data: novedadesData } = useNovedadesData();
   const { data: eliminacionesData } = useEliminacionesData();
+  const { dataset: unicoDataset } = useUnico5gData();
   const {
     theme,
     toggleTheme,
@@ -79,6 +82,7 @@ export function AppHeader() {
   const latestEliminacionesCounts =
     computeLatestScanEliminacionesCounts(eliminacionesData);
   const eliminacionesCount = latestEliminacionesCounts.total;
+  const unicoCount = unicoDataset?.total ?? 0;
   const relativeDate = derived
     ? formatRelativeDateEs(derived.dataset.updatedAt)
     : '';
@@ -229,6 +233,33 @@ export function AppHeader() {
                   <span className="sections-nav-title">Datos y Estadísticas</span>
                   <span className="sections-nav-sub">
                     Métricas por operadora, banda y provincia
+                  </span>
+                </span>
+              </Link>
+
+              <Link
+                to="/unico-5g"
+                id="nav-tab-unico-5g"
+                className="sections-nav-item"
+                onClick={() => setSectionsMenuOpen(false)}
+              >
+                <span className="sections-nav-icon" aria-hidden="true">
+                  <RadioTower size={17} />
+                </span>
+                <span className="sections-nav-copy">
+                  <span className="sections-nav-title-row">
+                    <span className="sections-nav-title">UNICO 5G</span>
+                    {unicoCount > 0 && (
+                      <span
+                        className="nav-tab-badge mono"
+                        title={`${formatUnicoInt(unicoCount)} antenas subvencionadas en Fase 1 y Fase 2`}
+                      >
+                        {formatUnicoInt(unicoCount)}
+                      </span>
+                    )}
+                  </span>
+                  <span className="sections-nav-sub">
+                    Antenas subvencionadas · Fase 1 y Fase 2
                   </span>
                 </span>
               </Link>

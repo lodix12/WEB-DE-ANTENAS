@@ -137,12 +137,17 @@ const CANONICAL_PROVINCE_ALIASES: ReadonlyArray<
   [
     'ILLES BALEARS',
     [
+      'BALEARS, ILLES',
       'ISLAS BALEARES',
       'BALEARES',
       'BALEARS',
       'ILLES BALEARS/ISLAS BALEARES',
       'ISLAS BALEARES/ILLES BALEARS',
     ],
+  ],
+  [
+    'LAS PALMAS',
+    ['PALMAS, LAS'],
   ],
   [
     'SANTA CRUZ DE TENERIFE',
@@ -172,6 +177,8 @@ const CANONICAL_PROVINCE_ALIASES: ReadonlyArray<
   [
     'A CORUÑA',
     [
+      'CORUÑA, A',
+      'CORUNA, A',
       'A CORUNA',
       'LA CORUÑA',
       'LA CORUNA',
@@ -214,7 +221,7 @@ const CANONICAL_PROVINCE_ALIASES: ReadonlyArray<
       'GUIPÚZCOA/GIPUZKOA',
     ],
   ],
-  ['LA RIOJA', ['RIOJA', 'LOGROÑO', 'LOGRONO']],
+  ['LA RIOJA', ['RIOJA, LA', 'RIOJA', 'LOGROÑO', 'LOGRONO']],
   ['CEUTA', ['CIUDAD AUTÓNOMA DE CEUTA', 'CIUDAD AUTONOMA DE CEUTA']],
   ['MELILLA', ['CIUDAD AUTÓNOMA DE MELILLA', 'CIUDAD AUTONOMA DE MELILLA']],
 ];

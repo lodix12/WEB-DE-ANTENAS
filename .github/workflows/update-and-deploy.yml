@@ -434,9 +434,10 @@ jobs:
       - name: Instalar dependencias limpias
         run: npm ci
 
-      - name: Ejecutar pruebas automatizadas (Crawler Python + Frontend Vitest)
+      - name: Ejecutar pruebas automatizadas (Crawler Python + UNICO 5G + Frontend Vitest)
         run: |
           python3 -m unittest scripts/test_fetch_antenas.py
+          python3 -m unittest scripts/test_build_unico_5g.py
           npm test
 
       - name: Compilar bundle de producción (TypeScript + Vite)

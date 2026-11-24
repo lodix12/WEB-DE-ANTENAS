@@ -15,8 +15,9 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
   - Inspección completa de operador comercial, razón social concesionaria, `Gis_ID` (incluyendo expedientes fusionados `mergedGids`), bandas comerciales, rangos de frecuencias y concesiones administrativas (`Referencia` + frecuencia declarada), dirección postal, coordenadas copiables en un clic y acceso directo al expediente oficial `detalleEstacion.do?emplazamiento=<Gis_ID>`, **Google Street View** y **OpenStreetMap**.
 - **Filtrado Avanzado y Exportación Abierta**:
   - Filtros en cascada por comunidad autónoma, provincia y municipio, filtrado por operador y banda de frecuencia RF (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`), búsqueda por coordenadas/dirección/`Gis_ID` y exportación en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y **GeoJSON**.
-- **Sección de Novedades (`#/novedades`) y Estadísticas (`#/estadisticas`)**:
-  - Monitor en tiempo real durante escaneos forzados manuales (telemetría en la rama `scan-status`), historial acumulativo permanente en `public/data/novedades.json`, cuotas nacionales por operador, desglose por bandas de frecuencia y ranking de las 52 provincias y ciudades autónomas.
+- **Sección de Novedades (`#/novedades`), Eliminaciones (`#/eliminaciones`), Estadísticas (`#/estadisticas`) y UNICO 5G (`#/unico-5g`)**:
+  - Monitor en tiempo real durante escaneos forzados manuales (telemetría en la rama `scan-status`), historial acumulativo permanente en `public/data/novedades.json`, cuotas nacionales por operador y desglose por bandas de frecuencia.
+  - Visor específico **UNICO 5G Redes Activas** (`#/unico-5g`) con las **9.291 antenas subvencionadas** en **Fase 1 (7.330)** y **Fase 2 (1.961)**, agrupación integral de proyectos de **Orange**, filtros por Comunidad Autónoma, Provincia, Municipio y Fase, gráficas interactivas y cartografía WebGL.
 
 ---
 
@@ -25,10 +26,10 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | Capa | Tecnología | Propósito |
 | :--- | :--- | :--- |
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
-| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades` y `#/estadisticas` sin errores 404 en GitHub Pages |
-| **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `public/data/antenas.json` y `public/data/novedades.json` (validación estricta anti-GeoJSON), caché en memoria e índices `O(1)` |
+| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades`, `#/eliminaciones`, `#/estadisticas` y `#/unico-5g` sin errores 404 en GitHub Pages |
+| **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `public/data/antenas.json`, `novedades.json`, `eliminaciones.json` y `unico-5g.json` (validación estricta anti-GeoJSON), caché en memoria e índices `O(1)` |
 | **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina | 6 estilos cartográficos libres con renderizado WebGL en GPU |
-| **Escaneo Forzado Manual** | Python 3.12 (`scripts/fetch_antenas.py` + `scripts/publish_scan_status.py`) | Recolección bajo demanda desde MINETUR y cálculo diferencial en `public/data/antenas.json` y `public/data/novedades.json` (sin programación automática diaria) |
+| **Escaneo y Procesamiento** | Python 3.12 (`scripts/fetch_antenas.py` + `scripts/build_unico_5g.py`) | Recolección bajo demanda desde MINETUR y generación determinista del censo UNICO 5G Fase 1 y Fase 2 |
 | **CI/CD y Hosting** | GitHub Actions (`.github/workflows/update-and-deploy.yml`) + GitHub Pages | Escaneo forzado manual (`workflow_dispatch`) y despliegue estático en cada `push` a `main` |
 
 ---
@@ -48,9 +49,10 @@ npm install
 # 2. Iniciar servidor de desarrollo en caliente (Vite)
 npm run dev
 
-# 3. Ejecutar pruebas unitarias (Vitest + pruebas del recolector)
+# 3. Ejecutar pruebas unitarias (Vitest + pruebas de recolectores Python)
 npm test
 python3 -m unittest scripts/test_fetch_antenas.py
+python3 -m unittest scripts/test_build_unico_5g.py
 
 # 4. Analizar código con Oxlint
 npm run lint

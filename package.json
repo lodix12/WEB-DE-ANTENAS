@@ -9,7 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
-    "update:antenas": "python3 scripts/fetch_antenas.py"
+    "update:antenas": "python3 scripts/fetch_antenas.py",
+    "update:unico5g": "python3 scripts/build_unico_5g.py"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.107.1",

@@ -9,12 +9,15 @@ import {
   validateNovedadesSearch,
   type NovedadesRouteSearch,
 } from './hooks/useNovedadesData';
+import { validateUnico5gSearch } from './hooks/useUnico5gData';
+import type { UnicoRouteSearch } from './types/unico5g';
 import { EliminacionesView } from './views/EliminacionesView';
 import { EstadisticasView } from './views/EstadisticasView';
 import { MapaView } from './views/MapaView';
 import { NovedadesView } from './views/NovedadesView';
+import { Unico5gView } from './views/Unico5gView';
 
-export type { NovedadesRouteSearch };
+export type { NovedadesRouteSearch, UnicoRouteSearch };
 
 export interface MapaRouteSearch {
   gid?: string;
@@ -101,11 +104,19 @@ const estadisticasRoute = createRoute({
   component: EstadisticasView,
 });
 
+const unico5gRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/unico-5g',
+  validateSearch: validateUnico5gSearch,
+  component: Unico5gView,
+});
+
 const routeTree = rootRoute.addChildren([
   mapaRoute,
   novedadesRoute,
   eliminacionesRoute,
   estadisticasRoute,
+  unico5gRoute,
 ]);
 
 export const router = createRouter({
