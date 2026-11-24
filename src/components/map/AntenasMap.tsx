@@ -23,8 +23,11 @@ import {
   formatUnicoFasesLabel,
 } from '../../hooks/useUnico5gData';
 import {
+  DEFAULT_CLUSTERING_LEVEL,
   MAX_MEASURE_POINTS,
+  getClusteringLevelConfig,
   type AntenasMapProps,
+  type ClusteringLevel,
   type MeasurePoint,
 } from '../../types/map';
 import type { UnicoDeclaredRealAntennaMatch } from '../../types/unico5g';
@@ -591,6 +594,39 @@ function buildUnicoHaloStrokeWidthExpr(
   ] as maplibregl.ExpressionSpecification;
 }
 
+interface SourceClusterOptions {
+  cluster: boolean;
+  clusterMaxZoom: number;
+  clusterRadius: number;
+}
+
+function buildSourceClusterOptions(
+  level: ClusteringLevel,
+): SourceClusterOptions {
+  const cfg = getClusteringLevelConfig(level);
+  return {
+    cluster: cfg.cluster,
+    clusterMaxZoom: cfg.clusterMaxZoom,
+    clusterRadius: cfg.clusterRadius,
+  };
+}
+
+function hasMatchingClusterOptions(
+  current: maplibregl.GetClusterOptions | undefined,
+  target: SourceClusterOptions,
+): boolean {
+  if (!current || current.cluster !== target.cluster) {
+    return false;
+  }
+  if (!target.cluster) {
+    return true;
+  }
+  return (
+    current.clusterMaxZoom === target.clusterMaxZoom &&
+    Math.abs(current.clusterRadius - target.clusterRadius) < 0.5
+  );
+}
+
 function syncClusteringVisualLayers(
   map: maplibregl.Map,
   disableClustering: boolean,
@@ -829,8 +865,8 @@ export function AntenasMap(props: AntenasMapProps) {
     onToggleLock3dPitch,
     showBandsOnMap,
     onToggleShowBandsOnMap,
-    disableClustering,
-    onToggleDisableClustering,
+    clusteringLevel,
+    onClusteringLevelChange,
     unicoDeclaredById,
     highlightUnicoDeclared,
     onToggleHighlightUnicoDeclared,
@@ -875,25 +911,27 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [onToggleShowBandsOnMap]);
 
-  // Soporte híbrido controlado o autónomo para desactivar clústeres al hacer zoom out ("Eliminar clustering")
-  const [internalDisableClustering, setInternalDisableClustering] =
-    useState<boolean>(() => disableClustering ?? false);
-  const isDisableClusteringControlled =
-    disableClustering !== undefined &&
-    onToggleDisableClustering !== undefined;
-  const effectiveDisableClustering = isDisableClusteringControlled
-    ? disableClustering
-    : internalDisableClustering;
-  const disableClusteringRef = useRef<boolean>(effectiveDisableClustering);
+  // Soporte híbrido controlado o autónomo para los 3 niveles de clustering ('none' | 'normal' | 'high')
+  const [internalClusteringLevel, setInternalClusteringLevel] =
+    useState<ClusteringLevel>(() => clusteringLevel ?? DEFAULT_CLUSTERING_LEVEL);
+  const isClusteringLevelControlled =
+    clusteringLevel !== undefined && onClusteringLevelChange !== undefined;
+  const effectiveClusteringLevel = isClusteringLevelControlled
+    ? clusteringLevel
+    : internalClusteringLevel;
+  const clusteringLevelRef = useRef<ClusteringLevel>(effectiveClusteringLevel);
 
-  const handleToggleDisableClustering = useCallback(() => {
-    if (isDisableClusteringControlled) {
-      onToggleDisableClustering();
-    } else {
-      setInternalDisableClustering((prev) => !prev);
-      onToggleDisableClustering?.();
-    }
-  }, [isDisableClusteringControlled, onToggleDisableClustering]);
+  const handleClusteringLevelChange = useCallback(
+    (nextLevel: ClusteringLevel) => {
+      if (isClusteringLevelControlled) {
+        onClusteringLevelChange(nextLevel);
+      } else {
+        setInternalClusteringLevel(nextLevel);
+        onClusteringLevelChange?.(nextLevel);
+      }
+    },
+    [isClusteringLevelControlled, onClusteringLevelChange],
+  );
 
   // Resaltado visual de antenas seleccionadas como declaración UNICO 5G (activo por defecto)
   const [internalHighlightUnicoDeclared, setInternalHighlightUnicoDeclared] =
@@ -1184,29 +1222,28 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [effectiveHighlightUnicoDeclared]);
 
-  // Sincronización inmediata en GPU al activar/desactivar la agrupación en clústeres ("Eliminar clustering")
+  // Sincronización inmediata en GPU al cambiar el nivel de agrupación en clústeres ('none' | 'normal' | 'high')
   useEffect(() => {
-    disableClusteringRef.current = effectiveDisableClustering;
+    clusteringLevelRef.current = effectiveClusteringLevel;
     const map = mapRef.current;
     if (!map) {
       return;
     }
+    const clusterOptions = buildSourceClusterOptions(effectiveClusteringLevel);
     const source = map.getSource(ANTENAS_SOURCE_ID) as
       | maplibregl.GeoJSONSource
       | undefined;
     if (source && typeof source.setClusterOptions === 'function') {
-      void source
-        .setClusterOptions({
-          cluster: !effectiveDisableClustering,
-          clusterMaxZoom: 12,
-          clusterRadius: 46,
-        })
-        .catch(() => {
-          // Ignorar si el estilo cambia durante la actualización del worker
-        });
+      void source.setClusterOptions(clusterOptions).catch(() => {
+        // Ignorar si el estilo cambia durante la actualización del worker
+      });
     }
-    syncClusteringVisualLayers(map, effectiveDisableClustering);
-  }, [effectiveDisableClustering]);
+    syncClusteringVisualLayers(map, !clusterOptions.cluster);
+    if (hoveredIdRef.current !== null) {
+      hoveredIdRef.current = null;
+      popupRef.current?.remove();
+    }
+  }, [effectiveClusteringLevel]);
 
   // Permitir cancelar o limpiar la medición de 2 puntos pulsando la tecla Escape
   useEffect(() => {
@@ -1244,7 +1281,10 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     const isDark = isDarkStyleRef.current;
-    const disableClusteringActive = disableClusteringRef.current;
+    const clusterOptions = buildSourceClusterOptions(
+      clusteringLevelRef.current,
+    );
+    const disableClusteringActive = !clusterOptions.cluster;
     const highlightUnicoActive = highlightUnicoDeclaredRef.current;
 
     // Registrar todos los sprites multicolor activos en el atlas WebGL del estilo actual
@@ -1258,9 +1298,9 @@ export function AntenasMap(props: AntenasMapProps) {
       map.addSource(ANTENAS_SOURCE_ID, {
         type: 'geojson',
         data: antenasGeoJsonRef.current,
-        cluster: !disableClusteringActive,
-        clusterMaxZoom: 12,
-        clusterRadius: 46,
+        cluster: clusterOptions.cluster,
+        clusterMaxZoom: clusterOptions.clusterMaxZoom,
+        clusterRadius: clusterOptions.clusterRadius,
         clusterProperties: {
           stationSum: ['+', ['get', 'stationCount']],
         },
@@ -1797,24 +1837,21 @@ export function AntenasMap(props: AntenasMapProps) {
       const antSource = map.getSource(ANTENAS_SOURCE_ID) as
         | maplibregl.GeoJSONSource
         | undefined;
+      const targetClusterOptions = buildSourceClusterOptions(
+        clusteringLevelRef.current,
+      );
       if (antSource && typeof antSource.setClusterOptions === 'function') {
-        const currentCluster =
+        const currentOptions =
           typeof antSource.getClusterOptions === 'function'
-            ? antSource.getClusterOptions().cluster
+            ? antSource.getClusterOptions()
             : undefined;
-        if (currentCluster !== !disableClusteringRef.current) {
-          void antSource
-            .setClusterOptions({
-              cluster: !disableClusteringRef.current,
-              clusterMaxZoom: 12,
-              clusterRadius: 46,
-            })
-            .catch(() => {
-              // Ignorar si el estilo cambia durante la actualización del worker
-            });
+        if (!hasMatchingClusterOptions(currentOptions, targetClusterOptions)) {
+          void antSource.setClusterOptions(targetClusterOptions).catch(() => {
+            // Ignorar si el estilo cambia durante la actualización del worker
+          });
         }
       }
-      syncClusteringVisualLayers(map, disableClusteringRef.current);
+      syncClusteringVisualLayers(map, !targetClusterOptions.cluster);
       if (
         antSource &&
         lastAppliedGeoJsonRef.current !== antenasGeoJsonRef.current
@@ -1869,7 +1906,8 @@ export function AntenasMap(props: AntenasMapProps) {
     const handleMapClick = (event: maplibregl.MapMouseEvent) => {
       const unclusteredLayers = getActiveUnclusteredLayers();
       const hasClusterLayer =
-        !disableClusteringRef.current && Boolean(map.getLayer(LAYER_CLUSTERS));
+        clusteringLevelRef.current !== 'none' &&
+        Boolean(map.getLayer(LAYER_CLUSTERS));
 
       // 0. Modo "Medir en mapa" (hasta 10 puntos: persiste al llegar al límite hasta desactivar la opción)
       if (measureModeActiveRef.current) {
@@ -1989,6 +2027,13 @@ export function AntenasMap(props: AntenasMapProps) {
             void source
               .getClusterExpansionZoom(clusterId)
               .then((expansionZoom) => {
+                if (
+                  clusteringLevelRef.current === 'none' ||
+                  typeof expansionZoom !== 'number' ||
+                  !Number.isFinite(expansionZoom)
+                ) {
+                  return;
+                }
                 map.easeTo({
                   center: [lon, lat],
                   zoom: Math.min(expansionZoom, 17),
@@ -2014,7 +2059,10 @@ export function AntenasMap(props: AntenasMapProps) {
         measureModeActiveRef.current &&
         measurePointsRef.current.length < MAX_MEASURE_POINTS;
       const interactiveLayers = getActiveUnclusteredLayers();
-      if (!disableClusteringRef.current && map.getLayer(LAYER_CLUSTERS)) {
+      if (
+        clusteringLevelRef.current !== 'none' &&
+        map.getLayer(LAYER_CLUSTERS)
+      ) {
         interactiveLayers.push(LAYER_CLUSTERS);
       }
 
@@ -2296,8 +2344,8 @@ export function AntenasMap(props: AntenasMapProps) {
         onToggleLock3dPitch={handleToggleLock3dPitch}
         showBandsOnMap={effectiveShowBandsOnMap}
         onToggleShowBandsOnMap={handleToggleShowBandsOnMap}
-        disableClustering={effectiveDisableClustering}
-        onToggleDisableClustering={handleToggleDisableClustering}
+        clusteringLevel={effectiveClusteringLevel}
+        onClusteringLevelChange={handleClusteringLevelChange}
         highlightUnicoDeclared={effectiveHighlightUnicoDeclared}
         onToggleHighlightUnicoDeclared={handleToggleHighlightUnicoDeclared}
         onFlyToRegion={handleFlyToRegion}

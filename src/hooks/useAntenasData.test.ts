@@ -42,6 +42,12 @@ import {
   type ScanStatusPayload,
 } from '../types/antena';
 import {
+  CLUSTERING_LEVEL_OPTIONS,
+  DEFAULT_CLUSTERING_LEVEL,
+  getClusteringLevelConfig,
+  type ClusteringLevel,
+} from '../types/map';
+import {
   buildCsvExportContent,
   buildCustomJsonExportPayload,
   buildGeoJsonExportCollection,
@@ -3478,15 +3484,15 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     ).toBe(true);
   });
 
-  it('mantiene #map-toggle-bands-btn en la barra superior de MapOverlays y reemplaza #map-show-bands-option por #map-disable-clustering-option ("Eliminar clustering") en el selector de estilos', () => {
+  it('mantiene #map-toggle-bands-btn en la barra superior de MapOverlays y reemplaza #map-show-bands-option y #map-disable-clustering-option por el selector de 3 niveles #map-clustering-level-control en el selector de estilos', () => {
     const inactiveHtml = renderToStaticMarkup(
       createElement(MapOverlays, {
         styleId: 'positron',
         onStyleChange: () => {},
         showBandsOnMap: false,
         onToggleShowBandsOnMap: () => {},
-        disableClustering: false,
-        onToggleDisableClustering: () => {},
+        clusteringLevel: 'normal',
+        onClusteringLevelChange: () => {},
         onFlyToRegion: () => {},
       }),
     );
@@ -3503,8 +3509,8 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
         onStyleChange: () => {},
         showBandsOnMap: true,
         onToggleShowBandsOnMap: () => {},
-        disableClustering: true,
-        onToggleDisableClustering: () => {},
+        clusteringLevel: 'none',
+        onClusteringLevelChange: () => {},
         onFlyToRegion: () => {},
       }),
     );
@@ -3513,13 +3519,16 @@ describe('Búsqueda por códigos de banda RF (N258, N78, B7, B38, B1, B3, G9, B2
     );
     expect(activeHtml).not.toContain('map-show-bands-option');
 
-    // En el desplegable de estilos (.map-style-popover) ya no se duplica "Mostrar bandas en antenas" y en su lugar figura "Eliminar clustering"
+    // En el desplegable de estilos (.map-style-popover) ya no figura "Mostrar bandas en antenas" ni el conmutador binario "Eliminar clustering", sino el selector de 3 niveles
     expect(mapOverlaysRawSource).not.toContain('map-show-bands-option');
     expect(mapOverlaysRawSource).not.toContain('Mostrar bandas en antenas');
-    expect(mapOverlaysRawSource).toContain('id="map-disable-clustering-option"');
-    expect(mapOverlaysRawSource).toContain('Eliminar clustering');
+    expect(mapOverlaysRawSource).not.toContain('map-disable-clustering-option');
+    expect(mapOverlaysRawSource).not.toContain('Eliminar clustering');
+    expect(mapOverlaysRawSource).toContain('id="map-clustering-level-control"');
+    expect(mapOverlaysRawSource).toContain('Nivel de clustering');
+    expect(mapOverlaysRawSource).toContain('CLUSTERING_LEVEL_OPTIONS');
     expect(mapOverlaysRawSource).toContain(
-      'Mostrar antenas sin agrupar al hacer zoom out',
+      'id={`map-clustering-level-${option.id}`}',
     );
   });
 });
@@ -7652,8 +7661,8 @@ describe('Mapa — Controles flotantes inferiores, Filtros a la derecha de Secci
         onToggleMeasureMode: () => {},
         lock3dPitch: true,
         onToggleLock3dPitch: () => {},
-        disableClustering: false,
-        onToggleDisableClustering: () => {},
+        clusteringLevel: 'normal',
+        onClusteringLevelChange: () => {},
         showBandsOnMap: false,
         onToggleShowBandsOnMap: () => {},
       }),
@@ -8418,8 +8427,8 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (4
         onToggleMeasureMode: () => {},
         lock3dPitch: true,
         onToggleLock3dPitch: () => {},
-        disableClustering: false,
-        onToggleDisableClustering: () => {},
+        clusteringLevel: 'normal',
+        onClusteringLevelChange: () => {},
         showBandsOnMap: false,
         onToggleShowBandsOnMap: () => {},
       }),
@@ -8433,7 +8442,7 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (4
       'aria-label="Capas cartográficas del mapa"',
     );
     expect(mapOverlaysRawSource).toContain('id={`map-style-option-${option.id}`}');
-    expect(mapOverlaysRawSource).toContain('id="map-disable-clustering-option"');
+    expect(mapOverlaysRawSource).toContain('id="map-clustering-level-control"');
     expect(mapOverlaysRawSource).toContain('id="map-lock-3d-option"');
 
     const fsSpecifier = 'node:fs';
@@ -8701,4 +8710,108 @@ describe('Fusión de declaraciones de la misma operadora en la misma coordenada 
     );
   });
 });
+
+describe('Mapa — Selector de 3 niveles de clustering en Capas cartográficas (Ninguno, Normal, Alto)', () => {
+  it('define los 3 niveles (none, normal, high) con parámetros crecientes de clustering y normal por defecto', () => {
+    expect(DEFAULT_CLUSTERING_LEVEL).toBe('normal');
+    expect(CLUSTERING_LEVEL_OPTIONS.map((opt) => opt.id)).toEqual([
+      'none',
+      'normal',
+      'high',
+    ]);
+    expect(CLUSTERING_LEVEL_OPTIONS.map((opt) => opt.label)).toEqual([
+      'Ninguno',
+      'Normal',
+      'Alto',
+    ]);
+
+    const noneCfg = getClusteringLevelConfig('none');
+    const normalCfg = getClusteringLevelConfig('normal');
+    const highCfg = getClusteringLevelConfig('high');
+
+    // Nivel 1: sin clustering
+    expect(noneCfg.cluster).toBe(false);
+
+    // Nivel 2: clustering estándar actual intacto
+    expect(normalCfg.cluster).toBe(true);
+    expect(normalCfg.clusterMaxZoom).toBe(12);
+    expect(normalCfg.clusterRadius).toBe(46);
+
+    // Nivel 3: un poco más de clustering que el actual (radio y zoom máximo mayores)
+    expect(highCfg.cluster).toBe(true);
+    expect(highCfg.clusterRadius).toBeGreaterThan(normalCfg.clusterRadius);
+    expect(highCfg.clusterMaxZoom).toBeGreaterThanOrEqual(
+      normalCfg.clusterMaxZoom,
+    );
+    expect(highCfg.clusterRadius).toBe(68);
+    expect(highCfg.clusterMaxZoom).toBe(13);
+
+    // Fallback seguro ante valor inválido
+    expect(
+      getClusteringLevelConfig('invalid' as ClusteringLevel).id,
+    ).toBe('normal');
+  });
+
+  it('conecta los 3 niveles en MapOverlays, AntenasMap, WorkspaceProvider, MapaView y estilos CSS de map.css', async () => {
+    const levels: ClusteringLevel[] = ['none', 'normal', 'high'];
+    for (const level of levels) {
+      const html = renderToStaticMarkup(
+        createElement(MapOverlays, {
+          styleId: 'osm',
+          onStyleChange: () => {},
+          clusteringLevel: level,
+          onClusteringLevelChange: () => {},
+          onFlyToRegion: () => {},
+        }),
+      );
+      expect(html).toContain('id="map-style-switcher-btn"');
+    }
+
+    // MapOverlays: radiogroup accesible con los 3 botones y sin el antiguo "Eliminar clustering"
+    expect(mapOverlaysRawSource).toContain('id="map-clustering-level-control"');
+    expect(mapOverlaysRawSource).toContain('role="radiogroup"');
+    expect(mapOverlaysRawSource).toContain('role="radio"');
+    expect(mapOverlaysRawSource).toContain('Nivel de clustering');
+    expect(mapOverlaysRawSource).not.toContain('Eliminar clustering');
+    expect(mapOverlaysRawSource).not.toContain('map-disable-clustering-option');
+
+    // AntenasMap: aplica cluster, clusterMaxZoom y clusterRadius dinámicamente vía setClusterOptions y verifica los 3 al recargar estilo
+    expect(antenasMapRawSource).toContain('buildSourceClusterOptions');
+    expect(antenasMapRawSource).toContain('hasMatchingClusterOptions');
+    expect(antenasMapRawSource).toContain('source.setClusterOptions(clusterOptions)');
+    expect(antenasMapRawSource).toContain('clusteringLevel={effectiveClusteringLevel}');
+    expect(antenasMapRawSource).toContain(
+      'onClusteringLevelChange={handleClusteringLevelChange}',
+    );
+    expect(antenasMapRawSource).not.toContain('disableClusteringRef');
+
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const [workspaceProviderSource, useWorkspaceSource, mapaViewSource, mapCssSource] = [
+      readFileSync(new URL('./WorkspaceProvider.tsx', import.meta.url), 'utf-8'),
+      readFileSync(new URL('./useWorkspace.ts', import.meta.url), 'utf-8'),
+      readFileSync(new URL('../views/MapaView.tsx', import.meta.url), 'utf-8'),
+      readFileSync(new URL('../styles/map.css', import.meta.url), 'utf-8'),
+    ];
+
+    expect(useWorkspaceSource).toContain('clusteringLevel: ClusteringLevel;');
+    expect(useWorkspaceSource).toContain(
+      'setClusteringLevel: (level: ClusteringLevel) => void;',
+    );
+    expect(workspaceProviderSource).toContain('DEFAULT_CLUSTERING_LEVEL');
+    expect(workspaceProviderSource).toContain(
+      'const [clusteringLevel, setClusteringLevel] = useState<ClusteringLevel>(',
+    );
+    expect(mapaViewSource).toContain('clusteringLevel={clusteringLevel}');
+    expect(mapaViewSource).toContain('onClusteringLevelChange={setClusteringLevel}');
+
+    expect(mapCssSource).toContain('.map-clustering-control');
+    expect(mapCssSource).toContain('.map-clustering-segmented');
+    expect(mapCssSource).toContain('.map-clustering-segment');
+    expect(mapCssSource).toContain('.map-clustering-segment.is-selected');
+  });
+});
+
 

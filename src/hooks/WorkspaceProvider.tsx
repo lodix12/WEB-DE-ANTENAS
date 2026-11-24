@@ -12,7 +12,13 @@ import {
   type OpenFreeMapStyleOption,
   type OperatorKey,
 } from '../types/antena';
-import type { FlyToTarget, MeasurePoint, RadarPoint } from '../types/map';
+import {
+  DEFAULT_CLUSTERING_LEVEL,
+  type ClusteringLevel,
+  type FlyToTarget,
+  type MeasurePoint,
+  type RadarPoint,
+} from '../types/map';
 import {
   getComunidadAutonomaByProvince,
   matchesAntennaBandsFilter,
@@ -77,7 +83,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [measureModeActive, setMeasureModeActive] = useState<boolean>(false);
   const [showBandsOnMap, setShowBandsOnMap] = useState<boolean>(false);
-  const [disableClustering, setDisableClustering] = useState<boolean>(false);
+  const [clusteringLevel, setClusteringLevel] = useState<ClusteringLevel>(
+    DEFAULT_CLUSTERING_LEVEL,
+  );
   const [highlightUnicoDeclared, setHighlightUnicoDeclared] =
     useState<boolean>(true);
   const [sectionsMenuOpen, setSectionsMenuOpen] = useState<boolean>(false);
@@ -253,10 +261,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setShowBandsOnMap((prev) => !prev);
   }, []);
 
-  const toggleDisableClustering = useCallback(() => {
-    setDisableClustering((prev) => !prev);
-  }, []);
-
   const toggleHighlightUnicoDeclared = useCallback(() => {
     setHighlightUnicoDeclared((prev) => !prev);
   }, []);
@@ -383,9 +387,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       showBandsOnMap,
       setShowBandsOnMap,
       toggleShowBandsOnMap,
-      disableClustering,
-      setDisableClustering,
-      toggleDisableClustering,
+      clusteringLevel,
+      setClusteringLevel,
       highlightUnicoDeclared,
       setHighlightUnicoDeclared,
       toggleHighlightUnicoDeclared,
@@ -435,9 +438,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       showBandsOnMap,
       setShowBandsOnMap,
       toggleShowBandsOnMap,
-      disableClustering,
-      setDisableClustering,
-      toggleDisableClustering,
+      clusteringLevel,
+      setClusteringLevel,
       highlightUnicoDeclared,
       setHighlightUnicoDeclared,
       toggleHighlightUnicoDeclared,

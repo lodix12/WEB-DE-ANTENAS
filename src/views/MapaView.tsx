@@ -60,8 +60,8 @@ export function MapaView() {
     toggleMeasureMode,
     showBandsOnMap,
     toggleShowBandsOnMap,
-    disableClustering,
-    toggleDisableClustering,
+    clusteringLevel,
+    setClusteringLevel,
     highlightUnicoDeclared,
     toggleHighlightUnicoDeclared,
     sectionsMenuOpen,
@@ -440,8 +440,8 @@ export function MapaView() {
             onToggleMeasureMode={toggleMeasureMode}
             showBandsOnMap={showBandsOnMap}
             onToggleShowBandsOnMap={toggleShowBandsOnMap}
-            disableClustering={disableClustering}
-            onToggleDisableClustering={toggleDisableClustering}
+            clusteringLevel={clusteringLevel}
+            onClusteringLevelChange={setClusteringLevel}
             unicoDeclaredById={declaredRealAntennasById}
             highlightUnicoDeclared={highlightUnicoDeclared}
             onToggleHighlightUnicoDeclared={toggleHighlightUnicoDeclared}

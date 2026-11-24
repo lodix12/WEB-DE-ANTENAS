@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Check,
+  Group,
   Layers,
   Loader2,
   LocateFixed,
@@ -15,7 +16,13 @@ import {
   OPENFREEMAP_STYLES,
   type OpenFreeMapStyleOption,
 } from '../../types/antena';
-import type { MeasurePoint } from '../../types/map';
+import {
+  CLUSTERING_LEVEL_OPTIONS,
+  DEFAULT_CLUSTERING_LEVEL,
+  getClusteringLevelConfig,
+  type ClusteringLevel,
+  type MeasurePoint,
+} from '../../types/map';
 
 const EMPTY_MEASURE_POINTS: MeasurePoint[] = [];
 
@@ -32,8 +39,8 @@ export interface MapOverlaysProps {
   onToggleLock3dPitch?: () => void;
   showBandsOnMap?: boolean;
   onToggleShowBandsOnMap?: () => void;
-  disableClustering?: boolean;
-  onToggleDisableClustering?: () => void;
+  clusteringLevel?: ClusteringLevel;
+  onClusteringLevelChange?: (level: ClusteringLevel) => void;
   highlightUnicoDeclared?: boolean;
   onToggleHighlightUnicoDeclared?: () => void;
   onFlyToRegion: (
@@ -57,8 +64,8 @@ export function MapOverlays({
   onToggleLock3dPitch,
   showBandsOnMap = false,
   onToggleShowBandsOnMap,
-  disableClustering = false,
-  onToggleDisableClustering,
+  clusteringLevel = DEFAULT_CLUSTERING_LEVEL,
+  onClusteringLevelChange,
   highlightUnicoDeclared = true,
   onToggleHighlightUnicoDeclared,
   onFlyToRegion,
@@ -68,6 +75,9 @@ export function MapOverlays({
   const [geoError, setGeoError] = useState<string | null>(null);
 
   const stylePopoverRef = useRef<HTMLDivElement | null>(null);
+  const clusteringBtnRefs = useRef<
+    Partial<Record<ClusteringLevel, HTMLButtonElement | null>>
+  >({});
 
   const toggleMeasureAction = onToggleMeasureMode ?? onToggleRadarMode;
   const isMeasureActive = measureModeActive ?? radarModeActive;
@@ -79,6 +89,11 @@ export function MapOverlays({
       OPENFREEMAP_STYLES.find((option) => option.id === styleId) ??
       OPENFREEMAP_STYLES[0],
     [styleId],
+  );
+
+  const currentClusteringOption = useMemo(
+    () => getClusteringLevelConfig(clusteringLevel),
+    [clusteringLevel],
   );
 
   useEffect(() => {
@@ -158,6 +173,31 @@ export function MapOverlays({
       }
     } else {
       toggleMeasureAction?.();
+    }
+  };
+
+  const handleClusteringKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) => {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % CLUSTERING_LEVEL_OPTIONS.length;
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex =
+        (currentIndex - 1 + CLUSTERING_LEVEL_OPTIONS.length) %
+        CLUSTERING_LEVEL_OPTIONS.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = CLUSTERING_LEVEL_OPTIONS.length - 1;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      const nextOption = CLUSTERING_LEVEL_OPTIONS[nextIndex];
+      onClusteringLevelChange?.(nextOption.id);
+      clusteringBtnRefs.current[nextOption.id]?.focus();
     }
   };
 
@@ -291,32 +331,67 @@ export function MapOverlays({
                   className="map-style-popover-divider"
                   role="separator"
                 />
-                <button
-                  id="map-disable-clustering-option"
-                  type="button"
-                  role="switch"
-                  aria-checked={disableClustering}
-                  className={`map-lock-3d-option${disableClustering ? ' is-active' : ''}`}
-                  onClick={() => onToggleDisableClustering?.()}
+                <div
+                  id="map-clustering-level-control"
+                  className="map-clustering-control"
+                  data-clustering-level={currentClusteringOption.id}
                 >
-                  <span className="map-lock-3d-icon" aria-hidden="true">
-                    <Ungroup size={15} aria-hidden="true" />
-                  </span>
-                  <span className="map-style-option-body">
-                    <span className="map-style-option-title map-style-option-name">
-                      Eliminar clustering
+                  <div className="map-clustering-header">
+                    <span
+                      className="map-lock-3d-icon map-clustering-icon"
+                      aria-hidden="true"
+                    >
+                      {currentClusteringOption.id === 'none' ? (
+                        <Ungroup size={15} aria-hidden="true" />
+                      ) : (
+                        <Group size={15} aria-hidden="true" />
+                      )}
                     </span>
-                    <span className="map-style-option-desc">
-                      Mostrar antenas sin agrupar al hacer zoom out
+                    <span className="map-style-option-body">
+                      <span className="map-style-option-title map-style-option-name">
+                        Nivel de clustering
+                      </span>
+                      <span
+                        id="map-clustering-level-desc"
+                        className="map-style-option-desc"
+                      >
+                        {currentClusteringOption.description}
+                      </span>
                     </span>
-                  </span>
-                  <span
-                    className={`map-lock-3d-switch map-switch-pill${disableClustering ? ' is-on' : ''}`}
-                    aria-hidden="true"
+                  </div>
+
+                  <div
+                    className="map-clustering-segmented"
+                    role="radiogroup"
+                    aria-label="Nivel de clustering"
+                    aria-describedby="map-clustering-level-desc"
                   >
-                    <span className="map-lock-3d-switch-thumb" />
-                  </span>
-                </button>
+                    {CLUSTERING_LEVEL_OPTIONS.map((option, index) => {
+                      const selected = option.id === currentClusteringOption.id;
+                      return (
+                        <button
+                          key={option.id}
+                          ref={(node) => {
+                            clusteringBtnRefs.current[option.id] = node;
+                          }}
+                          id={`map-clustering-level-${option.id}`}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          tabIndex={selected ? 0 : -1}
+                          className={`map-clustering-segment${selected ? ' is-selected' : ''}`}
+                          title={option.description}
+                          onClick={() => onClusteringLevelChange?.(option.id)}
+                          onKeyDown={(event) =>
+                            handleClusteringKeyDown(event, index)
+                          }
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 {onToggleHighlightUnicoDeclared && (
                   <>

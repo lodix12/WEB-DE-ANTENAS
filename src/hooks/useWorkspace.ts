@@ -4,7 +4,12 @@ import type {
   OpenFreeMapStyleOption,
   OperatorKey,
 } from '../types/antena';
-import type { FlyToTarget, MeasurePoint, RadarPoint } from '../types/map';
+import type {
+  ClusteringLevel,
+  FlyToTarget,
+  MeasurePoint,
+  RadarPoint,
+} from '../types/map';
 
 export type ThemeMode = 'light' | 'dark';
 
@@ -61,10 +66,9 @@ export interface WorkspaceContextValue {
   setShowBandsOnMap: (show: boolean) => void;
   toggleShowBandsOnMap: () => void;
 
-  /* Agrupación cartográfica (clustering) en el mapa */
-  disableClustering: boolean;
-  setDisableClustering: (disable: boolean) => void;
-  toggleDisableClustering: () => void;
+  /* Nivel de agrupación cartográfica (clustering) en el mapa */
+  clusteringLevel: ClusteringLevel;
+  setClusteringLevel: (level: ClusteringLevel) => void;
 
   /* Resaltado visual de antenas seleccionadas como declaración UNICO 5G */
   highlightUnicoDeclared: boolean;

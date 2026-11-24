@@ -21,6 +21,55 @@ export interface RadarPoint {
 
 export const MAX_MEASURE_POINTS = 10;
 
+export type ClusteringLevel = 'none' | 'normal' | 'high';
+
+export interface ClusteringLevelOption {
+  id: ClusteringLevel;
+  label: string;
+  description: string;
+  cluster: boolean;
+  clusterMaxZoom: number;
+  clusterRadius: number;
+}
+
+export const DEFAULT_CLUSTERING_LEVEL: ClusteringLevel = 'normal';
+
+export const CLUSTERING_LEVEL_OPTIONS: readonly ClusteringLevelOption[] = [
+  {
+    id: 'none',
+    label: 'Ninguno',
+    description: 'Mostrar antenas sin agrupar al alejar',
+    cluster: false,
+    clusterMaxZoom: 12,
+    clusterRadius: 46,
+  },
+  {
+    id: 'normal',
+    label: 'Normal',
+    description: 'Agrupación estándar al alejar el mapa',
+    cluster: true,
+    clusterMaxZoom: 12,
+    clusterRadius: 46,
+  },
+  {
+    id: 'high',
+    label: 'Alto',
+    description: 'Agrupación algo mayor al alejar el mapa',
+    cluster: true,
+    clusterMaxZoom: 13,
+    clusterRadius: 68,
+  },
+];
+
+export function getClusteringLevelConfig(
+  level: ClusteringLevel,
+): ClusteringLevelOption {
+  return (
+    CLUSTERING_LEVEL_OPTIONS.find((option) => option.id === level) ??
+    CLUSTERING_LEVEL_OPTIONS[1]
+  );
+}
+
 export interface MeasurePoint {
   lat: number;
   lon: number;
@@ -74,10 +123,10 @@ export interface AntenasMapProps {
   showBandsOnMap?: boolean;
   /** Alternar la visualización directa de bandas de frecuencia en el mapa */
   onToggleShowBandsOnMap?: () => void;
-  /** Si está desactivada la agrupación en clústeres al alejar el mapa (por defecto false) */
-  disableClustering?: boolean;
-  /** Alternar la desactivación de clústeres para mostrar siempre todas las antenas individuales */
-  onToggleDisableClustering?: () => void;
+  /** Nivel de agrupación en clústeres al alejar el mapa ('none' | 'normal' | 'high', por defecto 'normal') */
+  clusteringLevel?: ClusteringLevel;
+  /** Cambiar el nivel de agrupación en clústeres del mapa */
+  onClusteringLevelChange?: (level: ClusteringLevel) => void;
   /** Mapa O(1) de antenas reales seleccionadas como declaración del programa UNICO 5G */
   unicoDeclaredById?: ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>;
   /** Si el resaltado visual en mapa de antenas seleccionadas como declaración UNICO 5G está activo (por defecto true) */
