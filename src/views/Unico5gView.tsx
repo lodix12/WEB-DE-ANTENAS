@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from 'react';
-import { useNavigate, useSearch } from '@tanstack/react-router';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearch } from '@tanstack/react-router';
 import {
   UNICO_COMUNIDAD_LIST,
   UNICO_PROVINCE_LABELS,
@@ -14,7 +14,6 @@ import {
   type UnicoDeclaredBandFilter,
   type UnicoFaseFilter,
   type UnicoOperatorCountStat,
-  type UnicoRouteSearch,
   type UnicoTerritoryTab,
 } from '../types/unico5g';
 import '../styles/unico5g.css';
@@ -47,18 +46,6 @@ function parseProvsParam(raw: string | undefined): Set<string> {
   return set;
 }
 
-function serializeProvsParam(selected: ReadonlySet<string>): string | undefined {
-  if (selected.size === 0) return undefined;
-  const ordered: string[] = [];
-  for (let i = 0; i < UNICO_PROVINCE_LABELS.length; i++) {
-    const prov = UNICO_PROVINCE_LABELS[i].prov;
-    if (selected.has(prov)) {
-      ordered.push(prov);
-    }
-  }
-  return ordered.length > 0 ? ordered.join(',') : undefined;
-}
-
 function parseCcaasParam(raw: string | undefined): Set<string> {
   const set = new Set<string>();
   if (!raw) return set;
@@ -70,18 +57,6 @@ function parseCcaasParam(raw: string | undefined): Set<string> {
     }
   }
   return set;
-}
-
-function serializeCcaasParam(selected: ReadonlySet<string>): string | undefined {
-  if (selected.size === 0) return undefined;
-  const ordered: string[] = [];
-  for (let i = 0; i < UNICO_COMUNIDAD_LIST.length; i++) {
-    const ccaa = UNICO_COMUNIDAD_LIST[i];
-    if (selected.has(ccaa)) {
-      ordered.push(ccaa);
-    }
-  }
-  return ordered.length > 0 ? ordered.join('|') : undefined;
 }
 
 function buildPieSlicePaths(
@@ -120,9 +95,29 @@ function buildPieSlicePaths(
 }
 
 export function Unico5gView() {
-  const navigate = useNavigate();
   const rawSearch = useSearch({ strict: false }) as Record<string, unknown>;
-  const urlSearch = useMemo(() => validateUnico5gSearch(rawSearch), [rawSearch]);
+
+  const [selectedProvs, setSelectedProvs] = useState<Set<string>>(() =>
+    parseProvsParam(validateUnico5gSearch(rawSearch).provs),
+  );
+  const [selectedCcaas, setSelectedCcaas] = useState<Set<string>>(() =>
+    parseCcaasParam(validateUnico5gSearch(rawSearch).ccaas),
+  );
+  const [activeTab, setActiveTab] = useState<UnicoTerritoryTab>(() => {
+    const initial = validateUnico5gSearch(rawSearch);
+    if (initial.tab) return initial.tab;
+    const initCcaas = parseCcaasParam(initial.ccaas);
+    const initProvs = parseProvsParam(initial.provs);
+    return initCcaas.size > 0 && initProvs.size === 0
+      ? 'comunidad'
+      : 'provincia';
+  });
+  const [activeFase, setActiveFase] = useState<UnicoFaseFilter>(
+    () => validateUnico5gSearch(rawSearch).fase ?? 'all',
+  );
+  const [activeBand, setActiveBand] = useState<UnicoDeclaredBandFilter>(
+    () => validateUnico5gSearch(rawSearch).band ?? 'all',
+  );
 
   const {
     dataset,
@@ -138,23 +133,6 @@ export function Unico5gView() {
     document.title =
       'UNICO 5G · Antenas Subvencionadas y Declaradas · RadioMapa España';
   }, []);
-
-  const selectedProvs = useMemo(
-    () => parseProvsParam(urlSearch.provs),
-    [urlSearch.provs],
-  );
-  const selectedCcaas = useMemo(
-    () => parseCcaasParam(urlSearch.ccaas),
-    [urlSearch.ccaas],
-  );
-
-  const activeTab: UnicoTerritoryTab =
-    urlSearch.tab ??
-    (selectedCcaas.size > 0 && selectedProvs.size === 0
-      ? 'comunidad'
-      : 'provincia');
-  const activeFase: UnicoFaseFilter = urlSearch.fase ?? 'all';
-  const activeBand: UnicoDeclaredBandFilter = urlSearch.band ?? 'all';
 
   const summary = useMemo(() => {
     if (!dataset) return null;
@@ -184,103 +162,53 @@ export function Unico5gView() {
     [summary, nonZeroOps],
   );
 
-  function commitSearch(patch: Partial<UnicoRouteSearch>) {
-    const merged: UnicoRouteSearch = {
-      ...urlSearch,
-      ...patch,
-    };
-
-    const clean: UnicoRouteSearch = {};
-    if (merged.tab === 'comunidad') {
-      clean.tab = 'comunidad';
-    }
-    if (merged.fase === '1' || merged.fase === '2') {
-      clean.fase = merged.fase;
-    }
-    if (
-      merged.band === 'N78' ||
-      merged.band === 'N28' ||
-      merged.band === 'N28+'
-    ) {
-      clean.band = merged.band;
-    }
-    if (merged.provs && merged.provs.trim().length > 0) {
-      clean.provs = merged.provs.trim();
-    }
-    if (merged.ccaas && merged.ccaas.trim().length > 0) {
-      clean.ccaas = merged.ccaas.trim();
-    }
-
-    void navigate({
-      to: '/unico-5g',
-      search: clean,
-      replace: true,
-    });
-  }
-
   function handleSelectTab(nextTab: UnicoTerritoryTab) {
     if (nextTab === activeTab) return;
+    setActiveTab(nextTab);
     if (nextTab === 'comunidad') {
-      commitSearch({
-        tab: 'comunidad',
-        provs: undefined,
-      });
+      setSelectedProvs(new Set());
     } else {
-      commitSearch({
-        tab: undefined,
-        ccaas: undefined,
-      });
+      setSelectedCcaas(new Set());
     }
   }
 
   function handleSelectFase(nextFase: UnicoFaseFilter) {
-    commitSearch({
-      fase: nextFase === 'all' ? undefined : nextFase,
-    });
+    setActiveFase(nextFase);
   }
 
   function handleSelectBand(nextBand: UnicoDeclaredBandFilter) {
-    commitSearch({
-      band: nextBand === 'all' ? undefined : nextBand,
-    });
+    setActiveBand(nextBand);
   }
 
   function handleSelectAllProvs() {
-    if (selectedProvs.size === 0) return;
-    commitSearch({ provs: undefined });
+    setSelectedProvs((prev) => (prev.size === 0 ? prev : new Set()));
   }
 
   function toggleProv(prov: string) {
-    const next = new Set(selectedProvs);
-    if (next.has(prov)) {
-      next.delete(prov);
-    } else {
-      next.add(prov);
-    }
-    commitSearch({
-      tab: undefined,
-      provs: serializeProvsParam(next),
+    setSelectedProvs((prev) => {
+      const next = new Set(prev);
+      if (next.has(prov)) {
+        next.delete(prov);
+      } else {
+        next.add(prov);
+      }
+      return next;
     });
   }
 
   function handleSelectAllCcaas() {
-    if (selectedCcaas.size === 0) return;
-    commitSearch({
-      tab: 'comunidad',
-      ccaas: undefined,
-    });
+    setSelectedCcaas((prev) => (prev.size === 0 ? prev : new Set()));
   }
 
   function toggleCcaa(ccaa: string) {
-    const next = new Set(selectedCcaas);
-    if (next.has(ccaa)) {
-      next.delete(ccaa);
-    } else {
-      next.add(ccaa);
-    }
-    commitSearch({
-      tab: 'comunidad',
-      ccaas: serializeCcaasParam(next),
+    setSelectedCcaas((prev) => {
+      const next = new Set(prev);
+      if (next.has(ccaa)) {
+        next.delete(ccaa);
+      } else {
+        next.add(ccaa);
+      }
+      return next;
     });
   }
 

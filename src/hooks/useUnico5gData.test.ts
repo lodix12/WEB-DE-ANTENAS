@@ -820,5 +820,17 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(html).not.toMatch(/operador líder/i);
     expect(html).not.toMatch(/id de propietario/i);
     expect(html).not.toMatch(/código de emplazamiento/i);
+
+    // Garantizar que los filtros actualizan estado local sin navegar ni desplazar el scroll de la página
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const viewSource = readFileSync(
+      new URL('../views/Unico5gView.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(viewSource).not.toMatch(/\buseNavigate\b/);
+    expect(viewSource).not.toMatch(/\bscrollTo\b|\bscrollIntoView\b/);
   });
 });
