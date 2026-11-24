@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import math
+import os
 from pathlib import Path
 import re
 import unicodedata
@@ -36,6 +38,46 @@ OPERATOR_LABELS: dict[str, str] = {
     "movistar": "Telefonica",
     "orange": "Orange",
     "vodafone": "Vodafone",
+}
+
+UNICO_MAX_MATCH_DISTANCE_KM = 1.0
+EARTH_RADIUS_KM = 6371.0088
+DEG_TO_RAD = math.pi / 180.0
+GRID_CELL_DEG = 0.02
+
+BIT_N28 = 1 << 0
+BIT_N28_PLUS = 1 << 1
+BIT_B20 = 1 << 2
+BIT_G9 = 1 << 3
+BIT_B3 = 1 << 4
+BIT_B1 = 1 << 5
+BIT_B38 = 1 << 6
+BIT_B7 = 1 << 7
+BIT_B7_PLUS = 1 << 8
+BIT_N78 = 1 << 9
+BIT_N258 = 1 << 10
+BIT_SAW_2600_RANGE = 1 << 11
+BIT_SAW_700_RANGE = 1 << 12
+BIT_EXPLICIT_N28_CODE = 1 << 13
+RF_BAND_BITS_MASK = 0x7FF
+UNICO_DECLARED_ANY_MASK = BIT_N28 | BIT_N28_PLUS | BIT_N78
+
+FREQ_NUM_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?", re.ASCII)
+GHZ_UNIT_RE = re.compile(r"ghz", re.IGNORECASE)
+PLUS_COLLAPSE_RE = re.compile(r"\s*\+\s*")
+
+DIRECT_BAND_CODE_BITS: dict[str, int] = {
+    "n258": BIT_N258,
+    "n78": BIT_N78,
+    "b7+": BIT_B7_PLUS,
+    "b7": BIT_B7,
+    "b38": BIT_B38,
+    "b1": BIT_B1,
+    "b3": BIT_B3,
+    "g9": BIT_G9,
+    "b20": BIT_B20,
+    "n28+": BIT_N28_PLUS,
+    "n28": BIT_N28 | BIT_EXPLICIT_N28_CODE,
 }
 
 CANONICAL_PROVINCE_TO_CCAA: dict[str, str] = {
@@ -464,7 +506,432 @@ def build_unico_5g_dataset(
     }
 
 
-def main() -> None:
+def lookup_direct_band_code_bits(trimmed: str) -> int | None:
+    lower = trimmed.lower()
+    direct = DIRECT_BAND_CODE_BITS.get(lower)
+    if direct is not None:
+        return direct
+    if "+" in lower:
+        return DIRECT_BAND_CODE_BITS.get(PLUS_COLLAPSE_RE.sub("+", lower))
+    return None
+
+
+def parse_decimal_token(token: str) -> float:
+    return float(token.replace(",", ".")) if "," in token else float(token)
+
+
+def classify_frequency_range_bits(raw: str) -> int:
+    """Espejo exacto de `classifyFrequencyRangeBits` en `src/hooks/useAntenasData.ts`."""
+    if not isinstance(raw, str):
+        return 0
+    trimmed = raw.strip()
+    if not trimmed:
+        return 0
+    direct_bit = lookup_direct_band_code_bits(trimmed)
+    if direct_bit is not None:
+        return direct_bit
+
+    m1 = FREQ_NUM_TOKEN_RE.search(trimmed)
+    if m1 is None:
+        return 0
+    m2 = FREQ_NUM_TOKEN_RE.search(trimmed, m1.end())
+    a = parse_decimal_token(m1.group(0))
+    b = parse_decimal_token(m2.group(0)) if m2 is not None else a
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return 0
+
+    lo, hi = (a, b) if a <= b else (b, a)
+    if GHZ_UNIT_RE.search(trimmed) and hi < 1000:
+        lo *= 1000.0
+        hi *= 1000.0
+
+    if (24 <= lo and hi <= 29.5) or (24000 <= lo and hi <= 29500):
+        return BIT_N258
+    if 3300 <= lo and hi <= 3900:
+        return BIT_N78
+    if 2490 <= lo and hi <= 2700:
+        if (
+            m2 is not None
+            and 2679.5 <= lo <= 2680.5
+            and 2689.5 <= hi <= 2690.5
+        ):
+            return BIT_B7_PLUS | BIT_SAW_2600_RANGE
+        if (
+            (m2 is not None and 2570 <= lo and hi <= 2620)
+            or (m2 is None and lo > 2570 and hi < 2620 and lo != 2600)
+        ):
+            return BIT_B38 | BIT_SAW_2600_RANGE
+        return BIT_B7 | BIT_SAW_2600_RANGE
+    if 1900 <= lo and hi <= 2170:
+        return BIT_B1
+    if 1710 <= lo and hi <= 1880:
+        return BIT_B3
+    if 880 <= lo and hi <= 960:
+        return BIT_G9
+    if 791 <= lo and hi <= 862:
+        return BIT_B20
+    if 698 <= lo and hi <= 788:
+        if (
+            m2 is not None
+            and 757.5 <= lo <= 758.5
+            and 787.5 <= hi <= 788.5
+        ):
+            return BIT_N28_PLUS | BIT_SAW_700_RANGE
+        return BIT_N28 | BIT_SAW_700_RANGE
+    return 0
+
+
+def classify_commercial_band_label_bits(
+    raw_label: str,
+    saw_2600_range: bool,
+    saw_700_range: bool,
+) -> int:
+    """Espejo exacto de `classifyCommercialBandLabelBits` en `src/hooks/useAntenasData.ts`."""
+    if not isinstance(raw_label, str):
+        return 0
+    trimmed = raw_label.strip()
+    if not trimmed:
+        return 0
+    direct_bit = lookup_direct_band_code_bits(trimmed)
+    if direct_bit is not None:
+        return direct_bit
+
+    m1 = FREQ_NUM_TOKEN_RE.search(trimmed)
+    if m1 is None:
+        return 0
+    m2 = FREQ_NUM_TOKEN_RE.search(trimmed, m1.end())
+    if m2 is not None:
+        return classify_frequency_range_bits(trimmed)
+
+    val = parse_decimal_token(m1.group(0))
+    if not math.isfinite(val):
+        return 0
+    if GHZ_UNIT_RE.search(trimmed) and val < 1000:
+        val *= 1000.0
+
+    if (24 <= val <= 29.5) or (24000 <= val <= 29500):
+        return BIT_N258
+    if 3300 <= val <= 3900:
+        return BIT_N78
+    if 2490 <= val <= 2700:
+        if 2570 < val < 2620 and val != 2600:
+            return BIT_B38
+        return 0 if saw_2600_range else BIT_B7
+    if 1900 <= val <= 2170:
+        return BIT_B1
+    if 1710 <= val <= 1880:
+        return BIT_B3
+    if 880 <= val <= 960:
+        return BIT_G9
+    if 791 <= val <= 862:
+        return BIT_B20
+    if 698 <= val <= 788:
+        return 0 if saw_700_range else BIT_N28
+    return 0
+
+
+def compute_antenna_rf_band_mask(ant: dict[str, Any]) -> int:
+    """Espejo exacto bit a bit de `computeAntennaRfBandMask` en `src/hooks/useAntenasData.ts`."""
+    frecuencias = ant.get("frecuencias")
+    concesiones = ant.get("concesiones")
+    bandas = ant.get("bandas")
+    if (
+        (not isinstance(frecuencias, list) or len(frecuencias) == 0)
+        and (not isinstance(concesiones, list) or len(concesiones) == 0)
+        and (not isinstance(bandas, list) or len(bandas) == 0)
+    ):
+        return 0
+
+    mask = 0
+    if isinstance(frecuencias, list):
+        for freq in frecuencias:
+            if isinstance(freq, str):
+                mask |= classify_frequency_range_bits(freq)
+    if isinstance(concesiones, list):
+        for item in concesiones:
+            if isinstance(item, dict):
+                freq = item.get("freq")
+                if isinstance(freq, str):
+                    mask |= classify_frequency_range_bits(freq)
+    if (mask & BIT_N28_PLUS) != 0 and (mask & BIT_EXPLICIT_N28_CODE) == 0:
+        mask &= ~BIT_N28
+    if isinstance(bandas, list):
+        saw_2600_range = (mask & BIT_SAW_2600_RANGE) != 0
+        saw_700_range = (mask & BIT_SAW_700_RANGE) != 0
+        for label in bandas:
+            if isinstance(label, str):
+                mask |= classify_commercial_band_label_bits(
+                    label,
+                    saw_2600_range,
+                    saw_700_range,
+                )
+        if (mask & BIT_N28_PLUS) != 0 and (mask & BIT_EXPLICIT_N28_CODE) == 0:
+            mask &= ~BIT_N28
+
+    return mask & RF_BAND_BITS_MASK
+
+
+def compute_antenna_unico_5g_mask(ant: dict[str, Any]) -> int:
+    """Devuelve únicamente la máscara de bandas 5G relevantes para UNICO (`N28`, `N28+`, `N78`)."""
+    return compute_antenna_rf_band_mask(ant) & UNICO_DECLARED_ANY_MASK
+
+
+def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distancia geodésica Haversine en kilómetros idéntica a `src/utils/geo.ts`."""
+    d_lat = (lat2 - lat1) * DEG_TO_RAD
+    d_lon = (lon2 - lon1) * DEG_TO_RAD
+    sin_dlat = math.sin(d_lat / 2.0)
+    sin_dlon = math.sin(d_lon / 2.0)
+    a = (
+        sin_dlat * sin_dlat
+        + math.cos(lat1 * DEG_TO_RAD) * math.cos(lat2 * DEG_TO_RAD) * sin_dlon * sin_dlon
+    )
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+    return EARTH_RADIUS_KM * c
+
+
+def resolve_real_station_unico_op(ant: dict[str, Any]) -> str | None:
+    """Resuelve el operador UNICO 5G de una estación real de `antenas.json`."""
+    op = ant.get("op")
+    if op == "movistar":
+        return "movistar"
+    if op == "vodafone":
+        return "vodafone"
+    if op in ("orange", "masmovil"):
+        return "orange"
+    op_raw = str(ant.get("opRaw") or "").upper()
+    if "AVATEL" in op_raw:
+        return "orange"
+    return None
+
+
+def match_unico_declared_antennas_masks(
+    unico_antenas: list[dict[str, Any]],
+    real_antenas: list[dict[str, Any]],
+) -> list[int]:
+    """
+    Para cada coordenada oficial UNICO 5G de cada operadora, busca la antena real
+    de esa misma operadora más próxima en un radio máximo de 1.000 metros (1,0 km).
+    Espejo bit a bit de `matchUnicoDeclaredAntennasMasks` en `src/hooks/useUnico5gData.ts`.
+    """
+    n_unico = len(unico_antenas)
+    result = [0] * n_unico
+    if n_unico == 0 or not real_antenas:
+        return result
+
+    spatial_buckets: dict[str, dict[int, list[tuple[float, float, int]]]] = {
+        op_key: {} for op_key in OPERATOR_ORDER
+    }
+
+    for ant in real_antenas:
+        if not isinstance(ant, dict):
+            continue
+        target_op = resolve_real_station_unico_op(ant)
+        if not target_op:
+            continue
+
+        raw_lat = ant.get("lat")
+        raw_lon = ant.get("lon")
+        if raw_lat is None or raw_lon is None:
+            continue
+        try:
+            lat = float(raw_lat)
+            lon = float(raw_lon)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+
+        declared_bits = compute_antenna_unico_5g_mask(ant)
+        gx = math.floor(lat / GRID_CELL_DEG)
+        gy = math.floor(lon / GRID_CELL_DEG)
+        cell_key = (gx + 10000) * 100000 + (gy + 20000)
+        map_for_op = spatial_buckets[target_op]
+        bucket = map_for_op.get(cell_key)
+        if bucket is None:
+            map_for_op[cell_key] = [(lat, lon, declared_bits)]
+        else:
+            bucket.append((lat, lon, declared_bits))
+
+    max_dist_km = UNICO_MAX_MATCH_DISTANCE_KM
+    init_best_dist = max_dist_km + 1e-9
+
+    for i, u in enumerate(unico_antenas):
+        map_for_op = spatial_buckets.get(str(u.get("op") or ""))
+        if not map_for_op:
+            continue
+        u_lat = float(u["lat"])
+        u_lon = float(u["lon"])
+        gx = math.floor(u_lat / GRID_CELL_DEG)
+        gy = math.floor(u_lon / GRID_CELL_DEG)
+
+        best_dist_km = init_best_dist
+        best_bits = 0
+        found_best = False
+
+        for dx in (-1, 0, 1):
+            row_base = (gx + dx + 10000) * 100000
+            for dy in (-1, 0, 1):
+                bucket = map_for_op.get(row_base + (gy + dy + 20000))
+                if not bucket:
+                    continue
+                for cand_lat, cand_lon, cand_bits in bucket:
+                    dist_km = haversine_distance_km(u_lat, u_lon, cand_lat, cand_lon)
+                    if dist_km <= max_dist_km and dist_km < best_dist_km:
+                        best_dist_km = dist_km
+                        best_bits = cand_bits
+                        found_best = True
+
+        if found_best and best_bits != 0:
+            result[i] = best_bits
+
+    return result
+
+
+def compute_declared_summary(
+    unico_antenas: list[dict[str, Any]],
+    declared_masks: list[int],
+) -> dict[str, Any]:
+    """Calcula el resumen global, por banda y por operador de declaraciones UNICO 5G."""
+    by_operator: dict[str, dict[str, int]] = {
+        op_key: {
+            "total": 0,
+            "declared": 0,
+            "N78": 0,
+            "N28": 0,
+            "N28+": 0,
+        }
+        for op_key in OPERATOR_ORDER
+    }
+
+    total_declared = 0
+    total_n78 = 0
+    total_n28 = 0
+    total_n28_plus = 0
+
+    for i, rec in enumerate(unico_antenas):
+        op_key = str(rec.get("op") or "")
+        op_stats = by_operator.get(op_key)
+        if op_stats is not None:
+            op_stats["total"] += 1
+
+        mask = declared_masks[i] if i < len(declared_masks) else 0
+        if (mask & UNICO_DECLARED_ANY_MASK) != 0:
+            total_declared += 1
+            if op_stats is not None:
+                op_stats["declared"] += 1
+        if (mask & BIT_N78) != 0:
+            total_n78 += 1
+            if op_stats is not None:
+                op_stats["N78"] += 1
+        if (mask & BIT_N28) != 0:
+            total_n28 += 1
+            if op_stats is not None:
+                op_stats["N28"] += 1
+        if (mask & BIT_N28_PLUS) != 0:
+            total_n28_plus += 1
+            if op_stats is not None:
+                op_stats["N28+"] += 1
+
+    return {
+        "total": len(unico_antenas),
+        "declared": total_declared,
+        "byBand": {
+            "all": total_declared,
+            "N78": total_n78,
+            "N28": total_n28,
+            "N28+": total_n28_plus,
+        },
+        "byOperator": by_operator,
+    }
+
+
+def apply_unico_declarations(
+    unico_dataset: dict[str, Any],
+    antenas_dataset: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Devuelve una copia actualizada de `unico_dataset` con `declaredUpdatedAt`,
+    `declaredMasks` y `declaredSummary` calculados frente a `antenas_dataset`.
+    """
+    unico_antenas = unico_dataset.get("antenas") or []
+    real_antenas = antenas_dataset.get("antenas") or []
+    declared_masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
+    declared_summary = compute_declared_summary(unico_antenas, declared_masks)
+
+    raw_updated_at = antenas_dataset.get("updatedAt")
+    declared_updated_at = (
+        raw_updated_at.strip()
+        if isinstance(raw_updated_at, str) and raw_updated_at.strip()
+        else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+
+    updated: dict[str, Any] = {
+        k: v
+        for k, v in unico_dataset.items()
+        if k not in ("declaredUpdatedAt", "declaredSummary", "declaredMasks", "antenas")
+    }
+    updated["declaredUpdatedAt"] = declared_updated_at
+    updated["declaredSummary"] = declared_summary
+    updated["declaredMasks"] = declared_masks
+    updated["antenas"] = unico_antenas
+    return updated
+
+
+def _write_compact_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    tmp_path.write_bytes(encoded)
+    os.replace(tmp_path, path)
+
+
+def sync_unico_5g_declarations_file(
+    unico_path: Path,
+    antenas_source: Path | dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Carga `unico_path`, calcula declaraciones 5G frente a `antenas_source` (ruta o dict en memoria),
+    escribe el JSON compacto de forma atómica y devuelve el dataset actualizado.
+    """
+    target_path = Path(unico_path)
+    unico_dataset = json.loads(target_path.read_text(encoding="utf-8"))
+    if isinstance(antenas_source, (Path, str)):
+        antenas_dataset = json.loads(Path(antenas_source).read_text(encoding="utf-8"))
+    else:
+        antenas_dataset = antenas_source
+
+    updated = apply_unico_declarations(unico_dataset, antenas_dataset)
+    _write_compact_json_atomic(target_path, updated)
+    return updated
+
+
+def _print_declared_summary(dataset: dict[str, Any]) -> None:
+    summary = dataset.get("declaredSummary")
+    if not isinstance(summary, dict):
+        return
+    total = int(summary.get("total") or 0)
+    declared = int(summary.get("declared") or 0)
+    pct_total = (declared / total * 100.0) if total else 0.0
+    by_band = summary.get("byBand") or {}
+    print(
+        f"Declaradas 5G (<= 1,0 km): {declared}/{total} ({pct_total:.2f}%) "
+        f"[N78={by_band.get('N78', 0)}, N28={by_band.get('N28', 0)}, N28+={by_band.get('N28+', 0)}] · "
+        f"antenasUpdatedAt={dataset.get('declaredUpdatedAt', '')}"
+    )
+    by_operator = summary.get("byOperator") or {}
+    for op_key in OPERATOR_ORDER:
+        op_stat = by_operator.get(op_key) or {}
+        op_total = int(op_stat.get("total") or 0)
+        op_decl = int(op_stat.get("declared") or 0)
+        op_pct = (op_decl / op_total * 100.0) if op_total else 0.0
+        print(
+            f"  - {OPERATOR_LABELS[op_key]}: {op_decl}/{op_total} ({op_pct:.2f}%) "
+            f"[N78={op_stat.get('N78', 0)}, N28={op_stat.get('N28', 0)}, N28+={op_stat.get('N28+', 0)}]"
+        )
+
+
+def main(argv: list[str] | None = None) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description="Construye public/data/unico-5g.json")
     parser.add_argument(
@@ -487,18 +954,44 @@ def main() -> None:
         type=Path,
         default=repo_root / "public" / "data" / "unico-5g.json",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--antenas",
+        type=Path,
+        default=repo_root / "public" / "data" / "antenas.json",
+        help="Dataset de antenas reales para sincronizar declaraciones automáticamente tras construir desde Excel.",
+    )
+    parser.add_argument(
+        "--sync-antenas",
+        type=Path,
+        default=None,
+        help="Sincroniza las declaraciones 5G en --unico-file frente al archivo antenas.json indicado sin requerir Excels.",
+    )
+    parser.add_argument(
+        "--unico-file",
+        type=Path,
+        default=repo_root / "public" / "data" / "unico-5g.json",
+        help="Ruta del archivo unico-5g.json usado con --sync-antenas.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.sync_antenas is not None:
+        updated = sync_unico_5g_declarations_file(args.unico_file, args.sync_antenas)
+        print(
+            f"Sincronizado {args.unico_file} ({args.unico_file.stat().st_size / 1024:.1f} KB)"
+        )
+        _print_declared_summary(updated)
+        return
 
     dataset = build_unico_5g_dataset(
         fase1_path=args.fase1,
         fase2_path=args.fase2,
         ine_municipios_path=args.ine,
     )
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(
-        json.dumps(dataset, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    if args.antenas is not None and args.antenas.exists():
+        antenas_dataset = json.loads(args.antenas.read_text(encoding="utf-8"))
+        dataset = apply_unico_declarations(dataset, antenas_dataset)
+
+    _write_compact_json_atomic(args.out, dataset)
     print(
         f"Generado {args.out} ({args.out.stat().st_size / 1024:.1f} KB) · "
         f"Total={dataset['total']} (Fase 1={dataset['fase1Total']}, Fase 2={dataset['fase2Total']})"
@@ -510,6 +1003,8 @@ def main() -> None:
             f"  - {op_info['label']}: {op_info['total']} ({pct:.2f}%) "
             f"[F1={op_info['fase1']}, F2={op_info['fase2']}]"
         )
+    if "declaredSummary" in dataset:
+        _print_declared_summary(dataset)
 
 
 if __name__ == "__main__":

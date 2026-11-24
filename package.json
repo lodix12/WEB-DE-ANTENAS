@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "update:antenas": "python3 scripts/fetch_antenas.py",
-    "update:unico5g": "python3 scripts/build_unico_5g.py"
+    "update:unico5g": "python3 scripts/build_unico_5g.py",
+    "sync:unico5g": "python3 scripts/build_unico_5g.py --sync-antenas public/data/antenas.json --unico-file public/data/unico-5g.json"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.107.1",

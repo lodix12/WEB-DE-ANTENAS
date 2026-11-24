@@ -82,16 +82,39 @@ export interface UnicoOperatorDatasetSummary {
   entities: UnicoEntityBreakdown[];
 }
 
+export interface UnicoDeclaredOperatorSummary {
+  total: number;
+  declared: number;
+  N78: number;
+  N28: number;
+  'N28+': number;
+}
+
+export interface UnicoDeclaredSummary {
+  total: number;
+  declared: number;
+  byBand: {
+    all: number;
+    N78: number;
+    N28: number;
+    'N28+': number;
+  };
+  byOperator: Record<UnicoOperatorKey, UnicoDeclaredOperatorSummary>;
+}
+
 export interface UnicoDataset {
   schemaVersion: number;
   program: string;
   updatedAt: string;
+  declaredUpdatedAt?: string;
   total: number;
   fase1Total: number;
   fase2Total: number;
   fase2ProjectsTotal: number;
   operators: Record<UnicoOperatorKey, UnicoOperatorDatasetSummary>;
   antenas: UnicoAntennaRecord[];
+  declaredMasks?: number[];
+  declaredSummary?: UnicoDeclaredSummary;
 }
 
 export interface UnicoOperatorCountStat {

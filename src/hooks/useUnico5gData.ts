@@ -7,6 +7,8 @@ import {
   type UnicoAntennaRecord,
   type UnicoDataset,
   type UnicoDeclaredBandFilter,
+  type UnicoDeclaredOperatorSummary,
+  type UnicoDeclaredSummary,
   type UnicoEntityBreakdown,
   type UnicoFase,
   type UnicoFaseFilter,
@@ -18,7 +20,11 @@ import {
 } from '../types/unico5g';
 import { normalizeSearchText } from '../utils/export';
 import { haversineDistanceKm } from '../utils/geo';
-import { computeAntennaRfBandMask, useAntenasData } from './useAntenasData';
+import {
+  computeAntennaRfBandMask,
+  useAntenasData,
+  type DerivedAntenasStructures,
+} from './useAntenasData';
 
 const VALID_UNICO_OPERATORS = new Set<string>(UNICO_OPERATOR_ORDER);
 
@@ -159,6 +165,87 @@ export function normalizeUnicoOperatorInput(raw: string): UnicoOperatorKey {
   return 'orange';
 }
 
+function isValidNonNegativeInt(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0
+  );
+}
+
+function parseOptionalDeclaredSummary(
+  raw: unknown,
+): UnicoDeclaredSummary | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (
+    !isValidNonNegativeInt(obj.total) ||
+    !isValidNonNegativeInt(obj.declared) ||
+    !obj.byBand ||
+    typeof obj.byBand !== 'object' ||
+    Array.isArray(obj.byBand) ||
+    !obj.byOperator ||
+    typeof obj.byOperator !== 'object' ||
+    Array.isArray(obj.byOperator)
+  ) {
+    return undefined;
+  }
+
+  const rawByBand = obj.byBand as Record<string, unknown>;
+  if (
+    !isValidNonNegativeInt(rawByBand.all) ||
+    !isValidNonNegativeInt(rawByBand.N78) ||
+    !isValidNonNegativeInt(rawByBand.N28) ||
+    !isValidNonNegativeInt(rawByBand['N28+'])
+  ) {
+    return undefined;
+  }
+
+  const rawByOp = obj.byOperator as Record<string, unknown>;
+  const byOperator = {} as Record<
+    UnicoOperatorKey,
+    UnicoDeclaredOperatorSummary
+  >;
+  for (const opKey of UNICO_OPERATOR_ORDER) {
+    const opRaw = rawByOp[opKey];
+    if (!opRaw || typeof opRaw !== 'object' || Array.isArray(opRaw)) {
+      return undefined;
+    }
+    const opObj = opRaw as Record<string, unknown>;
+    if (
+      !isValidNonNegativeInt(opObj.total) ||
+      !isValidNonNegativeInt(opObj.declared) ||
+      !isValidNonNegativeInt(opObj.N78) ||
+      !isValidNonNegativeInt(opObj.N28) ||
+      !isValidNonNegativeInt(opObj['N28+'])
+    ) {
+      return undefined;
+    }
+    byOperator[opKey] = {
+      total: opObj.total,
+      declared: opObj.declared,
+      N78: opObj.N78,
+      N28: opObj.N28,
+      'N28+': opObj['N28+'],
+    };
+  }
+
+  return {
+    total: obj.total,
+    declared: obj.declared,
+    byBand: {
+      all: rawByBand.all,
+      N78: rawByBand.N78,
+      N28: rawByBand.N28,
+      'N28+': rawByBand['N28+'],
+    },
+    byOperator,
+  };
+}
+
 export function parseCustomUnico5gJson(raw: unknown): UnicoDataset {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('El dataset UNICO 5G no es un objeto JSON válido.');
@@ -267,12 +354,42 @@ export function parseCustomUnico5gJson(raw: unknown): UnicoDataset {
     };
   }
 
+  const declaredUpdatedAt =
+    typeof obj.declaredUpdatedAt === 'string' &&
+    obj.declaredUpdatedAt.trim().length > 0
+      ? obj.declaredUpdatedAt.trim()
+      : undefined;
+
+  let declaredMasks: number[] | undefined;
+  if (
+    Array.isArray(obj.declaredMasks) &&
+    obj.declaredMasks.length === antenas.length
+  ) {
+    const rawMasks = obj.declaredMasks as unknown[];
+    const parsedMasks: number[] = new Array(rawMasks.length);
+    let masksValid = true;
+    for (let i = 0; i < rawMasks.length; i++) {
+      const value = rawMasks[i];
+      if (!isValidNonNegativeInt(value)) {
+        masksValid = false;
+        break;
+      }
+      parsedMasks[i] = value & UNICO_DECLARED_ANY_MASK;
+    }
+    if (masksValid) {
+      declaredMasks = parsedMasks;
+    }
+  }
+
+  const declaredSummary = parseOptionalDeclaredSummary(obj.declaredSummary);
+
   return {
     schemaVersion: typeof obj.schemaVersion === 'number' ? obj.schemaVersion : 1,
     program:
       typeof obj.program === 'string' ? obj.program : 'UNICO 5G Redes Activas',
     updatedAt:
       typeof obj.updatedAt === 'string' ? obj.updatedAt : new Date().toISOString(),
+    ...(declaredUpdatedAt !== undefined ? { declaredUpdatedAt } : {}),
     total: antenas.length,
     fase1Total: fase1Count,
     fase2Total: fase2Count,
@@ -280,6 +397,8 @@ export function parseCustomUnico5gJson(raw: unknown): UnicoDataset {
       typeof obj.fase2ProjectsTotal === 'number' ? obj.fase2ProjectsTotal : 73,
     operators,
     antenas,
+    ...(declaredMasks !== undefined ? { declaredMasks } : {}),
+    ...(declaredSummary !== undefined ? { declaredSummary } : {}),
   };
 }
 
@@ -506,9 +625,12 @@ export function computeUnicoSimpleSummary(
 
 export const UNICO_5G_QUERY_KEY = ['unico-5g-dataset'] as const;
 
-async function fetchUnico5gDataset(): Promise<UnicoDataset> {
-  const response = await fetch('./data/unico-5g.json', {
+export async function importUnico5gJsonDataset(): Promise<UnicoDataset> {
+  const baseUrl = import.meta.env.BASE_URL || './';
+  const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const response = await fetch(`${normalizedBase}data/unico-5g.json`, {
     headers: { Accept: 'application/json' },
+    cache: 'no-cache',
   });
   if (!response.ok) {
     throw new Error(
@@ -519,31 +641,101 @@ async function fetchUnico5gDataset(): Promise<UnicoDataset> {
   return parseCustomUnico5gJson(raw);
 }
 
+export function selectEffectiveUnicoDeclaredMasks(params: {
+  unicoDataset: UnicoDataset | null | undefined;
+  persistedMasks: Uint16Array | null;
+  antenasDerived: Pick<
+    DerivedAntenasStructures,
+    'dataset' | 'bandCodeMasks'
+  > | null;
+  isAntenasFetching: boolean;
+}): Uint16Array | null {
+  const { unicoDataset, persistedMasks, antenasDerived, isAntenasFetching } =
+    params;
+
+  if (!unicoDataset) {
+    return null;
+  }
+
+  const validPersistedMasks =
+    persistedMasks && persistedMasks.length === unicoDataset.antenas.length
+      ? persistedMasks
+      : null;
+
+  if (!antenasDerived) {
+    return validPersistedMasks;
+  }
+
+  if (
+    isAntenasFetching &&
+    validPersistedMasks &&
+    unicoDataset.declaredUpdatedAt
+  ) {
+    const persistedMs = Date.parse(unicoDataset.declaredUpdatedAt);
+    const antenasMs = Date.parse(antenasDerived.dataset.updatedAt);
+    if (
+      Number.isFinite(persistedMs) &&
+      (!Number.isFinite(antenasMs) || persistedMs > antenasMs)
+    ) {
+      return validPersistedMasks;
+    }
+  }
+
+  return matchUnicoDeclaredAntennasMasks(
+    unicoDataset.antenas,
+    antenasDerived.dataset.antenas,
+    antenasDerived.bandCodeMasks,
+  );
+}
+
 export function useUnico5gData() {
   const query = useQuery({
     queryKey: UNICO_5G_QUERY_KEY,
-    queryFn: fetchUnico5gDataset,
+    queryFn: importUnico5gJsonDataset,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: 2,
   });
 
   const {
     derived: antenasDerived,
     isLoading: isAntenasLoading,
+    isFetching: isAntenasFetching,
   } = useAntenasData();
 
-  const declaredMasks = useMemo(() => {
-    if (!query.data || !antenasDerived) {
+  const persistedMasks = useMemo(() => {
+    const data = query.data;
+    if (
+      !data?.declaredMasks ||
+      data.declaredMasks.length !== data.antenas.length
+    ) {
       return null;
     }
-    return matchUnicoDeclaredAntennasMasks(
-      query.data.antenas,
-      antenasDerived.dataset.antenas,
-      antenasDerived.bandCodeMasks,
-    );
-  }, [query.data, antenasDerived]);
+    const masks = new Uint16Array(data.declaredMasks.length);
+    for (let i = 0; i < data.declaredMasks.length; i++) {
+      masks[i] = data.declaredMasks[i] & UNICO_DECLARED_ANY_MASK;
+    }
+    return masks;
+  }, [query.data]);
+
+  const declaredMasks = useMemo(
+    () =>
+      selectEffectiveUnicoDeclaredMasks({
+        unicoDataset: query.data,
+        persistedMasks,
+        antenasDerived,
+        isAntenasFetching,
+      }),
+    [query.data, persistedMasks, antenasDerived, isAntenasFetching],
+  );
 
   return {
     dataset: query.data ?? null,
     declaredMasks,
+    declaredUpdatedAt:
+      antenasDerived?.dataset.updatedAt ??
+      query.data?.declaredUpdatedAt ??
+      null,
     isDeclaredReady: declaredMasks !== null,
     isAntenasLoading,
     isLoading: query.isLoading,

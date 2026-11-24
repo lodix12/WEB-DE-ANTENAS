@@ -128,6 +128,7 @@ jobs:
             --novedades-mode append \
             --eliminaciones-output public/data/eliminaciones.json \
             --eliminaciones-mode append \
+            --unico-output public/data/unico-5g.json \
             --scan-id "$SCAN_ID" \
             --status-output /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
@@ -154,7 +155,7 @@ jobs:
 
           PUSHED="false"
           for ATTEMPT in 1 2 3; do
-            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json 2>/dev/null || true
+            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json public/data/unico-5g.json 2>/dev/null || true
             git fetch --depth=1 origin main
             git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
@@ -168,9 +169,14 @@ jobs:
                 --merge-eliminaciones-from /tmp/scan-commit-backup/eliminaciones.json \
                 --eliminaciones-output public/data/eliminaciones.json
             fi
-            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json
+            if [ -f public/data/unico-5g.json ]; then
+              python3 scripts/build_unico_5g.py \
+                --sync-antenas public/data/antenas.json \
+                --unico-file public/data/unico-5g.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json public/data/unico-5g.json
             if git diff --cached --quiet; then
-              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json ni public/data/eliminaciones.json"
+              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json, public/data/eliminaciones.json ni public/data/unico-5g.json"
               PUSHED="true"
               break
             fi
@@ -302,6 +308,7 @@ jobs:
             --novedades-mode append \
             --eliminaciones-output public/data/eliminaciones.json \
             --eliminaciones-mode append \
+            --unico-output public/data/unico-5g.json \
             --scan-id "$SCAN_ID" \
             --status-output /tmp/scan-live/scan-status.json \
             --live-dir /tmp/scan-live \
@@ -328,7 +335,7 @@ jobs:
 
           PUSHED="false"
           for ATTEMPT in 1 2 3; do
-            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json 2>/dev/null || true
+            git checkout -- public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json public/data/unico-5g.json 2>/dev/null || true
             git fetch --depth=1 origin main
             git reset --hard origin/main
             cp -f /tmp/scan-commit-backup/antenas.json public/data/antenas.json
@@ -342,9 +349,14 @@ jobs:
                 --merge-eliminaciones-from /tmp/scan-commit-backup/eliminaciones.json \
                 --eliminaciones-output public/data/eliminaciones.json
             fi
-            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json
+            if [ -f public/data/unico-5g.json ]; then
+              python3 scripts/build_unico_5g.py \
+                --sync-antenas public/data/antenas.json \
+                --unico-file public/data/unico-5g.json
+            fi
+            git add public/data/antenas.json public/data/novedades.json public/data/eliminaciones.json public/data/unico-5g.json
             if git diff --cached --quiet; then
-              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json ni public/data/eliminaciones.json"
+              echo "Sin cambios en public/data/antenas.json, public/data/novedades.json, public/data/eliminaciones.json ni public/data/unico-5g.json"
               PUSHED="true"
               break
             fi

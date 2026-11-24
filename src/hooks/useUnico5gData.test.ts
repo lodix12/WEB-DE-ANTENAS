@@ -11,7 +11,11 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { AppHeader } from '../components/ui/AppHeader';
-import type { AntenasDataset, AntennaRecord } from '../types/antena';
+import type {
+  AntenasDataset,
+  AntennaRecord,
+  LiveBandPatch,
+} from '../types/antena';
 import {
   UNICO_DECLARED_BAND_TABS,
   UNICO_OPERATOR_ORDER,
@@ -22,8 +26,10 @@ import { Unico5gView } from '../views/Unico5gView';
 import { WorkspaceProvider } from './WorkspaceProvider';
 import {
   buildDerivedAntenasStructures,
+  mergeLiveDeltaIntoAntenasDataset,
   parseCustomAntenasJson,
 } from './useAntenasData';
+import type { LiveScanMergedDelta } from './useScanProgress';
 import {
   UNICO_5G_QUERY_KEY,
   UNICO_BIT_N28,
@@ -41,17 +47,20 @@ import {
   matchUnicoDeclaredAntennasMasks,
   normalizeUnicoOperatorInput,
   parseCustomUnico5gJson,
+  selectEffectiveUnicoDeclaredMasks,
   validateUnico5gSearch,
 } from './useUnico5gData';
 
-async function readDiskJsonFile(relativeUrlPath: string): Promise<unknown> {
+async function readDiskTextFile(relativeUrlPath: string): Promise<string> {
   const fsSpecifier = 'node:fs';
   const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
     readFileSync: (path: URL, encoding: string) => string;
   };
-  return JSON.parse(
-    readFileSync(new URL(relativeUrlPath, import.meta.url), 'utf-8'),
-  ) as unknown;
+  return readFileSync(new URL(relativeUrlPath, import.meta.url), 'utf-8');
+}
+
+async function readDiskJsonFile(relativeUrlPath: string): Promise<unknown> {
+  return JSON.parse(await readDiskTextFile(relativeUrlPath)) as unknown;
 }
 
 let cachedUnicoDataset: UnicoDataset | null = null;
@@ -96,6 +105,81 @@ function makeRealAntenna(
     dir: 'CL PRUEBA 1',
     mun: 'MADRID',
     prov: 'MADRID',
+    ...overrides,
+  };
+}
+
+function makeSyntheticAntenasDataset(
+  antenas: AntennaRecord[],
+  updatedAt = '2026-11-24T17:00:00Z',
+): AntenasDataset {
+  return {
+    updatedAt,
+    sourceUrl: 'https://geoportal.minetur.gob.es/VCTEL/vcne.do',
+    total: antenas.length,
+    crawlStats: {
+      requestsCount: 1,
+      durationSeconds: 1,
+      gridBoxesVisited: 1,
+      subdividedBoxes: 0,
+      zoomParam: 7,
+      delaySeconds: 0.02,
+      bandsPopulatedCount: antenas.filter((a) => Array.isArray(a.bandas))
+        .length,
+    },
+    operators: {
+      movistar: {
+        key: 'movistar',
+        name: 'Movistar (Telefónica)',
+        count: antenas.filter((a) => a.op === 'movistar').length,
+        legalEntities: ['TELEFONICA MOVILES ESPAÑA, S.A.U.'],
+      },
+      orange: {
+        key: 'orange',
+        name: 'Orange (MasOrange)',
+        count: antenas.filter((a) => a.op === 'orange').length,
+        legalEntities: ['ORANGE ESPAGNE, S.A.U.'],
+      },
+      vodafone: {
+        key: 'vodafone',
+        name: 'Vodafone España',
+        count: antenas.filter((a) => a.op === 'vodafone').length,
+        legalEntities: ['VODAFONE ESPAÑA, S.A.U.'],
+      },
+      digi: {
+        key: 'digi',
+        name: 'DIGI Spain',
+        count: 0,
+        legalEntities: [],
+      },
+      otros: {
+        key: 'otros',
+        name: 'Otros Operadores',
+        count: 0,
+        legalEntities: [],
+      },
+    },
+    provinces: [],
+    antenas,
+  };
+}
+
+function makeLiveDelta(
+  overrides: Partial<LiveScanMergedDelta> = {},
+): LiveScanMergedDelta {
+  return {
+    scanId: 'scan-unico-live-1',
+    deltaSeq: 1,
+    recordNovedades: true,
+    previousScanAt: '2026-11-24T16:00:00Z',
+    updatedAt: '2026-11-24T17:15:00Z',
+    completedDatasetUpdatedAt: '',
+    newAntennas: [],
+    bandPatchesById: new Map<string, LiveBandPatch>(),
+    bandPatchesByGid: new Map<string, LiveBandPatch>(),
+    novedades: [],
+    removedAntennaIds: new Set<string>(),
+    eliminaciones: [],
     ...overrides,
   };
 }
@@ -838,5 +922,439 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     );
     expect(viewSource).not.toMatch(/\buseNavigate\b/);
     expect(viewSource).not.toMatch(/\bscrollTo\b|\bscrollIntoView\b/);
+  });
+
+  it('parsea declaredUpdatedAt y declaredMasks válidos en parseCustomUnico5gJson e ignora máscaras malformadas o de longitud distinta', () => {
+    const sampleAntenas = [
+      makeUnicoAntenna({ id: 'u-p1', op: 'movistar' }),
+      makeUnicoAntenna({
+        id: 'u-p2',
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+      }),
+    ];
+
+    const parsedValid = parseCustomUnico5gJson({
+      schemaVersion: 1,
+      updatedAt: '2026-11-24T18:00:00Z',
+      declaredUpdatedAt: '  2026-11-24T18:10:00Z  ',
+      antenas: sampleAntenas,
+      declaredMasks: [UNICO_BIT_N78, UNICO_BIT_N28 | (1 << 5)],
+      declaredSummary: {
+        total: 2,
+        declared: 2,
+        byBand: { all: 2, N78: 1, N28: 1, 'N28+': 0 },
+        byOperator: {
+          movistar: { total: 1, declared: 1, N78: 1, N28: 0, 'N28+': 0 },
+          orange: { total: 1, declared: 1, N78: 0, N28: 1, 'N28+': 0 },
+          vodafone: { total: 0, declared: 0, N78: 0, N28: 0, 'N28+': 0 },
+        },
+      },
+    });
+
+    expect(parsedValid.declaredUpdatedAt).toBe('2026-11-24T18:10:00Z');
+    expect(parsedValid.declaredMasks).toEqual([UNICO_BIT_N78, UNICO_BIT_N28]);
+    expect(parsedValid.declaredSummary?.declared).toBe(2);
+
+    // Longitud distinta -> omite declaredMasks sin fallar
+    const parsedWrongLength = parseCustomUnico5gJson({
+      schemaVersion: 1,
+      declaredUpdatedAt: '   ',
+      antenas: sampleAntenas,
+      declaredMasks: [UNICO_BIT_N78],
+    });
+    expect(parsedWrongLength.declaredUpdatedAt).toBeUndefined();
+    expect(parsedWrongLength.declaredMasks).toBeUndefined();
+
+    // Elementos malformados (negativos, decimales o no numéricos) -> omite declaredMasks
+    for (const badMasks of [
+      [-1, 0],
+      [1.5, 0],
+      ['1', 0],
+      [Number.NaN, 0],
+    ]) {
+      const parsedBad = parseCustomUnico5gJson({
+        schemaVersion: 1,
+        antenas: sampleAntenas,
+        declaredMasks: badMasks,
+      });
+      expect(parsedBad.declaredMasks).toBeUndefined();
+    }
+  });
+
+  it('selecciona máscaras persistidas al instante antes de cargar antenas.json, calcula en vivo al cargarlo y prioriza persistidas más recientes durante refetch post-escaneo', async () => {
+    const unicoAntenas: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-sel-1',
+        op: 'movistar',
+        lat: 40.0,
+        lon: -3.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-sel-2',
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        lat: 37.5,
+        lon: -5.8,
+      }),
+    ];
+
+    const unicoDataset = parseCustomUnico5gJson({
+      schemaVersion: 1,
+      updatedAt: '2026-11-24T18:00:00Z',
+      declaredUpdatedAt: '2026-11-24T18:30:00Z',
+      antenas: unicoAntenas,
+      declaredMasks: [UNICO_BIT_N78, UNICO_BIT_N28],
+    });
+    const persistedMasks = new Uint16Array(unicoDataset.declaredMasks ?? []);
+
+    // Estación real en vivo con N28+ solo en el primer emplazamiento (distinta a persistedMasks)
+    const olderAntenasDerived = buildDerivedAntenasStructures(
+      makeSyntheticAntenasDataset(
+        [
+          makeRealAntenna({
+            id: 'MV-LIVE-1',
+            gid: '5001',
+            op: 'movistar',
+            lat: 40.0 + 0.002,
+            lon: -3.5,
+            frecuencias: ['758.00 - 788.00'],
+          }),
+        ],
+        '2026-11-24T18:00:00Z',
+      ),
+    );
+
+    expect(
+      selectEffectiveUnicoDeclaredMasks({
+        unicoDataset: null,
+        persistedMasks,
+        antenasDerived: null,
+        isAntenasFetching: false,
+      }),
+    ).toBeNull();
+
+    // 1) Carga inicial: antenas.json aún no llegó -> devuelve persistedMasks al instante
+    const instantMasks = selectEffectiveUnicoDeclaredMasks({
+      unicoDataset,
+      persistedMasks,
+      antenasDerived: null,
+      isAntenasFetching: true,
+    });
+    expect(instantMasks).toBe(persistedMasks);
+
+    expect(
+      selectEffectiveUnicoDeclaredMasks({
+        unicoDataset,
+        persistedMasks: null,
+        antenasDerived: null,
+        isAntenasFetching: true,
+      }),
+    ).toBeNull();
+
+    // 2) antenas.json cargado (isAntenasFetching: false) -> cálculo en vivo autoritativo
+    const liveMasks = selectEffectiveUnicoDeclaredMasks({
+      unicoDataset,
+      persistedMasks,
+      antenasDerived: olderAntenasDerived,
+      isAntenasFetching: false,
+    });
+    expect(Array.from(liveMasks ?? [])).toEqual([UNICO_BIT_N28_PLUS, 0]);
+
+    // 3) Post-escaneo: unico-5g.json ya trajo declaredUpdatedAt más reciente mientras antenas.json refetchea
+    const refetchingNewerPersisted = selectEffectiveUnicoDeclaredMasks({
+      unicoDataset,
+      persistedMasks,
+      antenasDerived: olderAntenasDerived,
+      isAntenasFetching: true,
+    });
+    expect(refetchingNewerPersisted).toBe(persistedMasks);
+
+    // 4) Si antenas.json ya está igual o más actualizado que declaredUpdatedAt, mantiene el cálculo en vivo
+    const upToDateAntenasDerived = buildDerivedAntenasStructures(
+      makeSyntheticAntenasDataset(
+        olderAntenasDerived.dataset.antenas,
+        '2026-11-24T18:30:00Z',
+      ),
+    );
+    const refetchingUpToDate = selectEffectiveUnicoDeclaredMasks({
+      unicoDataset,
+      persistedMasks,
+      antenasDerived: upToDateAntenasDerived,
+      isAntenasFetching: true,
+    });
+    expect(Array.from(refetchingUpToDate ?? [])).toEqual([
+      UNICO_BIT_N28_PLUS,
+      0,
+    ]);
+
+    // 5) SSR de Unico5gView sin antenas.json en caché muestra al instante las declaradas persistidas
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(UNICO_5G_QUERY_KEY, unicoDataset);
+
+    const rootRoute = createRootRoute({
+      component: () => createElement(Outlet),
+    });
+    const unicoRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/unico-5g',
+      validateSearch: validateUnico5gSearch,
+      component: Unico5gView,
+    });
+    const memoryRouter = createRouter({
+      routeTree: rootRoute.addChildren([unicoRoute]),
+      history: createMemoryHistory({ initialEntries: ['/unico-5g'] }),
+    });
+    await memoryRouter.load();
+
+    const html = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(RouterProvider, { router: memoryRouter }),
+      ),
+    );
+    expect(html).toContain('DECLARADAS');
+    expect(html).toContain('2/2');
+    expect(html).toContain('(100,0%)');
+    expect(html).not.toContain('cruzando censo real');
+  });
+
+  it('reacciona en vivo a deltas de escaneo (newAntennas N78, bandPatches N28+ y removedAntennaIds) mediante mergeLiveDeltaIntoAntenasDataset', () => {
+    const unicoAntenas: UnicoAntennaRecord[] = [
+      // Sitio 0 (Movistar): inicialmente sin estación real cercana -> 0
+      makeUnicoAntenna({
+        id: 'u-live-new-n78',
+        op: 'movistar',
+        lat: 40.0,
+        lon: -3.5,
+      }),
+      // Sitio 1 (Orange): inicialmente estación real más cercana solo 4G (B20) -> 0
+      makeUnicoAntenna({
+        id: 'u-live-patch-n28plus',
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        ccaa: 'Andalucía',
+        prov: 'SEVILLA',
+        mun: 'Cazalla',
+        lat: 37.5,
+        lon: -5.8,
+      }),
+      // Sitio 2 (Vodafone): inicialmente estación real 5G (N78) -> UNICO_BIT_N78
+      makeUnicoAntenna({
+        id: 'u-live-remove-5g',
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        ccaa: 'Galicia',
+        prov: 'LUGO',
+        mun: 'Vilalba',
+        lat: 43.3,
+        lon: -7.6,
+      }),
+    ];
+
+    const orange4gId = 'ORANGE ESPAGNE, S.A.U. - 700001';
+    const vodafone5gId = 'VODAFONE ESPAÑA, S.A.U. - 700002';
+
+    const baseDataset = makeSyntheticAntenasDataset(
+      [
+        makeRealAntenna({
+          id: orange4gId,
+          gid: '700001',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 37.5 + 0.0018, // ~200 m
+          lon: -5.8,
+          mun: 'CAZALLA',
+          prov: 'SEVILLA',
+          bandas: ['800 MHz'],
+          frecuencias: ['791.00 - 801.00'],
+          bandsScannedAt: '2026-11-24T16:00:00Z',
+        }),
+        makeRealAntenna({
+          id: vodafone5gId,
+          gid: '700002',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 43.3 + 0.0018, // ~200 m
+          lon: -7.6,
+          mun: 'VILALBA',
+          prov: 'LUGO',
+          bandas: ['3500 MHz'],
+          frecuencias: ['3600.00 - 3700.00'],
+          bandsScannedAt: '2026-11-24T16:00:00Z',
+        }),
+      ],
+      '2026-11-24T17:00:00Z',
+    );
+
+    const baseDerived = buildDerivedAntenasStructures(baseDataset);
+    const baseMasks = matchUnicoDeclaredAntennasMasks(
+      unicoAntenas,
+      baseDerived.dataset.antenas,
+      baseDerived.bandCodeMasks,
+    );
+    expect(Array.from(baseMasks)).toEqual([0, 0, UNICO_BIT_N78]);
+
+    // 1) Alta en vivo de una nueva antena real con N78 a ~445 m (<= 1,0 km) -> Sitio 0 pasa a UNICO_BIT_N78
+    const deltaAddN78 = makeLiveDelta({
+      deltaSeq: 1,
+      updatedAt: '2026-11-24T17:10:00Z',
+      newAntennas: [
+        makeRealAntenna({
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 700003',
+          gid: '700003',
+          op: 'movistar',
+          lat: 40.0 + 0.004, // ~445 m
+          lon: -3.5,
+          bandas: ['3500 MHz'],
+          frecuencias: ['3600.00 - 3700.00'],
+          bandsScannedAt: '2026-11-24T17:10:00Z',
+        }),
+      ],
+    });
+    const afterAddDataset = mergeLiveDeltaIntoAntenasDataset(
+      baseDataset,
+      deltaAddN78,
+    );
+    const afterAddDerived = buildDerivedAntenasStructures(afterAddDataset);
+    const afterAddMasks = matchUnicoDeclaredAntennasMasks(
+      unicoAntenas,
+      afterAddDerived.dataset.antenas,
+      afterAddDerived.bandCodeMasks,
+    );
+    expect(Array.from(afterAddMasks)).toEqual([
+      UNICO_BIT_N78,
+      0,
+      UNICO_BIT_N78,
+    ]);
+
+    // 2) bandPatch añade N28+ a la estación 4G más cercana de Orange -> Sitio 1 pasa a UNICO_BIT_N28_PLUS
+    const n28PlusPatch: LiveBandPatch = {
+      id: orange4gId,
+      gid: '700001',
+      bandas: ['700 MHz', '800 MHz'],
+      frecuencias: ['758.00 - 788.00', '791.00 - 801.00'],
+      concesiones: [],
+      bandsScannedAt: '2026-11-24T17:15:00Z',
+    };
+    const deltaBandPatch = makeLiveDelta({
+      deltaSeq: 2,
+      updatedAt: '2026-11-24T17:15:00Z',
+      newAntennas: deltaAddN78.newAntennas,
+      bandPatchesById: new Map([[orange4gId, n28PlusPatch]]),
+    });
+    const afterPatchDataset = mergeLiveDeltaIntoAntenasDataset(
+      baseDataset,
+      deltaBandPatch,
+    );
+    const afterPatchDerived = buildDerivedAntenasStructures(afterPatchDataset);
+    const afterPatchMasks = matchUnicoDeclaredAntennasMasks(
+      unicoAntenas,
+      afterPatchDerived.dataset.antenas,
+      afterPatchDerived.bandCodeMasks,
+    );
+    expect(Array.from(afterPatchMasks)).toEqual([
+      UNICO_BIT_N78,
+      UNICO_BIT_N28_PLUS,
+      UNICO_BIT_N78,
+    ]);
+
+    // 3) Baja en vivo mediante removedAntennaIds elimina la estación 5G de Vodafone -> Sitio 2 vuelve a 0
+    const deltaRemove5g = makeLiveDelta({
+      deltaSeq: 3,
+      updatedAt: '2026-11-24T17:20:00Z',
+      newAntennas: deltaAddN78.newAntennas,
+      bandPatchesById: new Map([[orange4gId, n28PlusPatch]]),
+      removedAntennaIds: new Set([vodafone5gId]),
+    });
+    const afterRemoveDataset = mergeLiveDeltaIntoAntenasDataset(
+      baseDataset,
+      deltaRemove5g,
+    );
+    const afterRemoveDerived =
+      buildDerivedAntenasStructures(afterRemoveDataset);
+    const afterRemoveMasks = matchUnicoDeclaredAntennasMasks(
+      unicoAntenas,
+      afterRemoveDerived.dataset.antenas,
+      afterRemoveDerived.bandCodeMasks,
+    );
+    expect(Array.from(afterRemoveMasks)).toEqual([
+      UNICO_BIT_N78,
+      UNICO_BIT_N28_PLUS,
+      0,
+    ]);
+  });
+
+  it('invalida ["unico-5g-dataset"] al completar un escaneo y descarga unico-5g.json con cache: "no-cache"', async () => {
+    const [scanProgressSource, unicoHookSource] = await Promise.all([
+      readDiskTextFile('./useScanProgress.ts'),
+      readDiskTextFile('./useUnico5gData.ts'),
+    ]);
+
+    const invalidateFnMatch = scanProgressSource.match(
+      /function useInvalidateDatasetsOnScanCompletion\([\s\S]*?\n\}/,
+    );
+    expect(invalidateFnMatch).not.toBeNull();
+    const invalidateFnBody = invalidateFnMatch?.[0] ?? '';
+    expect(invalidateFnBody).toMatch(
+      /invalidateQueries\(\{\s*queryKey:\s*\['unico-5g-dataset'\]\s*,?\s*\}\)/,
+    );
+
+    const fetchFnMatch = unicoHookSource.match(
+      /export async function importUnico5gJsonDataset\([\s\S]*?\n\}/,
+    );
+    expect(fetchFnMatch).not.toBeNull();
+    const fetchFnBody = fetchFnMatch?.[0] ?? '';
+    expect(fetchFnBody).toContain('data/unico-5g.json');
+    expect(fetchFnBody).toMatch(/cache:\s*'no-cache'/);
+  });
+
+  it('mantiene paridad exacta bit a bit entre declaredMasks persistidos en public/data/unico-5g.json y el cruce en vivo con public/data/antenas.json', async () => {
+    const [unicoDataset, rawAntenasDataset] = await Promise.all([
+      loadRealUnicoDatasetFromDisk(),
+      loadRealAntenasDatasetFromDisk(),
+    ]);
+    const derived = buildDerivedAntenasStructures(rawAntenasDataset);
+    const liveMasks = matchUnicoDeclaredAntennasMasks(
+      unicoDataset.antenas,
+      derived.dataset.antenas,
+      derived.bandCodeMasks,
+    );
+
+    expect(unicoDataset.declaredMasks).toBeDefined();
+    expect(unicoDataset.declaredMasks?.length).toBe(
+      unicoDataset.antenas.length,
+    );
+    expect(unicoDataset.declaredUpdatedAt).toBe(rawAntenasDataset.updatedAt);
+    expect(Array.from(liveMasks)).toEqual(unicoDataset.declaredMasks);
+  });
+
+  it('verifica que .github/workflows/update-and-deploy.yml sincroniza public/data/unico-5g.json con --sync-antenas y lo añade al commit en Parte 1/2 y Parte 2/2', async () => {
+    const workflowSource = await readDiskTextFile(
+      '../../.github/workflows/update-and-deploy.yml',
+    );
+
+    const part1Start = workflowSource.indexOf('  scan-part-1:');
+    const part2Start = workflowSource.indexOf('  scan-part-2:');
+    const deployStart = workflowSource.indexOf('  build-and-deploy:');
+
+    expect(part1Start).toBeGreaterThan(-1);
+    expect(part2Start).toBeGreaterThan(part1Start);
+    expect(deployStart).toBeGreaterThan(part2Start);
+
+    const part1Block = workflowSource.slice(part1Start, part2Start);
+    const part2Block = workflowSource.slice(part2Start, deployStart);
+
+    for (const block of [part1Block, part2Block]) {
+      expect(block).toMatch(
+        /scripts\/build_unico_5g\.py(?:[^\n]|\\\n)*--sync-antenas/,
+      );
+      expect(block).toMatch(
+        /git\s+add\b(?:[^\n]|\\\n)*public\/data\/unico-5g\.json/,
+      );
+    }
   });
 });

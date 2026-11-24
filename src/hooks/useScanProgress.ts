@@ -2169,6 +2169,7 @@ function useInvalidateDatasetsOnScanCompletion(
           queryKey: ['eliminaciones-dataset'],
         });
         void queryClient.invalidateQueries({ queryKey: ['antenas-dataset'] });
+        void queryClient.invalidateQueries({ queryKey: ['unico-5g-dataset'] });
       }
     }
   }, [isActive, status?.scanId, status?.state, queryClient]);

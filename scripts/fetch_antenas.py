@@ -7181,6 +7181,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Etiqueta opcional del tramo en ejecución (ej. '1/2', '2/2').",
     )
+    parser.add_argument(
+        "--unico-output",
+        default=None,
+        help="Ruta opcional del archivo unico-5g.json cuyas declaraciones 5G se sincronizan tras actualizar antenas.json (por defecto <dir_output>/unico-5g.json si existe).",
+    )
+    parser.add_argument(
+        "--skip-unico-sync",
+        action="store_true",
+        help="Omite la sincronización automática de declaraciones UNICO 5G tras actualizar antenas.json.",
+    )
     return parser.parse_args(argv)
 
 
@@ -7521,6 +7531,46 @@ def _prepare_eliminaciones_writer(
     return _write_current
 
 
+def _sync_unico_5g_declarations(
+    dataset: dict[str, Any],
+    output_path: Path,
+    unico_output: str | None,
+    skip_unico_sync: bool,
+) -> bool:
+    """
+    Sincroniza de forma atómica las declaraciones 5G en `unico-5g.json` a partir del
+    `dataset` recién actualizado en memoria (sin releer `antenas.json` desde disco).
+    """
+    if skip_unico_sync:
+        return False
+
+    target = Path(unico_output) if unico_output else output_path.parent / "unico-5g.json"
+    if not target.exists():
+        return False
+
+    try:
+        from scripts.build_unico_5g import sync_unico_5g_declarations_file
+    except ImportError:
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        from build_unico_5g import sync_unico_5g_declarations_file
+
+    updated = sync_unico_5g_declarations_file(target, dataset)
+    summary = updated.get("declaredSummary") or {}
+    by_band = summary.get("byBand") or {}
+    logging.info(
+        "Sincronizado UNICO 5G en %s: %d/%d declaradas (N78=%d, N28=%d, N28+=%d).",
+        target,
+        int(summary.get("declared") or 0),
+        int(summary.get("total") or 0),
+        int(by_band.get("N78") or 0),
+        int(by_band.get("N28") or 0),
+        int(by_band.get("N28+") or 0),
+    )
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -7686,6 +7736,12 @@ def main(argv: list[str] | None = None) -> int:
             nov_writer(enricher.discovered_novedades)
         if elim_writer is not None and not enricher.saved_final_checkpoint:
             elim_writer(enricher.discovered_eliminaciones)
+        _sync_unico_5g_declarations(
+            dataset,
+            output_path,
+            args.unico_output,
+            args.skip_unico_sync,
+        )
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:
@@ -7979,6 +8035,12 @@ def main(argv: list[str] | None = None) -> int:
                 nov_writer(enricher.discovered_novedades)
             if elim_writer is not None:
                 elim_writer(enricher.discovered_eliminaciones)
+        _sync_unico_5g_declarations(
+            dataset,
+            output_path,
+            args.unico_output,
+            args.skip_unico_sync,
+        )
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:
@@ -8020,6 +8082,12 @@ def main(argv: list[str] | None = None) -> int:
                 status_path,
             )
     else:
+        _sync_unico_5g_declarations(
+            dataset,
+            output_path,
+            args.unico_output,
+            args.skip_unico_sync,
+        )
         if live_stream is not None:
             live_stream.flush_final()
         if status_path is not None:
