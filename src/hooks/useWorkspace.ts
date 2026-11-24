@@ -26,6 +26,8 @@ export interface WorkspaceContextValue {
   clearBands: () => void;
   exclusiveBands: boolean;
   setExclusiveBands: (exclusive: boolean) => void;
+  onlyUnicoDeclared: boolean;
+  setOnlyUnicoDeclared: (only: boolean) => void;
   activeOperators: OperatorKey[];
   toggleOperator: (op: OperatorKey) => void;
   selectAllOperators: () => void;
@@ -63,6 +65,11 @@ export interface WorkspaceContextValue {
   disableClustering: boolean;
   setDisableClustering: (disable: boolean) => void;
   toggleDisableClustering: () => void;
+
+  /* Resaltado visual de antenas seleccionadas como declaración UNICO 5G */
+  highlightUnicoDeclared: boolean;
+  setHighlightUnicoDeclared: (highlight: boolean) => void;
+  toggleHighlightUnicoDeclared: () => void;
 
   /* Menú deslizable de secciones y apariencia */
   sectionsMenuOpen: boolean;

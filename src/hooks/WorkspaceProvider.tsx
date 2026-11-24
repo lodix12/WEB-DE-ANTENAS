@@ -61,6 +61,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [selectedProvince, setSelectedProvinceState] = useState('');
   const [selectedBands, setSelectedBands] = useState<string[]>([]);
   const [exclusiveBands, setExclusiveBands] = useState<boolean>(false);
+  const [onlyUnicoDeclared, setOnlyUnicoDeclared] = useState<boolean>(false);
   const [activeOperators, setActiveOperators] = useState<OperatorKey[]>(() => [
     ...OPERATOR_ORDER,
   ]);
@@ -77,6 +78,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [measureModeActive, setMeasureModeActive] = useState<boolean>(false);
   const [showBandsOnMap, setShowBandsOnMap] = useState<boolean>(false);
   const [disableClustering, setDisableClustering] = useState<boolean>(false);
+  const [highlightUnicoDeclared, setHighlightUnicoDeclared] =
+    useState<boolean>(true);
   const [sectionsMenuOpen, setSectionsMenuOpen] = useState<boolean>(false);
 
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
@@ -173,6 +176,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setSelectedProvinceState('');
     setSelectedBands([]);
     setExclusiveBands(false);
+    setOnlyUnicoDeclared(false);
     setActiveOperators([...OPERATOR_ORDER]);
   }, []);
 
@@ -182,6 +186,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     selectedProvince !== '' ||
     selectedBands.length > 0 ||
     exclusiveBands ||
+    onlyUnicoDeclared ||
     activeOperators.length !== OPERATOR_ORDER.length;
 
   const triggerFlyTo = useCallback((lat: number, lon: number, zoom = 14) => {
@@ -250,6 +255,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const toggleDisableClustering = useCallback(() => {
     setDisableClustering((prev) => !prev);
+  }, []);
+
+  const toggleHighlightUnicoDeclared = useCallback(() => {
+    setHighlightUnicoDeclared((prev) => !prev);
   }, []);
 
   const toggleSectionsMenu = useCallback(() => {
@@ -346,6 +355,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       clearBands,
       exclusiveBands,
       setExclusiveBands,
+      onlyUnicoDeclared,
+      setOnlyUnicoDeclared,
       activeOperators,
       toggleOperator,
       selectAllOperators,
@@ -375,6 +386,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       disableClustering,
       setDisableClustering,
       toggleDisableClustering,
+      highlightUnicoDeclared,
+      setHighlightUnicoDeclared,
+      toggleHighlightUnicoDeclared,
       sectionsMenuOpen,
       setSectionsMenuOpen,
       toggleSectionsMenu,
@@ -398,6 +412,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toggleBand,
       clearBands,
       exclusiveBands,
+      onlyUnicoDeclared,
       activeOperators,
       toggleOperator,
       selectAllOperators,
@@ -423,6 +438,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       disableClustering,
       setDisableClustering,
       toggleDisableClustering,
+      highlightUnicoDeclared,
+      setHighlightUnicoDeclared,
+      toggleHighlightUnicoDeclared,
       sectionsMenuOpen,
       setSectionsMenuOpen,
       toggleSectionsMenu,

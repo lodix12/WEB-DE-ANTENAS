@@ -3,6 +3,7 @@ import type {
   OpenFreeMapStyleOption,
   OperatorKey,
 } from './antena';
+import type { UnicoDeclaredRealAntennaMatch } from './unico5g';
 
 export interface FlyToTarget {
   lat: number;
@@ -77,4 +78,10 @@ export interface AntenasMapProps {
   disableClustering?: boolean;
   /** Alternar la desactivación de clústeres para mostrar siempre todas las antenas individuales */
   onToggleDisableClustering?: () => void;
+  /** Mapa O(1) de antenas reales seleccionadas como declaración del programa UNICO 5G */
+  unicoDeclaredById?: ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>;
+  /** Si el resaltado visual en mapa de antenas seleccionadas como declaración UNICO 5G está activo (por defecto true) */
+  highlightUnicoDeclared?: boolean;
+  /** Alternar el resaltado visual en mapa de antenas seleccionadas como declaración UNICO 5G */
+  onToggleHighlightUnicoDeclared?: () => void;
 }

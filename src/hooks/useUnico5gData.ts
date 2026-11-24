@@ -1,13 +1,16 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { AntennaRecord } from '../types/antena';
+import { isXferaLegalEntity, type AntennaRecord } from '../types/antena';
 import {
   UNICO_OPERATOR_META,
   UNICO_OPERATOR_ORDER,
   type UnicoAntennaRecord,
   type UnicoDataset,
   type UnicoDeclaredBandFilter,
+  type UnicoDeclaredMatchedEntry,
+  type UnicoDeclaredMatchResult,
   type UnicoDeclaredOperatorSummary,
+  type UnicoDeclaredRealAntennaMatch,
   type UnicoDeclaredSummary,
   type UnicoEntityBreakdown,
   type UnicoFase,
@@ -19,7 +22,7 @@ import {
   type UnicoTerritoryTab,
 } from '../types/unico5g';
 import { normalizeSearchText } from '../utils/export';
-import { haversineDistanceKm } from '../utils/geo';
+import { formatDistance, haversineDistanceKm } from '../utils/geo';
 import {
   computeAntennaRfBandMask,
   useAntenasData,
@@ -439,36 +442,180 @@ export function validateUnico5gSearch(
 
 const GRID_CELL_DEG = 0.02; // ~2.22 km lat, ~1.61 km lon a 44°N (> 1.0 km en toda España)
 
+const EMPTY_DECLARED_REAL_ANTENNAS: ReadonlyMap<
+  string,
+  UnicoDeclaredRealAntennaMatch
+> = new Map();
+
 interface IndexedRealStation {
+  stationIdx: number;
+  antennaId: string;
   lat: number;
   lon: number;
   declaredBits: number;
 }
 
+interface UnicoCandidateStation {
+  distKm: number;
+  stationIdx: number;
+  antennaId: string;
+  declaredBits: number;
+}
+
+interface UnicoMatchHeapNode {
+  distKm: number;
+  unicoIdx: number;
+  candPos: number;
+}
+
+function isUnicoHeapNodeLess(
+  a: UnicoMatchHeapNode,
+  b: UnicoMatchHeapNode,
+): boolean {
+  if (a.distKm !== b.distKm) return a.distKm < b.distKm;
+  if (a.unicoIdx !== b.unicoIdx) return a.unicoIdx < b.unicoIdx;
+  return a.candPos < b.candPos;
+}
+
+function pushUnicoMatchHeap(
+  heap: UnicoMatchHeapNode[],
+  node: UnicoMatchHeapNode,
+): void {
+  heap.push(node);
+  let idx = heap.length - 1;
+  while (idx > 0) {
+    const parent = (idx - 1) >> 1;
+    if (!isUnicoHeapNodeLess(heap[idx], heap[parent])) break;
+    const tmp = heap[parent];
+    heap[parent] = heap[idx];
+    heap[idx] = tmp;
+    idx = parent;
+  }
+}
+
+function popUnicoMatchHeap(
+  heap: UnicoMatchHeapNode[],
+): UnicoMatchHeapNode | undefined {
+  if (heap.length === 0) return undefined;
+  const top = heap[0];
+  const last = heap.pop()!;
+  if (heap.length > 0) {
+    heap[0] = last;
+    let idx = 0;
+    const len = heap.length;
+    while (true) {
+      const left = (idx << 1) + 1;
+      const right = left + 1;
+      let smallest = idx;
+      if (left < len && isUnicoHeapNodeLess(heap[left], heap[smallest])) {
+        smallest = left;
+      }
+      if (right < len && isUnicoHeapNodeLess(heap[right], heap[smallest])) {
+        smallest = right;
+      }
+      if (smallest === idx) break;
+      const tmp = heap[idx];
+      heap[idx] = heap[smallest];
+      heap[smallest] = tmp;
+      idx = smallest;
+    }
+  }
+  return top;
+}
+
 function resolveRealStationUnicoOp(ant: AntennaRecord): UnicoOperatorKey | null {
   if (ant.op === 'movistar') return 'movistar';
   if (ant.op === 'vodafone') return 'vodafone';
-  if (ant.op === 'orange') return 'orange';
-  if (ant.opRaw && ant.opRaw.toUpperCase().includes('AVATEL')) {
+  if (
+    ant.op === 'orange' ||
+    (ant.op as string) === 'masmovil' ||
+    (typeof ant.opRaw === 'string' && isXferaLegalEntity(ant.opRaw))
+  ) {
+    return 'orange';
+  }
+  if (
+    typeof ant.opRaw === 'string' &&
+    ant.opRaw.toUpperCase().includes('AVATEL')
+  ) {
     return 'orange';
   }
   return null;
 }
 
 /**
- * Para cada coordenada oficial UNICO 5G de cada operadora, busca la antena real
- * de esa misma operadora más próxima en un radio máximo de 1.000 metros (1,0 km).
- * Devuelve un `Uint16Array` con las bandas 5G (`N28`, `N28+`, `N78`) presentes
- * en esa antena más cercana (o `0` si no hay antena real <= 1.000 m o no tiene N28/N28+/N78).
+ * Formatea una distancia en kilómetros entre una estación real y una coordenada UNICO 5G
+ * con espacio indivisible (ej. "9 m", "1.000 m", "1,25 km"), sin inconsistencias en [999,5 m, 1.000 m].
  */
-export function matchUnicoDeclaredAntennasMasks(
+export function formatUnicoDistance(km: number): string {
+  const safeKm = Number.isFinite(km) && km >= 0 ? km : 0;
+  const meters = Math.round(safeKm * 1000);
+  if (meters <= 1000) {
+    return `${formatUnicoInt(meters)}\u00A0m`;
+  }
+  return formatDistance(meters / 1000).replace(' ', '\u00A0');
+}
+
+/**
+ * Formatea la máscara de bits 5G UNICO (`N78`, `N28`, `N28+`) en códigos legibles
+ * ordenados de mayor a menor relevancia 5G (`N78`, `N28+`, `N28`).
+ */
+export function formatUnicoDeclaredBitsList(
+  declaredBits: number,
+): Array<'N78' | 'N28+' | 'N28'> {
+  const list: Array<'N78' | 'N28+' | 'N28'> = [];
+  if ((declaredBits & UNICO_BIT_N78) !== 0) {
+    list.push('N78');
+  }
+  if ((declaredBits & UNICO_BIT_N28_PLUS) !== 0) {
+    list.push('N28+');
+  }
+  if ((declaredBits & UNICO_BIT_N28) !== 0) {
+    list.push('N28');
+  }
+  return list;
+}
+
+/**
+ * Formatea las fases UNICO 5G asociadas a una antena real seleccionada como declaración.
+ */
+export function formatUnicoFasesLabel(fases: readonly UnicoFase[]): string {
+  if (fases.length === 0) return 'UNICO 5G';
+  const hasF1 = fases.includes(1);
+  const hasF2 = fases.includes(2);
+  if (hasF1 && hasF2) return 'Fase 1 y 2';
+  return hasF1 ? 'Fase 1' : 'Fase 2';
+}
+
+/**
+ * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales:
+ * - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real de su misma operadora en <= 1.000 m.
+ * - Las asignaciones se resuelven por cercanía global creciente (distancia mínima primero).
+ * - Si la antena real más próxima ya ha sido elegida como declarada por otro proyecto del mismo
+ *   operador, se busca la siguiente antena real más cercana disponible dentro de <= 1.000 m.
+ * - Dos proyectos UNICO de operadoras distintas que coinciden en un emplazamiento real compartido
+ *   se resuelven de forma independiente por operadora y ambos pueden quedar declarados.
+ *
+ * Devuelve simultáneamente:
+ * - `declaredMasks`: `Uint16Array` alineado con `unicoAntenas` con las bandas 5G (`N28`, `N28+`, `N78`).
+ * - `declaredRealAntennasById`: mapa `antenna.id -> UnicoDeclaredRealAntennaMatch` con todas las
+ *   antenas reales seleccionadas como declaración del programa UNICO 5G (1-a-1 por operadora).
+ */
+export function matchUnicoDeclaredAntennas(
   unicoAntenas: readonly UnicoAntennaRecord[],
   realAntenas: readonly AntennaRecord[],
   realBandMasks?: Uint16Array,
-): Uint16Array {
-  const result = new Uint16Array(unicoAntenas.length);
-  if (unicoAntenas.length === 0 || realAntenas.length === 0) {
-    return result;
+): UnicoDeclaredMatchResult {
+  const nUnico = unicoAntenas.length;
+  const declaredMasks = new Uint16Array(nUnico);
+  const declaredRealAntennasById = new Map<
+    string,
+    UnicoDeclaredRealAntennaMatch
+  >();
+  if (nUnico === 0 || realAntenas.length === 0) {
+    return {
+      declaredMasks,
+      declaredRealAntennasById,
+    };
   }
 
   const spatialBuckets: Record<
@@ -484,6 +631,7 @@ export function matchUnicoDeclaredAntennasMasks(
     const ant = realAntenas[i];
     const targetOp = resolveRealStationUnicoOp(ant);
     if (!targetOp) continue;
+    if (!Number.isFinite(ant.lat) || !Number.isFinite(ant.lon)) continue;
 
     const rawMask =
       realBandMasks && i < realBandMasks.length
@@ -502,20 +650,28 @@ export function matchUnicoDeclaredAntennasMasks(
       mapForOp.set(cellKey, list);
     }
     list.push({
+      stationIdx: i,
+      antennaId: typeof ant.id === 'string' ? ant.id : '',
       lat: ant.lat,
       lon: ant.lon,
       declaredBits,
     });
   }
 
-  for (let i = 0; i < unicoAntenas.length; i++) {
+  const candidatesByUnico: Array<UnicoCandidateStation[] | null> = new Array(
+    nUnico,
+  ).fill(null);
+  const heap: UnicoMatchHeapNode[] = [];
+
+  for (let i = 0; i < nUnico; i++) {
     const u = unicoAntenas[i];
+    if (!Number.isFinite(u.lat) || !Number.isFinite(u.lon)) continue;
+    if (!isUnicoOperatorKey(u.op)) continue;
     const mapForOp = spatialBuckets[u.op];
+
     const gx = Math.floor(u.lat / GRID_CELL_DEG);
     const gy = Math.floor(u.lon / GRID_CELL_DEG);
-
-    let bestDistKm = UNICO_MAX_MATCH_DISTANCE_KM + 1e-9;
-    let bestStation: IndexedRealStation | null = null;
+    const cands: UnicoCandidateStation[] = [];
 
     for (let dx = -1; dx <= 1; dx++) {
       const rowBase = (gx + dx + 10000) * 100000;
@@ -525,20 +681,163 @@ export function matchUnicoDeclaredAntennasMasks(
         for (let k = 0; k < bucket.length; k++) {
           const cand = bucket[k];
           const distKm = haversineDistanceKm(u.lat, u.lon, cand.lat, cand.lon);
-          if (distKm <= UNICO_MAX_MATCH_DISTANCE_KM && distKm < bestDistKm) {
-            bestDistKm = distKm;
-            bestStation = cand;
+          if (distKm <= UNICO_MAX_MATCH_DISTANCE_KM) {
+            cands.push({
+              distKm,
+              stationIdx: cand.stationIdx,
+              antennaId: cand.antennaId,
+              declaredBits: cand.declaredBits,
+            });
           }
         }
       }
     }
 
-    if (bestStation !== null && bestStation.declaredBits !== 0) {
-      result[i] = bestStation.declaredBits;
+    if (cands.length > 0) {
+      if (cands.length > 1) {
+        cands.sort(
+          (a, b) => a.distKm - b.distKm || a.stationIdx - b.stationIdx,
+        );
+      }
+      candidatesByUnico[i] = cands;
+      pushUnicoMatchHeap(heap, {
+        distKm: cands[0].distKm,
+        unicoIdx: i,
+        candPos: 0,
+      });
     }
   }
 
-  return result;
+  const claimedByOp: Record<UnicoOperatorKey, Set<number>> = {
+    movistar: new Set(),
+    orange: new Set(),
+    vodafone: new Set(),
+  };
+  const claimedIdsByOp: Record<UnicoOperatorKey, Set<string>> = {
+    movistar: new Set(),
+    orange: new Set(),
+    vodafone: new Set(),
+  };
+  const resolved = new Uint8Array(nUnico);
+
+  while (heap.length > 0) {
+    const node = popUnicoMatchHeap(heap);
+    if (!node) break;
+    const { unicoIdx, candPos } = node;
+    if (resolved[unicoIdx] !== 0) continue;
+
+    const u = unicoAntenas[unicoIdx];
+    const cands = candidatesByUnico[unicoIdx];
+    if (!cands || candPos >= cands.length || !isUnicoOperatorKey(u.op)) {
+      resolved[unicoIdx] = 1;
+      continue;
+    }
+
+    const claimedForOp = claimedByOp[u.op];
+    const claimedIdsForOp = claimedIdsByOp[u.op];
+    const cand = cands[candPos];
+    if (
+      claimedForOp.has(cand.stationIdx) ||
+      (cand.antennaId !== '' && claimedIdsForOp.has(cand.antennaId))
+    ) {
+      const nextPos = candPos + 1;
+      if (nextPos < cands.length) {
+        pushUnicoMatchHeap(heap, {
+          distKm: cands[nextPos].distKm,
+          unicoIdx,
+          candPos: nextPos,
+        });
+      } else {
+        resolved[unicoIdx] = 1;
+      }
+      continue;
+    }
+
+    resolved[unicoIdx] = 1;
+    if (cand.declaredBits !== 0) {
+      claimedForOp.add(cand.stationIdx);
+      if (cand.antennaId !== '') {
+        claimedIdsForOp.add(cand.antennaId);
+      }
+      declaredMasks[unicoIdx] = cand.declaredBits;
+
+      const matchedEntry: UnicoDeclaredMatchedEntry = {
+        unicoId: u.id,
+        fase: u.fase,
+        op: u.op,
+        empresa: u.empresa,
+        mun: u.mun,
+        prov: u.prov,
+        lat: u.lat,
+        lon: u.lon,
+        distanceKm: cand.distKm,
+      };
+
+      if (
+        cand.antennaId !== '' &&
+        !declaredRealAntennasById.has(cand.antennaId)
+      ) {
+        declaredRealAntennasById.set(cand.antennaId, {
+          antennaId: cand.antennaId,
+          op: u.op,
+          declaredBits: cand.declaredBits,
+          fases: [u.fase],
+          minDistanceKm: cand.distKm,
+          entries: [matchedEntry],
+        });
+      }
+    }
+  }
+
+  return {
+    declaredMasks,
+    declaredRealAntennasById,
+  };
+}
+
+/**
+ * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales
+ * en un radio máximo de 1.000 metros (1,0 km), buscando la siguiente antena más cercana
+ * disponible cuando la más próxima ya fue elegida como declarada por otro proyecto del mismo operador.
+ * Devuelve un `Uint16Array` con las bandas 5G (`N28`, `N28+`, `N78`) de la antena asignada
+ * (o `0` si no hay antena disponible <= 1.000 m o la más cercana disponible no tiene N28/N28+/N78).
+ */
+export function matchUnicoDeclaredAntennasMasks(
+  unicoAntenas: readonly UnicoAntennaRecord[],
+  realAntenas: readonly AntennaRecord[],
+  realBandMasks?: Uint16Array,
+): Uint16Array {
+  return matchUnicoDeclaredAntennas(unicoAntenas, realAntenas, realBandMasks)
+    .declaredMasks;
+}
+
+const CACHED_UNICO_MATCH_BY_DERIVED = new WeakMap<
+  DerivedAntenasStructures,
+  WeakMap<UnicoDataset, UnicoDeclaredMatchResult>
+>();
+
+function getCachedUnicoDeclaredMatch(
+  unicoDataset: UnicoDataset,
+  antenasDerived: DerivedAntenasStructures,
+): UnicoDeclaredMatchResult {
+  let byUnico = CACHED_UNICO_MATCH_BY_DERIVED.get(antenasDerived);
+  if (byUnico) {
+    const cached = byUnico.get(unicoDataset);
+    if (cached) {
+      return cached;
+    }
+  } else {
+    byUnico = new WeakMap<UnicoDataset, UnicoDeclaredMatchResult>();
+    CACHED_UNICO_MATCH_BY_DERIVED.set(antenasDerived, byUnico);
+  }
+
+  const computed = matchUnicoDeclaredAntennas(
+    unicoDataset.antenas,
+    antenasDerived.dataset.antenas,
+    antenasDerived.bandCodeMasks,
+  );
+  byUnico.set(unicoDataset, computed);
+  return computed;
 }
 
 export function bandFilterToMask(bandFilter: UnicoDeclaredBandFilter): number {
@@ -649,9 +948,15 @@ export function selectEffectiveUnicoDeclaredMasks(params: {
     'dataset' | 'bandCodeMasks'
   > | null;
   isAntenasFetching: boolean;
+  precomputedLiveMasks?: Uint16Array | null;
 }): Uint16Array | null {
-  const { unicoDataset, persistedMasks, antenasDerived, isAntenasFetching } =
-    params;
+  const {
+    unicoDataset,
+    persistedMasks,
+    antenasDerived,
+    isAntenasFetching,
+    precomputedLiveMasks,
+  } = params;
 
   if (!unicoDataset) {
     return null;
@@ -679,6 +984,13 @@ export function selectEffectiveUnicoDeclaredMasks(params: {
     ) {
       return validPersistedMasks;
     }
+  }
+
+  if (
+    precomputedLiveMasks &&
+    precomputedLiveMasks.length === unicoDataset.antenas.length
+  ) {
+    return precomputedLiveMasks;
   }
 
   return matchUnicoDeclaredAntennasMasks(
@@ -718,6 +1030,13 @@ export function useUnico5gData() {
     return masks;
   }, [query.data]);
 
+  const liveMatch = useMemo(() => {
+    if (!query.data || !antenasDerived) {
+      return null;
+    }
+    return getCachedUnicoDeclaredMatch(query.data, antenasDerived);
+  }, [query.data, antenasDerived]);
+
   const declaredMasks = useMemo(
     () =>
       selectEffectiveUnicoDeclaredMasks({
@@ -725,13 +1044,18 @@ export function useUnico5gData() {
         persistedMasks,
         antenasDerived,
         isAntenasFetching,
+        precomputedLiveMasks: liveMatch?.declaredMasks ?? null,
       }),
-    [query.data, persistedMasks, antenasDerived, isAntenasFetching],
+    [query.data, persistedMasks, antenasDerived, isAntenasFetching, liveMatch],
   );
+
+  const declaredRealAntennasById =
+    liveMatch?.declaredRealAntennasById ?? EMPTY_DECLARED_REAL_ANTENNAS;
 
   return {
     dataset: query.data ?? null,
     declaredMasks,
+    declaredRealAntennasById,
     declaredUpdatedAt:
       antenasDerived?.dataset.updatedAt ??
       query.data?.declaredUpdatedAt ??

@@ -384,6 +384,16 @@
   border-color: var(--map-accent-border);
 }
 
+.map-lock-3d-option.is-unico-active {
+  background: rgba(22, 163, 74, 0.12);
+  border-color: rgba(22, 163, 74, 0.38);
+}
+
+.antenas-map-root[data-map-dark='true'] .map-lock-3d-option.is-unico-active {
+  background: rgba(34, 197, 94, 0.16);
+  border-color: rgba(74, 222, 128, 0.44);
+}
+
 .map-lock-3d-icon {
   width: 28px;
   height: 28px;
@@ -408,6 +418,20 @@
   color: var(--map-accent);
 }
 
+.map-lock-3d-option.is-unico-active .map-lock-3d-icon {
+  background: rgba(22, 163, 74, 0.14);
+  border-color: rgba(22, 163, 74, 0.42);
+  color: #16a34a;
+}
+
+.antenas-map-root[data-map-dark='true']
+  .map-lock-3d-option.is-unico-active
+  .map-lock-3d-icon {
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(74, 222, 128, 0.46);
+  color: #4ade80;
+}
+
 .map-lock-3d-switch,
 .map-switch-pill {
   width: 34px;
@@ -428,6 +452,18 @@
 .map-switch-pill.is-on {
   background: var(--map-accent);
   border-color: var(--map-accent);
+}
+
+.map-lock-3d-switch.is-unico-on,
+.map-switch-pill.is-unico-on {
+  background: #16a34a;
+  border-color: #16a34a;
+}
+
+.antenas-map-root[data-map-dark='true'] .map-lock-3d-switch.is-unico-on,
+.antenas-map-root[data-map-dark='true'] .map-switch-pill.is-unico-on {
+  background: #22c55e;
+  border-color: #22c55e;
 }
 
 .map-lock-3d-switch-thumb {
@@ -567,6 +603,50 @@
   font-size: 11px;
   font-weight: 600;
   color: #f8fafc;
+}
+
+.map-popup-multi-pill.is-unico {
+  border-color: rgba(74, 222, 128, 0.48);
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.map-popup-unico-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4.5px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.24);
+  border: 1px solid rgba(74, 222, 128, 0.5);
+  color: #86efac;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+}
+
+.map-popup-unico-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  color: #86efac;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.map-popup-unico-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.28);
+  flex-shrink: 0;
 }
 
 .map-popup-multi-gid {

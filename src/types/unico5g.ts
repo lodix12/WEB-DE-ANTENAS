@@ -133,6 +133,32 @@ export interface UnicoSimpleSummary {
   byOperator: UnicoOperatorCountStat[];
 }
 
+export interface UnicoDeclaredMatchedEntry {
+  unicoId: string;
+  fase: UnicoFase;
+  op: UnicoOperatorKey;
+  empresa: string;
+  mun: string;
+  prov: string;
+  lat: number;
+  lon: number;
+  distanceKm: number;
+}
+
+export interface UnicoDeclaredRealAntennaMatch {
+  antennaId: string;
+  op: UnicoOperatorKey;
+  declaredBits: number;
+  fases: UnicoFase[];
+  minDistanceKm: number;
+  entries: UnicoDeclaredMatchedEntry[];
+}
+
+export interface UnicoDeclaredMatchResult {
+  declaredMasks: Uint16Array;
+  declaredRealAntennasById: ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>;
+}
+
 export interface UnicoRouteSearch {
   tab?: UnicoTerritoryTab;
   fase?: UnicoFaseFilter;

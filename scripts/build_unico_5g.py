@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import heapq
 import json
 import math
 import os
@@ -690,6 +691,16 @@ def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return EARTH_RADIUS_KM * c
 
 
+XFERA_LEGAL_ENTITY_TOKENS: tuple[str, ...] = (
+    "XFERA",
+    "MASMOVIL",
+    "YOIGO",
+    "EUSKALTEL",
+    "R CABLE",
+    "TELECABLE",
+)
+
+
 def resolve_real_station_unico_op(ant: dict[str, Any]) -> str | None:
     """Resuelve el operador UNICO 5G de una estación real de `antenas.json`."""
     op = ant.get("op")
@@ -699,9 +710,11 @@ def resolve_real_station_unico_op(ant: dict[str, Any]) -> str | None:
         return "vodafone"
     if op in ("orange", "masmovil"):
         return "orange"
-    op_raw = str(ant.get("opRaw") or "").upper()
-    if "AVATEL" in op_raw:
-        return "orange"
+    raw_op_name = ant.get("opRaw")
+    if isinstance(raw_op_name, str) and raw_op_name:
+        op_raw = strip_accents_sort_key(raw_op_name)
+        if "AVATEL" in op_raw or any(tok in op_raw for tok in XFERA_LEGAL_ENTITY_TOKENS):
+            return "orange"
     return None
 
 
@@ -710,8 +723,13 @@ def match_unico_declared_antennas_masks(
     real_antenas: list[dict[str, Any]],
 ) -> list[int]:
     """
-    Para cada coordenada oficial UNICO 5G de cada operadora, busca la antena real
-    de esa misma operadora más próxima en un radio máximo de 1.000 metros (1,0 km).
+    Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales:
+    - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real de su misma operadora en <= 1.000 m.
+    - Las asignaciones se resuelven por cercanía global creciente (distancia mínima primero).
+    - Si la antena real más próxima ya ha sido elegida como declarada por otro proyecto del mismo
+      operador, se busca la siguiente antena real más cercana disponible dentro de <= 1.000 m.
+    - Dos proyectos UNICO de operadoras distintas que coinciden en un emplazamiento real compartido
+      se resuelven de forma independiente por operadora y ambos pueden quedar declarados.
     Espejo bit a bit de `matchUnicoDeclaredAntennasMasks` en `src/hooks/useUnico5gData.ts`.
     """
     n_unico = len(unico_antenas)
@@ -719,11 +737,11 @@ def match_unico_declared_antennas_masks(
     if n_unico == 0 or not real_antenas:
         return result
 
-    spatial_buckets: dict[str, dict[int, list[tuple[float, float, int]]]] = {
+    spatial_buckets: dict[str, dict[int, list[tuple[int, str, float, float, int]]]] = {
         op_key: {} for op_key in OPERATOR_ORDER
     }
 
-    for ant in real_antenas:
+    for station_idx, ant in enumerate(real_antenas):
         if not isinstance(ant, dict):
             continue
         target_op = resolve_real_station_unico_op(ant)
@@ -732,7 +750,12 @@ def match_unico_declared_antennas_masks(
 
         raw_lat = ant.get("lat")
         raw_lon = ant.get("lon")
-        if raw_lat is None or raw_lon is None:
+        if (
+            raw_lat is None
+            or raw_lon is None
+            or isinstance(raw_lat, bool)
+            or isinstance(raw_lon, bool)
+        ):
             continue
         try:
             lat = float(raw_lat)
@@ -742,32 +765,53 @@ def match_unico_declared_antennas_masks(
         if not (math.isfinite(lat) and math.isfinite(lon)):
             continue
 
+        raw_id = ant.get("id")
+        ant_id = raw_id if isinstance(raw_id, str) else ""
         declared_bits = compute_antenna_unico_5g_mask(ant)
         gx = math.floor(lat / GRID_CELL_DEG)
         gy = math.floor(lon / GRID_CELL_DEG)
         cell_key = (gx + 10000) * 100000 + (gy + 20000)
         map_for_op = spatial_buckets[target_op]
+        entry = (station_idx, ant_id, lat, lon, declared_bits)
         bucket = map_for_op.get(cell_key)
         if bucket is None:
-            map_for_op[cell_key] = [(lat, lon, declared_bits)]
+            map_for_op[cell_key] = [entry]
         else:
-            bucket.append((lat, lon, declared_bits))
+            bucket.append(entry)
 
     max_dist_km = UNICO_MAX_MATCH_DISTANCE_KM
-    init_best_dist = max_dist_km + 1e-9
+    candidates_by_unico: list[list[tuple[float, int, str, int]]] = [[] for _ in range(n_unico)]
+    unico_ops: list[str] = [""] * n_unico
+    heap: list[tuple[float, int, int]] = []
 
     for i, u in enumerate(unico_antenas):
-        map_for_op = spatial_buckets.get(str(u.get("op") or ""))
+        if not isinstance(u, dict):
+            continue
+        op_key = str(u.get("op") or "")
+        unico_ops[i] = op_key
+        map_for_op = spatial_buckets.get(op_key)
         if not map_for_op:
             continue
-        u_lat = float(u["lat"])
-        u_lon = float(u["lon"])
+        raw_u_lat = u.get("lat")
+        raw_u_lon = u.get("lon")
+        if (
+            raw_u_lat is None
+            or raw_u_lon is None
+            or isinstance(raw_u_lat, bool)
+            or isinstance(raw_u_lon, bool)
+        ):
+            continue
+        try:
+            u_lat = float(raw_u_lat)
+            u_lon = float(raw_u_lon)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(u_lat) and math.isfinite(u_lon)):
+            continue
+
         gx = math.floor(u_lat / GRID_CELL_DEG)
         gy = math.floor(u_lon / GRID_CELL_DEG)
-
-        best_dist_km = init_best_dist
-        best_bits = 0
-        found_best = False
+        cands: list[tuple[float, int, str, int]] = []
 
         for dx in (-1, 0, 1):
             row_base = (gx + dx + 10000) * 100000
@@ -775,15 +819,47 @@ def match_unico_declared_antennas_masks(
                 bucket = map_for_op.get(row_base + (gy + dy + 20000))
                 if not bucket:
                     continue
-                for cand_lat, cand_lon, cand_bits in bucket:
+                for station_idx, ant_id, cand_lat, cand_lon, cand_bits in bucket:
                     dist_km = haversine_distance_km(u_lat, u_lon, cand_lat, cand_lon)
-                    if dist_km <= max_dist_km and dist_km < best_dist_km:
-                        best_dist_km = dist_km
-                        best_bits = cand_bits
-                        found_best = True
+                    if dist_km <= max_dist_km:
+                        cands.append((dist_km, station_idx, ant_id, cand_bits))
 
-        if found_best and best_bits != 0:
-            result[i] = best_bits
+        if cands:
+            cands.sort(key=lambda item: (item[0], item[1]))
+            candidates_by_unico[i] = cands
+            heapq.heappush(heap, (cands[0][0], i, 0))
+
+    claimed_by_op: dict[str, set[int]] = {op_key: set() for op_key in OPERATOR_ORDER}
+    claimed_ids_by_op: dict[str, set[str]] = {op_key: set() for op_key in OPERATOR_ORDER}
+    resolved = [False] * n_unico
+
+    while heap:
+        _, u_idx, cand_pos = heapq.heappop(heap)
+        if resolved[u_idx]:
+            continue
+        op_key = unico_ops[u_idx]
+        claimed_for_op = claimed_by_op.get(op_key)
+        claimed_ids_for_op = claimed_ids_by_op.get(op_key)
+        if claimed_for_op is None or claimed_ids_for_op is None:
+            resolved[u_idx] = True
+            continue
+
+        cands = candidates_by_unico[u_idx]
+        _, station_idx, ant_id, declared_bits = cands[cand_pos]
+        if station_idx in claimed_for_op or (ant_id != "" and ant_id in claimed_ids_for_op):
+            next_pos = cand_pos + 1
+            if next_pos < len(cands):
+                heapq.heappush(heap, (cands[next_pos][0], u_idx, next_pos))
+            else:
+                resolved[u_idx] = True
+            continue
+
+        resolved[u_idx] = True
+        if declared_bits != 0:
+            claimed_for_op.add(station_idx)
+            if ant_id != "":
+                claimed_ids_for_op.add(ant_id)
+            result[u_idx] = declared_bits
 
     return result
 

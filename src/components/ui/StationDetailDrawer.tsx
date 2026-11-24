@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Layers,
   Radio,
+  RadioTower,
   X,
 } from 'lucide-react';
 import {
@@ -12,10 +13,16 @@ import {
   normalizeAntennaBandsList,
 } from '../../hooks/useAntenasData';
 import {
+  formatUnicoDeclaredBitsList,
+  formatUnicoDistance,
+  formatUnicoFasesLabel,
+} from '../../hooks/useUnico5gData';
+import {
   getDetalleEstacionUrl,
   OPERATOR_META,
   type AntennaRecord,
 } from '../../types/antena';
+import type { UnicoDeclaredRealAntennaMatch } from '../../types/unico5g';
 import {
   MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   findNearestAntennas,
@@ -64,6 +71,7 @@ function formatFrequencyRangeEntry(raw: string): {
 export interface StationDetailDrawerProps {
   antenna: AntennaRecord | null;
   allAntenas: AntennaRecord[];
+  unicoDeclaredById?: ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>;
   onClose: () => void;
   onSelectAntenna: (ant: AntennaRecord) => void;
 }
@@ -71,6 +79,7 @@ export interface StationDetailDrawerProps {
 export function StationDetailDrawer({
   antenna,
   allAntenas,
+  unicoDeclaredById,
   onClose,
   onSelectAntenna,
 }: StationDetailDrawerProps) {
@@ -140,6 +149,10 @@ export function StationDetailDrawer({
   if (!antenna) return null;
 
   const meta = OPERATOR_META[antenna.op];
+  const unicoMatch = unicoDeclaredById?.get(antenna.id) ?? null;
+  const unicoDeclaredBands = unicoMatch
+    ? formatUnicoDeclaredBitsList(unicoMatch.declaredBits)
+    : [];
   const coordsText = `${antenna.lat.toFixed(6)}, ${antenna.lon.toFixed(6)}`;
   const mineturUrl = getDetalleEstacionUrl(antenna);
   const osmUrl = `https://www.openstreetmap.org/?mlat=${antenna.lat}&mlon=${antenna.lon}#map=18/${antenna.lat}/${antenna.lon}`;
@@ -162,7 +175,7 @@ export function StationDetailDrawer({
     >
       <div className="drawer-header">
         <div className="drawer-title-group">
-          <div>
+          <div className="drawer-badges-row">
             <span
               className="operator-badge"
               style={{
@@ -178,6 +191,15 @@ export function StationDetailDrawer({
               />
               {meta.name}
             </span>
+
+            {unicoMatch && (
+              <span className="station-unico-badge">
+                <RadioTower size={11} aria-hidden="true" />
+                <span>
+                  UNICO 5G · {formatUnicoFasesLabel(unicoMatch.fases)}
+                </span>
+              </span>
+            )}
           </div>
           <h2 className="drawer-station-title">
             Estación <span className="mono">#{antenna.gid}</span>
@@ -226,6 +248,9 @@ export function StationDetailDrawer({
               {integratedSite.members.map((member) => {
                 const mMeta = OPERATOR_META[member.op];
                 const isSelectedMember = member.id === antenna.id;
+                const isMemberUnico = Boolean(
+                  unicoDeclaredById?.has(member.id),
+                );
                 return (
                   <button
                     key={member.id}
@@ -252,9 +277,73 @@ export function StationDetailDrawer({
                     <span className="integrated-op-gid mono">
                       #{member.gid}
                     </span>
+                    {isMemberUnico && (
+                      <span className="integrated-op-unico-tag">UNICO</span>
+                    )}
                   </button>
                 );
               })}
+            </div>
+          </section>
+        )}
+
+        {/* Declaración UNICO 5G */}
+        {unicoMatch && (
+          <section
+            id="station-unico-card"
+            className="station-unico-card"
+            aria-label="Declaración UNICO 5G"
+          >
+            <div className="station-unico-head">
+              <span className="station-unico-title">
+                <RadioTower size={13} aria-hidden="true" />
+                <span>Declaración UNICO 5G</span>
+              </span>
+              <span className="station-unico-fase-pill">
+                {formatUnicoFasesLabel(unicoMatch.fases)}
+              </span>
+            </div>
+
+            <p className="station-unico-desc">
+              Antena más próxima disponible de la operadora (a{' '}
+              <strong className="mono">
+                {formatUnicoDistance(unicoMatch.minDistanceKm)}
+              </strong>
+              , ≤&nbsp;1.000&nbsp;m) con 5G declarado en UNICO.
+            </p>
+
+            {unicoDeclaredBands.length > 0 && (
+              <div
+                className="station-unico-bands"
+                aria-label="Bandas 5G UNICO detectadas"
+              >
+                {unicoDeclaredBands.map((bandCode) => (
+                  <span key={bandCode} className="station-unico-band-chip mono">
+                    {bandCode}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div className="station-unico-entries">
+              {unicoMatch.entries.map((entry) => (
+                <div key={entry.unicoId} className="station-unico-entry-row">
+                  <div className="station-unico-entry-main">
+                    <span className="station-unico-entry-fase">
+                      Fase {entry.fase} · {entry.mun}
+                    </span>
+                    <span
+                      className="station-unico-entry-empresa"
+                      title={entry.empresa}
+                    >
+                      {entry.empresa}
+                    </span>
+                  </div>
+                  <span className="station-unico-entry-dist mono">
+                    {formatUnicoDistance(entry.distanceKm)}
+                  </span>
+                </div>
+              ))}
             </div>
           </section>
         )}
@@ -472,6 +561,7 @@ export function StationDetailDrawer({
               {colocatedStations.map((other) => {
                 const otherMeta = OPERATOR_META[other.op];
                 const meters = Math.round(other.distanceKm * 1000);
+                const isOtherUnico = Boolean(unicoDeclaredById?.has(other.id));
                 return (
                   <button
                     key={other.id}
@@ -498,6 +588,9 @@ export function StationDetailDrawer({
                         >
                           #{other.gid}
                         </span>
+                        {isOtherUnico && (
+                          <span className="integrated-op-unico-tag">UNICO</span>
+                        )}
                       </div>
                       <div className="nearest-item-addr">{other.opRaw}</div>
                     </div>

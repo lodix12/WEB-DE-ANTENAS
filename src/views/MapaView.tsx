@@ -17,10 +17,17 @@ import {
   useAntenasData,
   useFilteredAntenas,
 } from '../hooks/useAntenasData';
+import { useUnico5gData } from '../hooks/useUnico5gData';
 import { useWorkspace } from '../hooks/useWorkspace';
 
 export function MapaView() {
   const { derived, isLoading, isError, error, refetch } = useAntenasData();
+  const {
+    dataset: unicoDataset,
+    declaredRealAntennasById,
+    isLoading: isUnicoLoading,
+    isError: isUnicoError,
+  } = useUnico5gData();
   const {
     styleId,
     setStyleId,
@@ -35,6 +42,8 @@ export function MapaView() {
     clearBands,
     exclusiveBands,
     setExclusiveBands,
+    onlyUnicoDeclared,
+    setOnlyUnicoDeclared,
     activeOperators,
     toggleOperator,
     selectAllOperators,
@@ -53,6 +62,8 @@ export function MapaView() {
     toggleShowBandsOnMap,
     disableClustering,
     toggleDisableClustering,
+    highlightUnicoDeclared,
+    toggleHighlightUnicoDeclared,
     sectionsMenuOpen,
     setSectionsMenuOpen,
     focusAntennaOnMap,
@@ -131,6 +142,13 @@ export function MapaView() {
         clearBands();
         setExclusiveBands(false);
       }
+      if (
+        onlyUnicoDeclared &&
+        unicoDataset &&
+        !declaredRealAntennasById.has(found.id)
+      ) {
+        setOnlyUnicoDeclared(false);
+      }
       if (searchQuery.trim().length > 0) {
         setSearchQuery('');
       }
@@ -149,17 +167,21 @@ export function MapaView() {
     selectedProvince,
     selectedBands,
     exclusiveBands,
+    onlyUnicoDeclared,
+    unicoDataset,
+    declaredRealAntennasById,
     searchQuery,
     setSelectedComunidad,
     setSelectedProvince,
     clearBands,
     setExclusiveBands,
+    setOnlyUnicoDeclared,
     setSearchQuery,
     focusAntennaOnMap,
     triggerFlyTo,
   ]);
 
-  const filteredAntenas = useFilteredAntenas({
+  const baseFilteredAntenas = useFilteredAntenas({
     derived,
     searchQuery,
     selectedComunidad,
@@ -168,6 +190,55 @@ export function MapaView() {
     selectedBands,
     exclusiveBands,
   });
+
+  const unicoStatus: 'ready' | 'loading' | 'error' = isUnicoError
+    ? 'error'
+    : !unicoDataset && isUnicoLoading
+      ? 'loading'
+      : 'ready';
+
+  const { filteredAntenas, unicoDeclaredInBaseCount } = useMemo(() => {
+    if (!unicoDataset && isUnicoLoading) {
+      return {
+        filteredAntenas: baseFilteredAntenas,
+        unicoDeclaredInBaseCount: 0,
+      };
+    }
+
+    if (declaredRealAntennasById.size === 0) {
+      return {
+        filteredAntenas: onlyUnicoDeclared ? [] : baseFilteredAntenas,
+        unicoDeclaredInBaseCount: 0,
+      };
+    }
+
+    let declaredCount = 0;
+    if (!onlyUnicoDeclared) {
+      for (let i = 0; i < baseFilteredAntenas.length; i++) {
+        if (declaredRealAntennasById.has(baseFilteredAntenas[i].id)) {
+          declaredCount += 1;
+        }
+      }
+      return {
+        filteredAntenas: baseFilteredAntenas,
+        unicoDeclaredInBaseCount: declaredCount,
+      };
+    }
+
+    const onlyDeclared = baseFilteredAntenas.filter((ant) =>
+      declaredRealAntennasById.has(ant.id),
+    );
+    return {
+      filteredAntenas: onlyDeclared,
+      unicoDeclaredInBaseCount: onlyDeclared.length,
+    };
+  }, [
+    baseFilteredAntenas,
+    declaredRealAntennasById,
+    isUnicoLoading,
+    onlyUnicoDeclared,
+    unicoDataset,
+  ]);
 
   const liveSelectedAntenna = useMemo(
     () => resolveLiveSelectedAntenna(selectedAntenna, derived),
@@ -262,6 +333,11 @@ export function MapaView() {
         onClearBands={clearBands}
         exclusiveBands={exclusiveBands}
         onExclusiveBandsChange={setExclusiveBands}
+        onlyUnicoDeclared={onlyUnicoDeclared}
+        onOnlyUnicoDeclaredChange={setOnlyUnicoDeclared}
+        unicoDeclaredCount={unicoDeclaredInBaseCount}
+        unicoStatus={unicoStatus}
+        highlightUnicoDeclared={highlightUnicoDeclared}
         activeOperators={activeOperators}
         onToggleOperator={toggleOperator}
         onSelectAllOperators={selectAllOperators}
@@ -366,6 +442,9 @@ export function MapaView() {
             onToggleShowBandsOnMap={toggleShowBandsOnMap}
             disableClustering={disableClustering}
             onToggleDisableClustering={toggleDisableClustering}
+            unicoDeclaredById={declaredRealAntennasById}
+            highlightUnicoDeclared={highlightUnicoDeclared}
+            onToggleHighlightUnicoDeclared={toggleHighlightUnicoDeclared}
             activeOperators={activeOperators}
             onToggleOperator={toggleOperator}
           />
@@ -375,8 +454,14 @@ export function MapaView() {
       <StationDetailDrawer
         antenna={liveSelectedAntenna}
         allAntenas={derived?.dataset.antenas ?? []}
+        unicoDeclaredById={declaredRealAntennasById}
         onClose={() => setSelectedAntenna(null)}
-        onSelectAntenna={(ant) => focusAntennaOnMap(ant)}
+        onSelectAntenna={(ant) => {
+          if (onlyUnicoDeclared && !declaredRealAntennasById.has(ant.id)) {
+            setOnlyUnicoDeclared(false);
+          }
+          focusAntennaOnMap(ant);
+        }}
       />
     </main>
   );

@@ -192,6 +192,18 @@ class TestBuildUnico5g(unittest.TestCase):
             resolve_real_station_unico_op({"op": "otros", "opRaw": "AVATEL TELECOM S.A."}),
             "orange",
         )
+        for legal_name in (
+            "XFERA MÓVILES, S.A.U.",
+            "MÁSMÓVIL IBERCOM, S.A.",
+            "YOIGO TELECOM",
+            "EUSKALTEL, S.A.",
+            "R CABLE Y TELECABLE",
+            "TELECABLE DE ASTURIAS",
+        ):
+            self.assertEqual(
+                resolve_real_station_unico_op({"op": "otros", "opRaw": legal_name}),
+                "orange",
+            )
         self.assertIsNone(resolve_real_station_unico_op({"op": "digi", "opRaw": "DIGI SPAIN"}))
         self.assertIsNone(resolve_real_station_unico_op({"op": "otros", "opRaw": "OTRA"}))
 
@@ -269,6 +281,116 @@ class TestBuildUnico5g(unittest.TestCase):
 
         masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
         self.assertEqual(masks, [BIT_N78, 0, 0, BIT_N28_PLUS, BIT_N28 | BIT_N78])
+
+    def test_one_to_one_per_operator_and_shared_multiop_tower(self) -> None:
+        # 1) Dos proyectos Movistar apuntan a MV-1 (40.0, -3.5):
+        #    - u-mv-far (~445 m) aparece antes en la lista que u-mv-close (~111 m),
+        #      pero u-mv-close está más cerca y se queda MV-1 (N78).
+        #    - u-mv-far busca la siguiente antena Movistar más cercana libre: MV-2 (N28) a ~333 m al norte.
+        # 2) Un tercer proyecto Movistar u-mv-exhausted (~222 m al sur de MV-1) tiene MV-1 ocupada
+        #    y MV-2 ya ocupada (a ~1.0 km) / sin otra libre -> queda 0.
+        # 3) Un proyecto Vodafone en el mismo emplazamiento compartido (< 15 m de MV-1)
+        #    coincide con VF-SHARED (N28+) sin verse bloqueado por Movistar.
+        unico_antenas = [
+            {"id": "u-mv-far", "op": "movistar", "lat": 40.004, "lon": -3.5},
+            {"id": "u-mv-close", "op": "movistar", "lat": 40.001, "lon": -3.5},
+            {"id": "u-mv-exhausted", "op": "movistar", "lat": 39.998, "lon": -3.5},
+            {"id": "u-vf-shared", "op": "vodafone", "lat": 40.00005, "lon": -3.5},
+        ]
+        real_antenas = [
+            {
+                "id": "MV-1",
+                "op": "movistar",
+                "lat": 40.0,
+                "lon": -3.5,
+                "frecuencias": ["3600.00 - 3700.00"],
+            },
+            {
+                "id": "MV-2",
+                "op": "movistar",
+                "lat": 40.007,
+                "lon": -3.5,
+                "frecuencias": ["758.00 - 768.00"],
+            },
+            {
+                "id": "VF-SHARED",
+                "op": "vodafone",
+                "lat": 40.00003,
+                "lon": -3.5,
+                "frecuencias": ["758.00 - 788.00"],
+            },
+        ]
+
+        masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
+        self.assertEqual(masks, [BIT_N28, BIT_N78, 0, BIT_N28_PLUS])
+
+        # Caso cascada con 3 estaciones libres del mismo operador (A -> B -> C)
+        cascade_unico = [
+            {"id": "u-c1", "op": "orange", "lat": 41.0001, "lon": -2.0},  # ~11 m de OR-1
+            {"id": "u-c2", "op": "orange", "lat": 41.0010, "lon": -2.0},  # ~111 m de OR-1, ~222 m de OR-2
+            {"id": "u-c3", "op": "orange", "lat": 41.0025, "lon": -2.0},  # ~55 m de OR-2, ~389 m de OR-3
+        ]
+        cascade_real = [
+            {"id": "OR-1", "op": "orange", "lat": 41.0000, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "OR-2", "op": "orange", "lat": 41.0030, "lon": -2.0, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "OR-3", "op": "orange", "lat": 41.0060, "lon": -2.0, "frecuencias": ["758.00 - 788.00"]},
+        ]
+        # Distancias:
+        # u-c1 -> OR-1 (~11 m) gana OR-1 (N78)
+        # u-c3 -> OR-2 (~55 m) gana OR-2 (N28)
+        # u-c2 intenta OR-1 (111 m, ocupada) -> intenta OR-2 (222 m, ocupada) -> gana OR-3 (~556 m, N28+)
+        cascade_masks = match_unico_declared_antennas_masks(cascade_unico, cascade_real)
+        self.assertEqual(cascade_masks, [BIT_N78, BIT_N28_PLUS, BIT_N28])
+
+        # Empate exacto de distancia: menor unicoIdx gana; entre estaciones equidistantes, menor stationIdx gana
+        tie_unico = [
+            {"id": "u-t0", "op": "movistar", "lat": 39.5, "lon": -3.0},
+            {"id": "u-t1", "op": "movistar", "lat": 39.5, "lon": -3.0},
+        ]
+        tie_real = [
+            {"id": "T-A", "op": "movistar", "lat": 39.501, "lon": -3.0, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "T-B", "op": "movistar", "lat": 39.499, "lon": -3.0, "frecuencias": ["758.00 - 768.00"]},
+        ]
+        self.assertEqual(match_unico_declared_antennas_masks(tie_unico, tie_real), [BIT_N78, BIT_N28])
+
+        # Interacción 4G-only: (a) dos proyectos con la misma 4G-only más cercana -> ambos 0;
+        # (b) fallback tras 5G reclamada que encuentra una 4G-only libre antes de otra 5G -> 0
+        fourg_unico = [
+            {"id": "u-4g-1", "op": "vodafone", "lat": 39.1, "lon": -2.0},
+            {"id": "u-4g-2", "op": "vodafone", "lat": 39.1002, "lon": -2.0},
+            {"id": "u-fb-1", "op": "orange", "lat": 39.2, "lon": -2.0},
+            {"id": "u-fb-2", "op": "orange", "lat": 39.201, "lon": -2.0},
+        ]
+        fourg_real = [
+            {"id": "VF-4G", "op": "vodafone", "lat": 39.1001, "lon": -2.0, "frecuencias": ["791.00 - 801.00"]},
+            {"id": "VF-5G", "op": "vodafone", "lat": 39.105, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "OR-5G-1", "op": "orange", "lat": 39.2, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "OR-4G-2", "op": "orange", "lat": 39.203, "lon": -2.0, "frecuencias": ["791.00 - 801.00"]},
+            {"id": "OR-5G-3", "op": "orange", "lat": 39.206, "lon": -2.0, "frecuencias": ["758.00 - 768.00"]},
+        ]
+        self.assertEqual(
+            match_unico_declared_antennas_masks(fourg_unico, fourg_real),
+            [0, 0, BIT_N78, 0],
+        )
+
+        # Protección ante ID duplicado en dataset sintético y coordenadas no finitas/booleanas/inválidas
+        dup_unico = [
+            {"id": "u-d1", "op": "movistar", "lat": 39.3, "lon": -2.5},
+            {"id": "u-d2", "op": "movistar", "lat": 39.303, "lon": -2.5},
+            {"id": "u-bad-nan", "op": "movistar", "lat": float("nan"), "lon": -2.5},
+            {"id": "u-bad-bool", "op": "movistar", "lat": True, "lon": False},
+            "not-a-dict",
+        ]
+        dup_real = [
+            {"id": "MV-DUP", "op": "movistar", "lat": 39.3001, "lon": -2.5, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "MV-DUP", "op": "movistar", "lat": 39.3035, "lon": -2.5, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "MV-INF", "op": "movistar", "lat": float("inf"), "lon": -2.5, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "MV-BOOL", "op": "movistar", "lat": True, "lon": False, "frecuencias": ["3600.00 - 3700.00"]},
+        ]
+        self.assertEqual(
+            match_unico_declared_antennas_masks(dup_unico, dup_real),  # type: ignore[arg-type]
+            [BIT_N78, 0, 0, 0, 0],
+        )
 
     def test_sync_unico_5g_declarations_file_and_cli(self) -> None:
         unico_doc = _sample_unico_dataset()

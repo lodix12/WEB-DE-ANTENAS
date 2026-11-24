@@ -11,10 +11,14 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { AppHeader } from '../components/ui/AppHeader';
-import type {
-  AntenasDataset,
-  AntennaRecord,
-  LiveBandPatch,
+import { FilterPanel } from '../components/ui/FilterPanel';
+import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
+import { MapOverlays } from '../components/map/MapOverlays';
+import {
+  OPERATOR_ORDER,
+  type AntenasDataset,
+  type AntennaRecord,
+  type LiveBandPatch,
 } from '../types/antena';
 import {
   UNICO_DECLARED_BAND_TABS,
@@ -22,6 +26,7 @@ import {
   type UnicoAntennaRecord,
   type UnicoDataset,
 } from '../types/unico5g';
+import { MapaView } from '../views/MapaView';
 import { Unico5gView } from '../views/Unico5gView';
 import { WorkspaceProvider } from './WorkspaceProvider';
 import {
@@ -41,9 +46,13 @@ import {
   UNICO_PROVINCE_LABELS,
   bandFilterToMask,
   computeUnicoSimpleSummary,
+  formatUnicoDeclaredBitsList,
+  formatUnicoDistance,
+  formatUnicoFasesLabel,
   formatUnicoInt,
   formatUnicoPercent,
   isUnicoOperatorKey,
+  matchUnicoDeclaredAntennas,
   matchUnicoDeclaredAntennasMasks,
   normalizeUnicoOperatorInput,
   parseCustomUnico5gJson,
@@ -1361,5 +1370,862 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         /git\s+add\b(?:[^\n]|\\\n)*public\/data\/unico-5g\.json/,
       );
     }
+  });
+
+  it('selecciona 1-a-1 por operadora las antenas reales declaradas UNICO 5G en matchUnicoDeclaredAntennas (fallback a siguiente más cercana, torre compartida multioperador y paridad 1:1 con el dataset real)', async () => {
+    expect(formatUnicoDeclaredBitsList(UNICO_BIT_N78)).toEqual(['N78']);
+    expect(
+      formatUnicoDeclaredBitsList(UNICO_BIT_N28 | UNICO_BIT_N78),
+    ).toEqual(['N78', 'N28']);
+    expect(
+      formatUnicoDeclaredBitsList(UNICO_BIT_N28_PLUS | UNICO_BIT_N78),
+    ).toEqual(['N78', 'N28+']);
+    expect(formatUnicoFasesLabel([1])).toBe('Fase 1');
+    expect(formatUnicoFasesLabel([2])).toBe('Fase 2');
+    expect(formatUnicoFasesLabel([1, 2])).toBe('Fase 1 y 2');
+    expect(formatUnicoFasesLabel([])).toBe('UNICO 5G');
+
+    const unicoAntenas: UnicoAntennaRecord[] = [
+      // 0: Expediente Movistar más lejano (~445 m de MV-PRIMARY-5G) -> tras ser elegida por u-map-f1-closer,
+      //    debe buscar la siguiente más cercana disponible (MV-SECOND-N28 a ~333 m al norte)
+      makeUnicoAntenna({
+        id: 'u-map-f2-farther',
+        fase: 2,
+        op: 'movistar',
+        mun: 'Pueblo A',
+        lat: 40.0 + 0.004,
+        lon: -3.5,
+      }),
+      // 1: Expediente Movistar más cercano (~111 m de MV-PRIMARY-5G) -> se queda MV-PRIMARY-5G
+      makeUnicoAntenna({
+        id: 'u-map-f1-closer',
+        fase: 1,
+        op: 'movistar',
+        mun: 'Pueblo A',
+        lat: 40.0 + 0.001,
+        lon: -3.5,
+      }),
+      // 2: Tercer expediente Movistar (~222 m al sur de MV-PRIMARY-5G) -> MV-PRIMARY-5G y MV-SECOND-N28 ocupadas -> 0
+      makeUnicoAntenna({
+        id: 'u-map-f2-exhausted',
+        fase: 2,
+        op: 'movistar',
+        mun: 'Pueblo A',
+        lat: 40.0 - 0.002,
+        lon: -3.5,
+      }),
+      // 3: Expediente Vodafone en el mismo emplazamiento compartido (< 15 m de MV-PRIMARY-5G) -> NO se bloquea por Movistar
+      makeUnicoAntenna({
+        id: 'u-map-vf-shared',
+        fase: 1,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        mun: 'Pueblo A',
+        lat: 40.0 + 0.00005,
+        lon: -3.5,
+      }),
+      // 4: Caso 4G más cercana (~100 m, libre) bloquea a una 5G más lejana (~600 m) -> ninguna seleccionada
+      makeUnicoAntenna({
+        id: 'u-map-blocked-by-4g',
+        fase: 1,
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        lat: 38.0,
+        lon: -4.0,
+      }),
+      // 5: Caso fuera de rango (> 1 km) -> no seleccionada
+      makeUnicoAntenna({
+        id: 'u-map-too-far',
+        fase: 2,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 42.0,
+        lon: -5.0,
+      }),
+    ];
+
+    const realAntenas: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'MV-PRIMARY-5G',
+        gid: '880001',
+        op: 'movistar',
+        lat: 40.0,
+        lon: -3.5,
+        bandas: ['700 MHz', '3500 MHz'],
+        frecuencias: ['758.00 - 768.00', '3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-SECOND-N28',
+        gid: '880011',
+        op: 'movistar',
+        lat: 40.0 + 0.007,
+        lon: -3.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-SHARED-N28PLUS',
+        gid: '880012',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 40.0 + 0.00003,
+        lon: -3.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 788.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-CLOSEST-4G',
+        gid: '880002',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 38.0 + 0.0009,
+        lon: -4.0,
+        bandas: ['800 MHz'],
+        frecuencias: ['791.00 - 801.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-SECOND-5G',
+        gid: '880003',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 38.0 + 0.0054,
+        lon: -4.0,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-TOO-FAR-5G',
+        gid: '880004',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 42.0 + 0.012,
+        lon: -5.0,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+    ];
+
+    const matchResult = matchUnicoDeclaredAntennas(unicoAntenas, realAntenas);
+    expect(Array.from(matchResult.declaredMasks)).toEqual([
+      UNICO_BIT_N28,
+      UNICO_BIT_N78 | UNICO_BIT_N28,
+      0,
+      UNICO_BIT_N28_PLUS,
+      0,
+      0,
+    ]);
+    expect(matchResult.declaredRealAntennasById.size).toBe(3);
+    expect(matchResult.declaredRealAntennasById.has('OR-CLOSEST-4G')).toBe(
+      false,
+    );
+    expect(matchResult.declaredRealAntennasById.has('OR-SECOND-5G')).toBe(
+      false,
+    );
+    expect(matchResult.declaredRealAntennasById.has('VF-TOO-FAR-5G')).toBe(
+      false,
+    );
+
+    const mvPrimaryMatch =
+      matchResult.declaredRealAntennasById.get('MV-PRIMARY-5G');
+    expect(mvPrimaryMatch).toBeDefined();
+    expect(mvPrimaryMatch?.fases).toEqual([1]);
+    expect(mvPrimaryMatch?.declaredBits).toBe(UNICO_BIT_N78 | UNICO_BIT_N28);
+    expect(mvPrimaryMatch?.entries).toHaveLength(1);
+    expect(mvPrimaryMatch?.entries[0]?.unicoId).toBe('u-map-f1-closer');
+
+    const mvSecondMatch =
+      matchResult.declaredRealAntennasById.get('MV-SECOND-N28');
+    expect(mvSecondMatch).toBeDefined();
+    expect(mvSecondMatch?.fases).toEqual([2]);
+    expect(mvSecondMatch?.declaredBits).toBe(UNICO_BIT_N28);
+    expect(mvSecondMatch?.entries).toHaveLength(1);
+    expect(mvSecondMatch?.entries[0]?.unicoId).toBe('u-map-f2-farther');
+
+    const vfSharedMatch =
+      matchResult.declaredRealAntennasById.get('VF-SHARED-N28PLUS');
+    expect(vfSharedMatch).toBeDefined();
+    expect(vfSharedMatch?.fases).toEqual([1]);
+    expect(vfSharedMatch?.declaredBits).toBe(UNICO_BIT_N28_PLUS);
+    expect(vfSharedMatch?.entries).toHaveLength(1);
+    expect(vfSharedMatch?.entries[0]?.unicoId).toBe('u-map-vf-shared');
+
+    // Paridad exacta 1-a-1 sobre el dataset real en disco (unico-5g.json × antenas.json)
+    const [unicoDataset, rawAntenasDataset] = await Promise.all([
+      loadRealUnicoDatasetFromDisk(),
+      loadRealAntenasDatasetFromDisk(),
+    ]);
+    const derived = buildDerivedAntenasStructures(rawAntenasDataset);
+    const realMatch = matchUnicoDeclaredAntennas(
+      unicoDataset.antenas,
+      derived.dataset.antenas,
+      derived.bandCodeMasks,
+    );
+
+    let nonZeroMasks = 0;
+    for (let i = 0; i < realMatch.declaredMasks.length; i++) {
+      if (realMatch.declaredMasks[i] !== 0) nonZeroMasks += 1;
+    }
+
+    for (const [antId, info] of realMatch.declaredRealAntennasById.entries()) {
+      expect(derived.byId.has(antId)).toBe(true);
+      expect(info.declaredBits & UNICO_DECLARED_ANY_MASK).not.toBe(0);
+      expect(info.entries).toHaveLength(1);
+      expect(info.minDistanceKm).toBeLessThanOrEqual(
+        UNICO_MAX_MATCH_DISTANCE_KM + 1e-9,
+      );
+    }
+
+    // Regla 1-a-1 estricta: tantas antenas reales seleccionadas como ubicaciones UNICO declaradas
+    expect(realMatch.declaredRealAntennasById.size).toBe(nonZeroMasks);
+    expect(realMatch.declaredRealAntennasById.size).toBeGreaterThan(5000);
+  }, 15_000);
+
+  it('resalta las antenas declaradas UNICO 5G en AntenasMap, MapOverlays, FilterPanel, StationDetailDrawer y MapaView (SSR)', async () => {
+    const [antenasMapSource, mapOverlaysSource] = await Promise.all([
+      readDiskTextFile('../components/map/AntenasMap.tsx'),
+      readDiskTextFile('../components/map/MapOverlays.tsx'),
+    ]);
+
+    // 1. Capas WebGL dedicadas en AntenasMap colocadas debajo de LAYER_UNCLUSTERED y activas por defecto
+    expect(antenasMapSource).toContain(
+      "const LAYER_UNICO_DECLARED_HALO = 'antenas-unico-declared-halo';",
+    );
+    expect(antenasMapSource).toContain(
+      "const LAYER_UNICO_DECLARED_RING = 'antenas-unico-declared-ring';",
+    );
+    expect(antenasMapSource).toContain("['==', ['get', 'isUnicoDeclared'], true]");
+    expect(antenasMapSource).toContain(
+      'const [internalHighlightUnicoDeclared, setInternalHighlightUnicoDeclared] =\n    useState<boolean>(true);',
+    );
+    expect(
+      antenasMapSource.indexOf('map.addLayer({\n        id: LAYER_UNICO_DECLARED_HALO'),
+    ).toBeGreaterThan(-1);
+    expect(
+      antenasMapSource.indexOf('id: LAYER_UNICO_DECLARED_HALO'),
+    ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_UNICO_DECLARED_RING'));
+    expect(
+      antenasMapSource.indexOf('id: LAYER_UNICO_DECLARED_RING'),
+    ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_UNCLUSTERED,'));
+    expect(antenasMapSource).toContain('map-popup-unico-badge');
+    expect(antenasMapSource).toContain('map-popup-unico-tag');
+
+    // 2. MapOverlays expone el interruptor #map-highlight-unico-option en el desplegable de capas
+    expect(mapOverlaysSource).toContain('id="map-highlight-unico-option"');
+    expect(mapOverlaysSource).toContain('Resaltar declaradas UNICO 5G');
+    const overlaysHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'osm',
+        onStyleChange: () => {},
+        highlightUnicoDeclared: true,
+        onToggleHighlightUnicoDeclared: () => {},
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
+
+    // 3. FilterPanel + StationDetailDrawer + MapaView con emplazamiento compartido (< 15 m) donde Movistar es UNICO y Vodafone no
+    const unicoFixture: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-ui-mv-1',
+        fase: 1,
+        op: 'movistar',
+        empresa: 'TELEFÓNICA MÓVILES ESPAÑA, S.A.',
+        ccaa: 'Comunidad de Madrid',
+        prov: 'MADRID',
+        mun: 'Buitrago del Lozoya',
+        lat: 40.992,
+        lon: -3.635,
+      }),
+    ];
+    const mvAnt = makeRealAntenna({
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890001',
+      gid: '2890001',
+      op: 'movistar',
+      lat: 40.9921, // ~11 m de la coordenada UNICO
+      lon: -3.635,
+      mun: 'BUITRAGO DEL LOZOYA',
+      prov: 'MADRID',
+      bandas: ['700 MHz', '3500 MHz'],
+      frecuencias: ['758.00 - 768.00', '3600.00 - 3700.00'],
+    });
+    const vfSharedAnt = makeRealAntenna({
+      id: 'VODAFONE ESPAÑA, S.A.U. - 2890002',
+      gid: '2890002',
+      op: 'vodafone',
+      opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+      lat: 40.99214, // ~4.4 m de Movistar (< 15 m -> icono multicolor compartido)
+      lon: -3.635,
+      mun: 'BUITRAGO DEL LOZOYA',
+      prov: 'MADRID',
+      bandas: ['800 MHz'],
+      frecuencias: ['791.00 - 801.00'],
+    });
+    const syntheticAntenas = makeSyntheticAntenasDataset([mvAnt, vfSharedAnt]);
+    const derived = buildDerivedAntenasStructures(syntheticAntenas);
+    const { declaredRealAntennasById } = matchUnicoDeclaredAntennas(
+      unicoFixture,
+      derived.dataset.antenas,
+      derived.bandCodeMasks,
+    );
+
+    expect(declaredRealAntennasById.has(mvAnt.id)).toBe(true);
+    expect(declaredRealAntennasById.has(vfSharedAnt.id)).toBe(false);
+
+    // FilterPanel SSR con sección UNICO 5G y contador exacto
+    const filterHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        onlyUnicoDeclared: false,
+        onOnlyUnicoDeclaredChange: () => {},
+        unicoDeclaredCount: 1,
+        highlightUnicoDeclared: true,
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterHtml).toContain('id="filter-unico-declared-checkbox"');
+    expect(filterHtml).toContain('Solo declaradas UNICO 5G');
+    expect(filterHtml).toContain('1 declarada');
+    expect(filterHtml).toContain('unico-filter-legend-swatch');
+
+    // FilterPanel SSR con unicoStatus loading/error y highlightUnicoDeclared desactivado
+    const filterLoadingHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        onlyUnicoDeclared: false,
+        onOnlyUnicoDeclaredChange: () => {},
+        unicoDeclaredCount: 0,
+        unicoStatus: 'loading',
+        highlightUnicoDeclared: false,
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterLoadingHtml).toContain('Cargando…');
+    expect(filterLoadingHtml).toContain('disabled=""');
+    expect(filterLoadingHtml).toContain('Sincronizando declaraciones UNICO 5G…');
+    expect(filterLoadingHtml).toContain('unico-filter-legend-swatch is-muted');
+
+    const filterMutedHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        onlyUnicoDeclared: false,
+        onOnlyUnicoDeclaredChange: () => {},
+        unicoDeclaredCount: 1,
+        unicoStatus: 'ready',
+        highlightUnicoDeclared: false,
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterMutedHtml).toContain('unico-filter-legend-swatch is-muted');
+    expect(filterMutedHtml).toContain(
+      'Resaltado verde desactivado en opciones del mapa',
+    );
+
+    const filterErrorHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        onlyUnicoDeclared: false,
+        onOnlyUnicoDeclaredChange: () => {},
+        unicoDeclaredCount: 0,
+        unicoStatus: 'error',
+        highlightUnicoDeclared: true,
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(filterErrorHtml).toContain('No disponible');
+    expect(filterErrorHtml).toContain('disabled=""');
+    expect(filterErrorHtml).toContain('No se pudo cargar el catálogo UNICO 5G');
+
+    // StationDetailDrawer SSR sobre la estación Movistar declarada UNICO
+    const drawerMovistarHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: mvAnt,
+        allAntenas: derived.dataset.antenas,
+        unicoDeclaredById: declaredRealAntennasById,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(drawerMovistarHtml).toContain('id="station-unico-card"');
+    expect(drawerMovistarHtml).toContain('Declaración UNICO 5G');
+    expect(drawerMovistarHtml).toContain('UNICO 5G · Fase 1');
+    expect(drawerMovistarHtml).toContain('Buitrago del Lozoya');
+    expect(drawerMovistarHtml).toContain('integrated-op-unico-tag');
+    expect(drawerMovistarHtml).toContain(
+      'title="TELEFÓNICA MÓVILES ESPAÑA, S.A."',
+    );
+    expect(drawerMovistarHtml).not.toMatch(/id de propietario/i);
+    expect(drawerMovistarHtml).not.toMatch(/código de emplazamiento/i);
+
+    // StationDetailDrawer SSR sobre la estación Vodafone NO declarada en el mismo mástil
+    const drawerVodafoneHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: vfSharedAnt,
+        allAntenas: derived.dataset.antenas,
+        unicoDeclaredById: declaredRealAntennasById,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(drawerVodafoneHtml).not.toContain('id="station-unico-card"');
+    // Pero sí muestra la etiqueta UNICO en la pestaña integrada y vecino de Movistar
+    expect(drawerVodafoneHtml).toContain('integrated-op-unico-tag');
+
+    // MapaView SSR integrado con QueryClient + Router + WorkspaceProvider
+    const syntheticUnicoDataset = parseCustomUnico5gJson({
+      schemaVersion: 1,
+      updatedAt: '2026-11-24T17:00:00Z',
+      antenas: unicoFixture,
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], syntheticAntenas);
+    queryClient.setQueryData(['scan-status'], null);
+    queryClient.setQueryData(UNICO_5G_QUERY_KEY, syntheticUnicoDataset);
+
+    const rootRoute = createRootRoute({ component: Outlet });
+    const mapaRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      validateSearch: (s: Record<string, unknown>) => ({
+        gid: typeof s.gid === 'string' ? s.gid : undefined,
+        id: typeof s.id === 'string' ? s.id : undefined,
+      }),
+      component: MapaView,
+    });
+    const memoryRouter = createRouter({
+      routeTree: rootRoute.addChildren([mapaRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    await memoryRouter.load();
+
+    const mapaHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: memoryRouter }),
+        ),
+      ),
+    );
+    expect(mapaHtml).toContain('id="filter-unico-declared-checkbox"');
+    expect(mapaHtml).toContain('Solo declaradas UNICO 5G');
+    expect(mapaHtml).toContain('1 declarada');
+
+    // 4. Casos límite de formatUnicoDistance, EstadisticasView y matchUnicoDeclaredAntennas
+    expect(formatUnicoDistance(0.009)).toBe('9\u00A0m');
+    expect(formatUnicoDistance(0.9996)).toBe('1.000\u00A0m');
+    expect(formatUnicoDistance(1.0)).toBe('1.000\u00A0m');
+    expect(formatUnicoDistance(1.25)).toBe('1,25\u00A0km');
+    expect(formatUnicoDistance(Number.NaN)).toBe('0\u00A0m');
+    expect(formatUnicoDistance(-0.5)).toBe('0\u00A0m');
+
+    const estadisticasSource = await readDiskTextFile(
+      '../views/EstadisticasView.tsx',
+    );
+    const resetUnicoMatches = estadisticasSource.match(
+      /setOnlyUnicoDeclared\(false\);/g,
+    );
+    expect(resetUnicoMatches?.length ?? 0).toBeGreaterThanOrEqual(3);
+
+    const edgeUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-edge-nan',
+        fase: 1,
+        op: 'movistar',
+        lat: Number.NaN,
+        lon: -3.7,
+      }),
+      makeUnicoAntenna({
+        id: 'u-edge-xfera',
+        fase: 2,
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 40.5,
+        lon: -3.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-edge-avatel',
+        fase: 1,
+        op: 'orange',
+        empresa: 'AVATEL TELECOM S.A.',
+        lat: 40.7,
+        lon: -3.5,
+      }),
+    ];
+    const edgeReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'BAD-COORD-1',
+        gid: '9990001',
+        op: 'movistar',
+        lat: Number.POSITIVE_INFINITY,
+        lon: -3.7,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'XFERA MOVILES, S.A.U. - 9990002',
+        gid: '9990002',
+        op: 'otros',
+        opRaw: 'MÁSMÓVIL / XFERA MOVILES, S.A.U.',
+        lat: 40.5005,
+        lon: -3.5,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'AVATEL TELECOM S.A. - 9990003',
+        gid: '9990003',
+        op: 'otros',
+        opRaw: 'AVATEL TELECOM S.A.',
+        lat: 40.7005,
+        lon: -3.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+    ];
+    const edgeRes = matchUnicoDeclaredAntennas(edgeUnico, edgeReals);
+    expect(edgeRes.declaredMasks[0]).toBe(0);
+    expect(edgeRes.declaredMasks[1]).toBe(UNICO_BIT_N78);
+    expect(edgeRes.declaredMasks[2]).toBe(UNICO_BIT_N28);
+    expect(
+      edgeRes.declaredRealAntennasById.has('XFERA MOVILES, S.A.U. - 9990002'),
+    ).toBe(true);
+    expect(
+      edgeRes.declaredRealAntennasById.has('AVATEL TELECOM S.A. - 9990003'),
+    ).toBe(true);
+
+    // Empate exacto de distancia: menor unicoIdx gana la antena más cercana y el siguiente pasa a la 2ª;
+    // entre dos estaciones equidistantes, gana menor stationIdx
+    const tieUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-tie-0',
+        fase: 1,
+        op: 'movistar',
+        lat: 39.5,
+        lon: -3.0,
+      }),
+      makeUnicoAntenna({
+        id: 'u-tie-1',
+        fase: 2,
+        op: 'movistar',
+        lat: 39.5,
+        lon: -3.0,
+      }),
+    ];
+    const tieReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'MV-TIE-A',
+        gid: '991001',
+        op: 'movistar',
+        lat: 39.501,
+        lon: -3.0,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-TIE-B',
+        gid: '991002',
+        op: 'movistar',
+        lat: 39.499,
+        lon: -3.0,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+    ];
+    const tieRes = matchUnicoDeclaredAntennas(tieUnico, tieReals);
+    expect(Array.from(tieRes.declaredMasks)).toEqual([
+      UNICO_BIT_N78,
+      UNICO_BIT_N28,
+    ]);
+    expect(
+      tieRes.declaredRealAntennasById.get('MV-TIE-A')?.entries[0]?.unicoId,
+    ).toBe('u-tie-0');
+    expect(
+      tieRes.declaredRealAntennasById.get('MV-TIE-B')?.entries[0]?.unicoId,
+    ).toBe('u-tie-1');
+
+    // Interacción 4G-only: (a) dos proyectos con la misma 4G-only más cercana -> ambos 0;
+    // (b) fallback tras 5G reclamada que encuentra una 4G-only libre antes de otra 5G -> se detiene en 0
+    const fourGUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-4g-shared-1',
+        fase: 1,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 39.1,
+        lon: -2.0,
+      }),
+      makeUnicoAntenna({
+        id: 'u-4g-shared-2',
+        fase: 2,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 39.1002,
+        lon: -2.0,
+      }),
+      makeUnicoAntenna({
+        id: 'u-fb-winner',
+        fase: 1,
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        lat: 39.2,
+        lon: -2.0,
+      }),
+      makeUnicoAntenna({
+        id: 'u-fb-hits-4g',
+        fase: 2,
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        lat: 39.201,
+        lon: -2.0,
+      }),
+    ];
+    const fourGReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'VF-4G-NEAR',
+        gid: '992001',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 39.1001,
+        lon: -2.0,
+        bandas: ['800 MHz'],
+        frecuencias: ['791.00 - 801.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-5G-FAR',
+        gid: '992002',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 39.105,
+        lon: -2.0,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-5G-CLAIMED',
+        gid: '992003',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 39.2,
+        lon: -2.0,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-4G-NEXT',
+        gid: '992004',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 39.203,
+        lon: -2.0,
+        bandas: ['800 MHz'],
+        frecuencias: ['791.00 - 801.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-5G-THIRD',
+        gid: '992005',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 39.206,
+        lon: -2.0,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+    ];
+    const fourGRes = matchUnicoDeclaredAntennas(fourGUnico, fourGReals);
+    expect(Array.from(fourGRes.declaredMasks)).toEqual([
+      0,
+      0,
+      UNICO_BIT_N78,
+      0,
+    ]);
+    expect(fourGRes.declaredRealAntennasById.size).toBe(1);
+
+    // Protección ante ID duplicado en dataset sintético: conserva el match más cercano y nunca duplica
+    const dupIdUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-dup-close',
+        fase: 1,
+        op: 'movistar',
+        lat: 39.3,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-dup-far',
+        fase: 2,
+        op: 'movistar',
+        lat: 39.303,
+        lon: -2.5,
+      }),
+    ];
+    const dupIdReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'MV-DUP-ID',
+        gid: '993001',
+        op: 'movistar',
+        lat: 39.3001,
+        lon: -2.5,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-DUP-ID',
+        gid: '993002',
+        op: 'movistar',
+        lat: 39.3035,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+    ];
+    const dupIdRes = matchUnicoDeclaredAntennas(dupIdUnico, dupIdReals);
+    expect(Array.from(dupIdRes.declaredMasks)).toEqual([UNICO_BIT_N78, 0]);
+    expect(dupIdRes.declaredRealAntennasById.size).toBe(1);
+    expect(
+      dupIdRes.declaredRealAntennasById.get('MV-DUP-ID')?.entries[0]?.unicoId,
+    ).toBe('u-dup-close');
+
+    // Torre compartida (< 15 m) con AMBAS operadoras (Movistar y Vodafone) declaradas UNICO en StationDetailDrawer SSR
+    const dualSharedUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-dual-mv',
+        fase: 1,
+        op: 'movistar',
+        lat: 40.992,
+        lon: -3.635,
+      }),
+      makeUnicoAntenna({
+        id: 'u-dual-vf',
+        fase: 2,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 40.99205,
+        lon: -3.635,
+      }),
+    ];
+    const vfShared5g = makeRealAntenna({
+      id: 'VODAFONE ESPAÑA, S.A.U. - 2890099',
+      gid: '2890099',
+      op: 'vodafone',
+      opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+      lat: 40.99214,
+      lon: -3.635,
+      mun: 'BUITRAGO DEL LOZOYA',
+      prov: 'MADRID',
+      bandas: ['700 MHz'],
+      frecuencias: ['758.00 - 788.00'],
+    });
+    const dualDerived = buildDerivedAntenasStructures(
+      makeSyntheticAntenasDataset([mvAnt, vfShared5g]),
+    );
+    const dualMatch = matchUnicoDeclaredAntennas(
+      dualSharedUnico,
+      dualDerived.dataset.antenas,
+      dualDerived.bandCodeMasks,
+    );
+    expect(dualMatch.declaredRealAntennasById.size).toBe(2);
+    const dualDrawerVfHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: vfShared5g,
+        allAntenas: dualDerived.dataset.antenas,
+        unicoDeclaredById: dualMatch.declaredRealAntennasById,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(dualDrawerVfHtml).toContain('id="station-unico-card"');
+    expect(dualDrawerVfHtml).toContain('UNICO 5G · Fase 2');
+    expect(dualDrawerVfHtml).toContain('N28+');
   });
 });

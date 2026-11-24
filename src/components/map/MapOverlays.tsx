@@ -7,6 +7,7 @@ import {
   Lock,
   LockOpen,
   Radio,
+  RadioTower,
   Ruler,
   Ungroup,
 } from 'lucide-react';
@@ -33,6 +34,8 @@ export interface MapOverlaysProps {
   onToggleShowBandsOnMap?: () => void;
   disableClustering?: boolean;
   onToggleDisableClustering?: () => void;
+  highlightUnicoDeclared?: boolean;
+  onToggleHighlightUnicoDeclared?: () => void;
   onFlyToRegion: (
     lon: number,
     lat: number,
@@ -56,6 +59,8 @@ export function MapOverlays({
   onToggleShowBandsOnMap,
   disableClustering = false,
   onToggleDisableClustering,
+  highlightUnicoDeclared = true,
+  onToggleHighlightUnicoDeclared,
   onFlyToRegion,
 }: MapOverlaysProps) {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
@@ -312,6 +317,41 @@ export function MapOverlays({
                     <span className="map-lock-3d-switch-thumb" />
                   </span>
                 </button>
+
+                {onToggleHighlightUnicoDeclared && (
+                  <>
+                    <div
+                      className="map-style-popover-divider"
+                      role="separator"
+                    />
+                    <button
+                      id="map-highlight-unico-option"
+                      type="button"
+                      role="switch"
+                      aria-checked={highlightUnicoDeclared}
+                      className={`map-lock-3d-option${highlightUnicoDeclared ? ' is-unico-active' : ''}`}
+                      onClick={() => onToggleHighlightUnicoDeclared()}
+                    >
+                      <span className="map-lock-3d-icon" aria-hidden="true">
+                        <RadioTower size={15} aria-hidden="true" />
+                      </span>
+                      <span className="map-style-option-body">
+                        <span className="map-style-option-title map-style-option-name">
+                          Resaltar declaradas UNICO 5G
+                        </span>
+                        <span className="map-style-option-desc">
+                          Destacar con aro verde las antenas declaradas en UNICO
+                        </span>
+                      </span>
+                      <span
+                        className={`map-lock-3d-switch map-switch-pill${highlightUnicoDeclared ? ' is-on is-unico-on' : ''}`}
+                        aria-hidden="true"
+                      >
+                        <span className="map-lock-3d-switch-thumb" />
+                      </span>
+                    </button>
+                  </>
+                )}
 
                 {onToggleLock3dPitch && (
                   <>

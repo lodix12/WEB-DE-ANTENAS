@@ -73,6 +73,7 @@ export function EstadisticasView() {
     clearBands,
     toggleBand,
     setExclusiveBands,
+    setOnlyUnicoDeclared,
     selectAllOperators,
     toggleOperator,
     activeOperators,
@@ -177,6 +178,7 @@ export function EstadisticasView() {
     selectAllOperators();
     clearBands();
     setExclusiveBands(false);
+    setOnlyUnicoDeclared(false);
     setSelectedProvince(provincia);
     const centroid = derived?.provinceCentroids.get(provincia);
     if (centroid) {
@@ -188,6 +190,7 @@ export function EstadisticasView() {
   function handleFilterSingleOperatorOnMap(targetOp: OperatorKey) {
     clearBands();
     setExclusiveBands(false);
+    setOnlyUnicoDeclared(false);
     // Dejar activo únicamente el operador elegido
     for (const op of OPERATOR_ORDER) {
       const currentlyOn = activeOperators.includes(op);
@@ -203,6 +206,7 @@ export function EstadisticasView() {
     setSelectedProvince('');
     clearBands();
     setExclusiveBands(false);
+    setOnlyUnicoDeclared(false);
     if (band) {
       toggleBand(band);
     }
