@@ -2514,8 +2514,11 @@ export function mergeLiveDeltaIntoAntenasDataset(
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const candidatePatch = delta.bandPatchesByGid.get(ant.mergedGids[g]);
         if (candidatePatch) {
-          patch = candidatePatch;
-          break;
+          const patchOp = inferOperatorKeyFromAntennaId(candidatePatch.id);
+          if (!patchOp || patchOp === ant.op) {
+            patch = candidatePatch;
+            break;
+          }
         }
       }
     }
@@ -2730,6 +2733,85 @@ export function useAntenasData() {
     data: mergedData,
     derived,
   };
+}
+
+export function inferOperatorKeyFromAntennaId(id: string): OperatorKey | null {
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  if (isXferaLegalEntity(trimmed)) return 'orange';
+  const norm = trimmed
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  if (norm.includes('TELEFONICA') || norm.includes('MOVISTAR')) {
+    return 'movistar';
+  }
+  if (norm.includes('VODAFONE') || norm.includes('AIRTEL')) {
+    return 'vodafone';
+  }
+  if (norm.includes('ORANGE')) {
+    return 'orange';
+  }
+  if (/\bDIGI\b/.test(norm) || norm.includes('DS MOBILE')) {
+    return 'digi';
+  }
+  return null;
+}
+
+/**
+ * Resuelve una estación seleccionada frente al censo activo (incluyendo deltas en vivo).
+ * Si la antena fue retirada del censo (baja real verificada), devuelve `null` en lugar de
+ * mantener una ficha obsoleta o resolver por GID hacia una estación de otra operadora.
+ */
+export function resolveLiveSelectedAntenna(
+  selectedAntenna: AntennaRecord | null,
+  derived: DerivedAntenasStructures | null,
+): AntennaRecord | null {
+  if (!selectedAntenna) return null;
+  if (!derived) return selectedAntenna;
+
+  const exactById = derived.byId.get(selectedAntenna.id);
+  if (exactById) {
+    return exactById;
+  }
+
+  const sameOp =
+    normalizeOperatorKeyInput(selectedAntenna.op, selectedAntenna.opRaw) ??
+    selectedAntenna.op;
+
+  if (selectedAntenna.gid) {
+    const byGidMatch = derived.byGid.get(selectedAntenna.gid);
+    if (byGidMatch && byGidMatch.op === sameOp) {
+      return byGidMatch;
+    }
+  }
+
+  const candidateGids = new Set<string>();
+  if (selectedAntenna.gid) {
+    candidateGids.add(selectedAntenna.gid);
+  }
+  if (selectedAntenna.mergedGids) {
+    for (let i = 0; i < selectedAntenna.mergedGids.length; i++) {
+      const mgid = selectedAntenna.mergedGids[i];
+      if (mgid) candidateGids.add(mgid);
+    }
+  }
+
+  if (candidateGids.size > 0) {
+    const antenas = derived.dataset.antenas;
+    for (let i = 0; i < antenas.length; i++) {
+      const ant = antenas[i];
+      if (ant.op !== sameOp) continue;
+      if (ant.gid && candidateGids.has(ant.gid)) return ant;
+      if (ant.mergedGids) {
+        for (let g = 0; g < ant.mergedGids.length; g++) {
+          if (candidateGids.has(ant.mergedGids[g])) return ant;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 const BIT_UNMATCHABLE_BAND = 1 << 14;

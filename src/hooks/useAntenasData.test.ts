@@ -7486,7 +7486,30 @@ describe('Unificación total de XFERA MÓVILES, S.A.U. (Yoigo y MásMóvil) dent
       'otros',
     ]);
     expect(rawStaticAntenas.total).toBe(rawStaticAntenas.antenas.length);
-    expect(rawStaticAntenas.operators.orange.count).toBe(19049);
+
+    const actualCountsByOp = rawStaticAntenas.antenas.reduce<
+      Record<string, number>
+    >((acc, a) => {
+      acc[a.op] = (acc[a.op] ?? 0) + 1;
+      return acc;
+    }, {});
+    for (const opKey of OPERATOR_ORDER) {
+      expect(rawStaticAntenas.operators[opKey].count).toBe(
+        actualCountsByOp[opKey] ?? 0,
+      );
+    }
+    expect(
+      OPERATOR_ORDER.reduce(
+        (sum, opKey) => sum + rawStaticAntenas.operators[opKey].count,
+        0,
+      ),
+    ).toBe(rawStaticAntenas.total);
+    expect(rawStaticAntenas.operators.orange.count).toBeGreaterThan(0);
+    expect(
+      rawStaticAntenas.antenas.some(
+        (a) => isXferaLegalEntity(a.opRaw) && a.op !== 'orange',
+      ),
+    ).toBe(false);
     expect(
       rawStaticAntenas.antenas.some(
         (a) => (a as unknown as { op: string }).op === 'masmovil',
@@ -8023,18 +8046,31 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
     const countsByBand = Object.fromEntries(
       derived.availableBands.map((b) => [b.band, b.count]),
     );
-    expect(countsByBand['N28']).toBeGreaterThan(30000);
-    expect(countsByBand['N28+']).toBeGreaterThan(1000);
-    expect(countsByBand['B38']).toBeGreaterThan(50);
-    expect(countsByBand['B7']).toBeGreaterThan(10000);
-    expect(countsByBand['B7+']).toBeGreaterThan(500);
-    expect(countsByBand['N258']).toBeGreaterThan(0);
+    const maskBandCounts = new Uint32Array(ALL_RF_BAND_CODES.length);
 
     // Ninguna estación del censo real tiene N28 y N28+ simultáneamente (partición disjunta exacta de 700 MHz)
     for (let i = 0; i < derived.dataset.antenas.length; i++) {
       const mask = derived.bandCodeMasks[i];
       expect((mask & 0b11) === 0b11).toBe(false);
+      for (let b = 0; b < ALL_RF_BAND_CODES.length; b++) {
+        if ((mask & (1 << b)) !== 0) {
+          maskBandCounts[b] += 1;
+        }
+      }
     }
+
+    ALL_RF_BAND_CODES.forEach((band, idx) => {
+      expect(Number.isInteger(countsByBand[band])).toBe(true);
+      expect(countsByBand[band]).toBe(maskBandCounts[idx]);
+      expect(countsByBand[band]).toBeGreaterThanOrEqual(0);
+      expect(countsByBand[band]).toBeLessThanOrEqual(
+        derived.dataset.antenas.length,
+      );
+    });
+    expect(countsByBand['N28']).toBeGreaterThan(0);
+    expect(countsByBand['N28+']).toBeGreaterThan(0);
+    expect(countsByBand['B7']).toBeGreaterThan(0);
+    expect(countsByBand['B7+']).toBeGreaterThan(0);
 
     // Mini separador discreto (#1E293B) entre bandas adyacentes en los carteles del mapa
     const fillOps: Array<{ text?: string; isDot?: boolean; fillStyle: string }> =

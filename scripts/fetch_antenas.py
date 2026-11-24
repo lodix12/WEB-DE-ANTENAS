@@ -74,6 +74,9 @@ SOFT_ANOMALY_BURST_THRESHOLD = 3
 FAILED_GID_RECOVERY_MAX = 500
 EMPTY_VERIFICATION_MAX = 500
 EMPTY_VERIFICATION_CONFIRMATIONS = 2
+MISSING_ANTENNA_VERIFY_MAX = 500
+MISSING_ANTENNA_MICRO_BBOX_PAD_DEG = 0.01
+MISSING_ANTENNA_EMPTY_CONFIRMATIONS = 2
 MAX_SAFE_CENSUS_DROP_RATIO = 0.25
 MIN_PRIOR_ANTENNAS_FOR_DROP_GUARD = 1000
 QUADRANT_OVERLAP_DEG = 0.0001
@@ -305,6 +308,33 @@ def decode_infoantenas_payload(raw_bytes: bytes) -> list[dict[str, Any]]:
     features = payload.get("features")
     if not isinstance(features, list):
         return []
+    return features
+
+
+def decode_infoantenas_payload_strict(raw_bytes: bytes) -> list[dict[str, Any]]:
+    """
+    Variante estricta de `decode_infoantenas_payload` usada al verificar bajas reales
+    de antenas: rechaza respuestas vacías (`b""`), HTML de error o JSON sin estructura
+    válida, admitiendo únicamente un GeoJSON con `features: [...]` o el objeto vacío `{}`
+    que MINETUR devuelve en cuadrantes sin estaciones.
+    """
+    if not raw_bytes:
+        raise ValueError("Respuesta vacía (0 bytes) desde infoantenasGeoJSON.do")
+    if raw_bytes[:2] == b"\x1f\x8b":
+        raw_bytes = gzip.decompress(raw_bytes)
+    text = raw_bytes.decode("iso-8859-1").strip()
+    if not text:
+        raise ValueError("Respuesta vacía tras decodificar infoantenasGeoJSON.do")
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Respuesta JSON no es un objeto en infoantenasGeoJSON.do")
+    if not payload:
+        return []
+    features = payload.get("features")
+    if not isinstance(features, list):
+        raise ValueError(
+            "Respuesta JSON sin lista 'features' válida en infoantenasGeoJSON.do"
+        )
     return features
 
 
@@ -1109,6 +1139,21 @@ class _ThreadLocalKeepAliveClient:
             while self._soft_anomaly_ts and self._soft_anomaly_ts[0] < cutoff:
                 self._soft_anomaly_ts.popleft()
             return len(self._soft_anomaly_ts) >= SOFT_ANOMALY_BURST_THRESHOLD
+
+    def seconds_until_soft_anomaly_burst_clears(
+        self,
+        clock_fn: Callable[[], float] = time.monotonic,
+    ) -> float:
+        now = clock_fn()
+        cutoff = now - SOFT_ANOMALY_WINDOW_S
+        with self._lock:
+            while self._soft_anomaly_ts and self._soft_anomaly_ts[0] < cutoff:
+                self._soft_anomaly_ts.popleft()
+            if len(self._soft_anomaly_ts) < SOFT_ANOMALY_BURST_THRESHOLD:
+                return 0.0
+            drop_idx = len(self._soft_anomaly_ts) - SOFT_ANOMALY_BURST_THRESHOLD
+            target_ts = self._soft_anomaly_ts[drop_idx] + SOFT_ANOMALY_WINDOW_S
+            return max(0.0, target_ts - now)
 
     def wait_if_cooled_down(
         self,
@@ -1959,6 +2004,215 @@ class InfoantenasCrawler:
             crawl_stats=crawl_stats,
             updated_at=_utc_now_iso(self._now_utc),
         )
+
+    def _fetch_bbox_strict_calm(self, bbox: BBox) -> list[dict[str, Any]]:
+        """
+        Consulta una micro-celda GeoJSON en calma con sesión TLS limpia y decodificación
+        estricta para confirmar si una antena desaparecida realmente ya no figura en MINETUR.
+        """
+        url = build_bbox_url(bbox, zoom=self.zoom)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) WebDeAntenasSpainCrawler/1.0"
+            ),
+            "Accept": "application/json, text/plain, */*",
+        }
+        backoffs = (1.0, 2.0)
+        last_err: Exception | None = None
+
+        for attempt in range(len(backoffs)):
+            self._http_client.discard_tls_session()
+            self._wait_rate_limit()
+            with self._stats_lock:
+                self.requests_count += 1
+            try:
+                if self._custom_fetch_fn is not None:
+                    features = self._custom_fetch_fn(bbox, self.zoom)
+                    self._last_request_ts = self._clock()
+                    if not isinstance(features, list):
+                        raise ValueError("Respuesta GeoJSON inválida en verificación")
+                    return features
+                raw_bytes = self._http_client.fetch_bytes(
+                    url,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                    clock_fn=self._clock,
+                )
+                self._last_request_ts = self._clock()
+                return decode_infoantenas_payload_strict(raw_bytes)
+            except Exception as exc:
+                self._last_request_ts = self._clock()
+                self._http_client.discard_tls_session()
+                last_err = exc
+                if isinstance(exc, urllib.error.HTTPError) and exc.code in (
+                    400,
+                    401,
+                    403,
+                    404,
+                    410,
+                ):
+                    break
+                if attempt < len(backoffs) - 1:
+                    self._sleep(backoffs[attempt])
+
+        raise RuntimeError(
+            f"Error al verificar micro-celda bbox={format_bbox_key(bbox)}: {last_err}"
+        ) from last_err
+
+    def verify_missing_antennas(
+        self,
+        missing_records: list[dict[str, Any]],
+        *,
+        pad_deg: float = MISSING_ANTENNA_MICRO_BBOX_PAD_DEG,
+        empty_confirmations: int = MISSING_ANTENNA_EMPTY_CONFIRMATIONS,
+        max_verify: int = MISSING_ANTENNA_VERIFY_MAX,
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """
+        Verifica en modo secuencial calmado las estaciones candidatas a baja del censo
+        nacional antes de eliminarlas de `antenas.json` (mapa y estadísticas):
+        - Si una estación reaparece en su micro-celda GeoJSON -> se restaura (falsa baja).
+        - Si ocurre cualquier error HTTP/JSON/red o truncamiento (>= 1000) -> se preserva
+          la estación previa para que un error de MINETUR jamás borre antenas reales.
+        - Si la micro-celda devuelve un GeoJSON sano y la estación sigue ausente (y con
+          doble comprobación limpia si la micro-celda está totalmente vacía) -> baja real
+          confirmada; queda eliminada de `antenas.json` y se registra en `eliminaciones.json`.
+        Devuelve `(registros_restaurados_o_preservados, ids_baja_confirmada)`.
+        """
+        if not missing_records:
+            return [], set()
+
+        if len(missing_records) > max_verify:
+            logging.warning(
+                "Se detectaron %d antenas ausentes del censo (> límite verificable %d); "
+                "se preservan los registros previos para evitar borrados falsos por fallo parcial de MINETUR.",
+                len(missing_records),
+                max_verify,
+            )
+            return [dict(r) for r in missing_records], set()
+
+        restored_records: list[dict[str, Any]] = []
+        confirmed_removed_ids: set[str] = set()
+        clusters: list[tuple[list[float], list[dict[str, Any]]]] = []
+        max_cluster_span = max(pad_deg * 8.0, 0.08)
+
+        for old_rec in missing_records:
+            lat = _parse_float(old_rec.get("lat"))
+            lon = _parse_float(old_rec.get("lon"))
+            if lat is None or lon is None:
+                restored_records.append(dict(old_rec))
+                continue
+            r_min_lon = lon - pad_deg
+            r_min_lat = lat - pad_deg
+            r_max_lon = lon + pad_deg
+            r_max_lat = lat + pad_deg
+
+            placed = False
+            for c_box, c_recs in clusters:
+                if (
+                    r_min_lon <= c_box[2]
+                    and r_max_lon >= c_box[0]
+                    and r_min_lat <= c_box[3]
+                    and r_max_lat >= c_box[1]
+                ):
+                    new_min_lon = min(c_box[0], r_min_lon)
+                    new_min_lat = min(c_box[1], r_min_lat)
+                    new_max_lon = max(c_box[2], r_max_lon)
+                    new_max_lat = max(c_box[3], r_max_lat)
+                    if (new_max_lon - new_min_lon) <= max_cluster_span and (
+                        new_max_lat - new_min_lat
+                    ) <= max_cluster_span:
+                        c_box[0] = new_min_lon
+                        c_box[1] = new_min_lat
+                        c_box[2] = new_max_lon
+                        c_box[3] = new_max_lat
+                        c_recs.append(old_rec)
+                        placed = True
+                        break
+            if not placed:
+                clusters.append(([r_min_lon, r_min_lat, r_max_lon, r_max_lat], [old_rec]))
+
+        needed_empty_checks = max(1, int(empty_confirmations))
+        try:
+            if clusters and self._sleep is time.sleep:
+                self._sleep(0.5)
+            for cluster_idx, (c_box, c_recs) in enumerate(clusters):
+                if cluster_idx > 0 and self._sleep is time.sleep:
+                    self._sleep(0.3)
+                micro_bbox: BBox = (c_box[0], c_box[1], c_box[2], c_box[3])
+                try:
+                    features = self._fetch_bbox_strict_calm(micro_bbox)
+                    if len(features) == 0 and needed_empty_checks > 1:
+                        for _ in range(needed_empty_checks - 1):
+                            if self._sleep is time.sleep:
+                                self._sleep(0.5)
+                            features = self._fetch_bbox_strict_calm(micro_bbox)
+                            if len(features) > 0:
+                                break
+                except RuntimeError as exc:
+                    logging.warning(
+                        "No se pudo verificar ausencia de %d antena(s) en bbox=%s (se preservan registros previos): %s",
+                        len(c_recs),
+                        format_bbox_key(micro_bbox),
+                        exc,
+                    )
+                    restored_records.extend(dict(r) for r in c_recs)
+                    continue
+
+                if len(features) >= SERVER_FEATURE_CAP:
+                    logging.warning(
+                        "Micro-celda bbox=%s alcanzó el tope de %d features al verificar %d antena(s); se preservan registros previos.",
+                        format_bbox_key(micro_bbox),
+                        SERVER_FEATURE_CAP,
+                        len(c_recs),
+                    )
+                    restored_records.extend(dict(r) for r in c_recs)
+                    continue
+
+                found_by_id: dict[str, dict[str, Any]] = {}
+                found_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] = {}
+                for feat in features:
+                    parsed = parse_feature(feat)
+                    if parsed is None:
+                        continue
+                    found_by_id[parsed["id"]] = parsed
+                    p_op = _normalize_operator_key(parsed.get("op"), parsed.get("opRaw"))
+                    if p_op:
+                        for g in get_record_gids(parsed):
+                            found_by_op_gid.setdefault((p_op, g), []).append(parsed)
+
+                for old_rec in c_recs:
+                    old_id = str(old_rec.get("id") or "").strip()
+                    old_op = _normalize_operator_key(
+                        old_rec.get("op"), old_rec.get("opRaw")
+                    )
+                    old_gids = get_record_gids(old_rec)
+                    matched_fresh: list[dict[str, Any]] = []
+                    seen_fresh_ids: set[str] = set()
+                    if old_id in found_by_id:
+                        fresh = found_by_id[old_id]
+                        seen_fresh_ids.add(fresh["id"])
+                        matched_fresh.append(fresh)
+                    if old_op:
+                        for g in old_gids:
+                            for fresh in found_by_op_gid.get((old_op, g), ()):
+                                if fresh["id"] not in seen_fresh_ids:
+                                    seen_fresh_ids.add(fresh["id"])
+                                    matched_fresh.append(fresh)
+
+                    if matched_fresh:
+                        restored_records.extend(matched_fresh)
+                    elif old_id:
+                        confirmed_removed_ids.add(old_id)
+        finally:
+            self._http_client.close_all()
+
+        logging.info(
+            "Verificación de antenas ausentes completada: %d bajas reales confirmadas, %d restauradas/preservadas (%d micro-celdas consultadas).",
+            len(confirmed_removed_ids),
+            len(restored_records),
+            len(clusters),
+        )
+        return restored_records, confirmed_removed_ids
 
 
 def _redundant_leading_zeros(gid: str) -> int:
@@ -3571,7 +3825,13 @@ def preserve_bands_in_records(
             rec["concesiones"] = [
                 dict(c) for c in cand["concesiones"] if isinstance(c, dict)
             ]
-        if isinstance(cand.get("bandsScannedAt"), str) and cand.get("bandsScannedAt"):
+        # Si desapareció algún GID fusionado (`new_gids < old_gids`), omitir `bandsScannedAt`
+        # para forzar re-escaneo y eliminar las concesiones del sub-emplazamiento desaparecido.
+        if (
+            (not new_gids or new_gids == old_gids)
+            and isinstance(cand.get("bandsScannedAt"), str)
+            and cand.get("bandsScannedAt")
+        ):
             rec["bandsScannedAt"] = cand["bandsScannedAt"]
         restored += 1
 
@@ -6401,7 +6661,22 @@ class BandEnricher:
                             "Verificando en modo secuencial calmado %d emplazamientos sin concesiones declaradas...",
                             len(verify_list),
                         )
-                        if self._sleep is time.sleep:
+                        burst_wait_s = (
+                            self._http_client.seconds_until_soft_anomaly_burst_clears(
+                                clock_fn=self._clock
+                            )
+                        )
+                        if burst_wait_s > 0.0:
+                            sleep_burst = burst_wait_s + 0.5
+                            if not self._would_exceed_time_budget(
+                                run_start_ts - sleep_burst, parallel_mode=True
+                            ):
+                                logging.info(
+                                    "Esperando %.1fs a que expire la ventana de anomalías reciente antes de verificar vaciados reales...",
+                                    sleep_burst,
+                                )
+                                self._sleep(sleep_burst)
+                        elif self._sleep is time.sleep:
                             self._sleep(1.5)
                         ver_patches: list[dict[str, Any]] = []
                         ver_novs: list[dict[str, Any]] = []
@@ -7545,15 +7820,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-    detected_ant_novedades, new_antenna_ids = (
-        diff_new_antennas(
-            dataset["antenas"],
-            prior_index,
-            scanned_at_iso=dataset["updatedAt"],
-        )
-        if prior_index is not None
-        else ([], set())
-    )
     detected_ant_eliminaciones, removed_antenna_ids = (
         diff_removed_antennas(
             dataset["antenas"],
@@ -7561,6 +7827,47 @@ def main(argv: list[str] | None = None) -> int:
             scanned_at_iso=dataset["updatedAt"],
         )
         if (is_full_national_crawl and prior_index is not None)
+        else ([], set())
+    )
+    if (
+        is_full_national_crawl
+        and prior_index is not None
+        and removed_antenna_ids
+        and callable(getattr(crawler, "verify_missing_antennas", None))
+    ):
+        prior_by_id = prior_index.get("by_id") or {}
+        candidate_missing_records = [
+            prior_by_id[rid]
+            for rid in sorted(removed_antenna_ids)
+            if rid in prior_by_id
+        ]
+        if candidate_missing_records:
+            restored_missing, _confirmed_removed_ids = crawler.verify_missing_antennas(
+                candidate_missing_records
+            )
+            if restored_missing:
+                merged_records = list(dataset["antenas"]) + restored_missing
+                crawl_stats_copy = dict(dataset["crawlStats"])
+                if hasattr(crawler, "requests_count"):
+                    crawl_stats_copy["requestsCount"] = crawler.requests_count
+                dataset = build_dataset(
+                    merged_records,
+                    crawl_stats=crawl_stats_copy,
+                    updated_at=dataset["updatedAt"],
+                )
+                detected_ant_eliminaciones, removed_antenna_ids = diff_removed_antennas(
+                    dataset["antenas"],
+                    prior_index,
+                    scanned_at_iso=dataset["updatedAt"],
+                )
+
+    detected_ant_novedades, new_antenna_ids = (
+        diff_new_antennas(
+            dataset["antenas"],
+            prior_index,
+            scanned_at_iso=dataset["updatedAt"],
+        )
+        if prior_index is not None
         else ([], set())
     )
 

@@ -19,7 +19,11 @@ import type {
   LiveScanDeltaChunk,
 } from '../types/antena';
 import { EliminacionesView } from '../views/EliminacionesView';
-import { mergeLiveDeltaIntoAntenasDataset } from './useAntenasData';
+import {
+  buildDerivedAntenasStructures,
+  mergeLiveDeltaIntoAntenasDataset,
+  resolveLiveSelectedAntenna,
+} from './useAntenasData';
 import {
   computeLatestScanEliminacionesCounts,
   filterEliminaciones,
@@ -850,6 +854,175 @@ describe('Eliminaciones — Renderizado SSR de EliminacionesView y AppHeader', (
     );
     expect(html).toContain('value="valencia"');
     expect(html).toContain('id="eliminaciones-reset-filters-btn"');
+  });
+
+  it('elimina antenas y frecuencias retiradas de mapa, estadísticas derivadas y selección activa sin cruzar operadores por GID', () => {
+    const baseDataset: AntenasDataset = {
+      updatedAt: '2026-11-22T12:00:00Z',
+      sourceUrl: 'https://geoportal.minetur.gob.es/VCTEL/vcne.do',
+      total: 3,
+      crawlStats: {
+        requestsCount: 1,
+        durationSeconds: 1,
+        gridBoxesVisited: 1,
+        subdividedBoxes: 0,
+        zoomParam: 7,
+        delaySeconds: 0.02,
+      },
+      operators: {
+        movistar: {
+          key: 'movistar',
+          name: 'Movistar (Telefónica)',
+          count: 1,
+          legalEntities: ['TELEFONICA MOVILES ESPAÑA, S.A.U.'],
+        },
+        orange: {
+          key: 'orange',
+          name: 'Orange',
+          count: 1,
+          legalEntities: ['ORANGE ESPAGNE, S.A.U.'],
+        },
+        vodafone: {
+          key: 'vodafone',
+          name: 'Vodafone',
+          count: 1,
+          legalEntities: ['VODAFONE ESPAÑA, S.A.U.'],
+        },
+        digi: { key: 'digi', name: 'DIGI', count: 0, legalEntities: [] },
+        otros: { key: 'otros', name: 'Otros', count: 0, legalEntities: [] },
+      },
+      provinces: [
+        {
+          provincia: 'MADRID',
+          count: 2,
+          byOperator: { movistar: 1, orange: 1 },
+        },
+        {
+          provincia: 'SEVILLA',
+          count: 1,
+          byOperator: { vodafone: 1 },
+        },
+      ],
+      antenas: [
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - SHARED_77',
+          gid: 'SHARED_77',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.41,
+          lon: -3.7,
+          dir: 'CL A',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '3500 MHz'],
+          frecuencias: ['758.00 - 768.00', '3600.00 - 3710.00'],
+          concesiones: [
+            { ref: 'OR-700', freq: '758.00 - 768.00' },
+            { ref: 'OR-3500', freq: '3600.00 - 3710.00' },
+          ],
+          bandsScannedAt: '2026-11-22T12:00:00Z',
+        },
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - SHARED_77',
+          gid: 'SHARED_77',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.41,
+          lon: -3.7,
+          dir: 'CL A',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['800 MHz', '1800 MHz'],
+          frecuencias: ['852.00 - 862.00', '1805.10 - 1825.10'],
+          concesiones: [
+            { ref: 'MV-800', freq: '852.00 - 862.00' },
+            { ref: 'MV-1800', freq: '1805.10 - 1825.10' },
+          ],
+          bandsScannedAt: '2026-11-22T12:00:00Z',
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 9001',
+          gid: '9001',
+          mergedGids: ['9001', 'SHARED_77'],
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 37.38,
+          lon: -5.99,
+          dir: 'CL S',
+          mun: 'SEVILLA',
+          prov: 'SEVILLA',
+          bandas: ['900 MHz'],
+          frecuencias: ['945.00 - 955.00'],
+          concesiones: [{ ref: 'VF-900', freq: '945.00 - 955.00' }],
+          bandsScannedAt: '2026-11-22T12:00:00Z',
+        },
+      ],
+    };
+
+    const chunk: LiveScanDeltaChunk = {
+      schemaVersion: 2,
+      scanId: 'scan-cleanup-1',
+      seq: 1,
+      chunkIndex: 0,
+      isTail: true,
+      previousScanAt: '2026-11-22T12:00:00Z',
+      recordNovedades: true,
+      updatedAt: '2026-11-23T12:00:00Z',
+      newAntennas: [],
+      // Movistar pierde 1800 MHz (queda solo 800 MHz); ese parche en SHARED_77 NO debe contaminar a Vodafone
+      bandPatches: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - SHARED_77',
+          gid: 'SHARED_77',
+          bandas: ['800 MHz'],
+          frecuencias: ['852.00 - 862.00'],
+          concesiones: [{ ref: 'MV-800', freq: '852.00 - 862.00' }],
+          bandsScannedAt: '2026-11-23T12:00:00Z',
+        },
+      ],
+      novedades: [],
+      // Orange desaparece por completo de MINETUR
+      removedAntennaIds: ['ORANGE ESPAGNE, S.A.U. - SHARED_77'],
+      eliminaciones: [],
+    };
+
+    const mergedDelta = accumulateLiveDeltaChunks([chunk], 'scan-cleanup-1');
+    const updatedDataset = mergeLiveDeltaIntoAntenasDataset(
+      baseDataset,
+      mergedDelta,
+    );
+    const derived = buildDerivedAntenasStructures(updatedDataset);
+
+    // 1) Estadísticas y mapa ya no cuentan la antena de Orange retirada ni la banda 1800 MHz retirada de Movistar
+    expect(updatedDataset.total).toBe(2);
+    expect(derived.operatorCounts.orange).toBe(0);
+    expect(derived.operatorCounts.movistar).toBe(1);
+    expect(derived.operatorCounts.vodafone).toBe(1);
+    expect(derived.provincesByCount.find((p) => p.provincia === 'MADRID')?.count).toBe(1);
+
+    const bandCounts = Object.fromEntries(
+      derived.availableBands.map((b) => [b.band, b.count]),
+    );
+    expect(bandCounts['N28']).toBe(0);
+    expect(bandCounts['N78']).toBe(0);
+    expect(bandCounts['B3']).toBe(0);
+    expect(bandCounts['B20']).toBe(1);
+    expect(bandCounts['G9']).toBe(1);
+
+    // 2) Vodafone (con mergedGids incluyendo SHARED_77) NO se contamina con el parche de Movistar
+    const vodaAfter = derived.byId.get('VODAFONE ESPAÑA, S.A.U. - 9001');
+    expect(vodaAfter?.bandas).toEqual(['900 MHz']);
+
+    // 3) resolveLiveSelectedAntenna devuelve null para la antena retirada (sin saltar a Movistar con mismo GID)
+    const removedOrange = baseDataset.antenas[0];
+    expect(resolveLiveSelectedAntenna(removedOrange, derived)).toBeNull();
+
+    // 4) Para una antena que sigue activa pero perdió una frecuencia, devuelve el registro actualizado
+    const oldMovistar = baseDataset.antenas[1];
+    const liveMovistar = resolveLiveSelectedAntenna(oldMovistar, derived);
+    expect(liveMovistar?.id).toBe(oldMovistar.id);
+    expect(liveMovistar?.bandas).toEqual(['800 MHz']);
+    expect(liveMovistar?.frecuencias).toEqual(['852.00 - 862.00']);
   });
 });
 

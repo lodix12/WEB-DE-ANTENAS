@@ -5648,6 +5648,390 @@ class FetchAntenasUnitTests(unittest.TestCase):
             )
             self.assertEqual(status_doc["liveEliminacionesCount"], 3)
 
+    def test_verify_missing_antennas_confirms_real_removals_and_restores_glitches_or_errors(
+        self,
+    ) -> None:
+        # 1) Decodificador estricto rechaza vacíos/HTML/errores y acepta FeatureCollection o {}
+        with self.assertRaises(ValueError):
+            fa.decode_infoantenas_payload_strict(b"")
+        with self.assertRaises(ValueError):
+            fa.decode_infoantenas_payload_strict(b"   ")
+        with self.assertRaises(ValueError):
+            fa.decode_infoantenas_payload_strict(b"<html>Error 500</html>")
+        with self.assertRaises(ValueError):
+            fa.decode_infoantenas_payload_strict(b'{"error":"overloaded"}')
+        self.assertEqual(fa.decode_infoantenas_payload_strict(b"{}"), [])
+        self.assertEqual(
+            fa.decode_infoantenas_payload_strict(
+                b'{"type":"FeatureCollection","features":[]}'
+            ),
+            [],
+        )
+
+        # 2) Verificación de 4 escenarios: baja real urbana (1 req), baja real rural (2 req),
+        #    reaparición tras fallo transitorio (restaurada), y error de red (preservada)
+        def make_feat(op_raw: str, gid: str, lat: float, lon: float, mun: str, prov: str) -> dict[str, object]:
+            return {
+                "type": "Feature",
+                "id": f"{op_raw} - {gid}",
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                "properties": {
+                    "Operador": op_raw,
+                    "Gis_ID": gid,
+                    "Direccion": f"CL {gid}",
+                    "Municipio": mun,
+                    "Provincia": prov,
+                },
+            }
+
+        missing = [
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - GONE_URBAN",
+                "gid": "GONE_URBAN",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.40,
+                "lon": -3.70,
+                "dir": "CL U",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["700 MHz"],
+                "frecuencias": ["758.00 - 768.00"],
+                "concesiones": [{"ref": "GU-1", "freq": "758.00 - 768.00"}],
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - GONE_RURAL",
+                "gid": "GONE_RURAL",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 41.90,
+                "lon": -1.50,
+                "dir": "CL R",
+                "mun": "TUDELA",
+                "prov": "NAVARRA",
+                "bandas": ["800 MHz"],
+                "frecuencias": ["832.00 - 842.00"],
+                "concesiones": [{"ref": "GR-1", "freq": "832.00 - 842.00"}],
+            },
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - GLITCH_BACK",
+                "gid": "GLITCH_BACK",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                "lat": 37.38,
+                "lon": -5.99,
+                "dir": "CL G",
+                "mun": "SEVILLA",
+                "prov": "SEVILLA",
+                "bandas": ["900 MHz"],
+                "frecuencias": ["945.00 - 955.00"],
+                "concesiones": [{"ref": "GB-1", "freq": "945.00 - 955.00"}],
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - ERR_KEEP",
+                "gid": "ERR_KEEP",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 43.36,
+                "lon": -8.40,
+                "dir": "CL E",
+                "mun": "A CORUÑA",
+                "prov": "A CORUÑA",
+                "bandas": ["1800 MHz"],
+                "frecuencias": ["1805.10 - 1825.10"],
+                "concesiones": [{"ref": "EK-1", "freq": "1805.10 - 1825.10"}],
+            },
+        ]
+
+        bbox_calls: dict[str, int] = {}
+
+        def fake_verify_fetch(bbox: tuple[float, float, float, float], _zoom: int) -> list[dict[str, object]]:
+            mid_lat = (bbox[1] + bbox[3]) / 2.0
+            if abs(mid_lat - 40.40) < 0.05:
+                bbox_calls["urban"] = bbox_calls.get("urban", 0) + 1
+                # Vecina activa presente -> confirma GeoJSON sano y ausencia real de GONE_URBAN en 1 sola consulta
+                return [
+                    make_feat(
+                        "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                        "NEIGHBOR_1",
+                        40.401,
+                        -3.701,
+                        "MADRID",
+                        "MADRID",
+                    )
+                ]
+            if abs(mid_lat - 41.90) < 0.05:
+                bbox_calls["rural"] = bbox_calls.get("rural", 0) + 1
+                # Zona vacía -> exige 2 confirmaciones limpias consecutivas
+                return []
+            if abs(mid_lat - 37.38) < 0.05:
+                bbox_calls["glitch"] = bbox_calls.get("glitch", 0) + 1
+                return [
+                    make_feat(
+                        "VODAFONE ESPAÑA, S.A.U.",
+                        "GLITCH_BACK",
+                        37.38,
+                        -5.99,
+                        "SEVILLA",
+                        "SEVILLA",
+                    )
+                ]
+            if abs(mid_lat - 43.36) < 0.05:
+                bbox_calls["err"] = bbox_calls.get("err", 0) + 1
+                raise TimeoutError("MINETUR timeout durante verificación")
+            raise AssertionError(f"Bbox inesperada: {bbox}")
+
+        clock = FakeClock()
+        crawler = fa.InfoantenasCrawler(
+            delay_seconds=0.0,
+            fetch_fn=fake_verify_fetch,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+        )
+        restored, confirmed = crawler.verify_missing_antennas(missing)
+        self.assertEqual(
+            confirmed,
+            {
+                "ORANGE ESPAGNE, S.A.U. - GONE_URBAN",
+                "ORANGE ESPAGNE, S.A.U. - GONE_RURAL",
+            },
+        )
+        self.assertEqual(
+            sorted(r["id"] for r in restored),
+            [
+                "TELEFONICA MOVILES ESPAÑA, S.A.U. - ERR_KEEP",
+                "VODAFONE ESPAÑA, S.A.U. - GLITCH_BACK",
+            ],
+        )
+        self.assertEqual(bbox_calls["urban"], 1)
+        self.assertEqual(bbox_calls["rural"], 2)
+        self.assertEqual(bbox_calls["glitch"], 1)
+        self.assertEqual(bbox_calls["err"], 2)
+
+        # Límite de seguridad max_verify: si supera el umbral preserva todas sin hacer llamadas
+        restored_cap, confirmed_cap = crawler.verify_missing_antennas(
+            missing, max_verify=2
+        )
+        self.assertEqual(len(restored_cap), 4)
+        self.assertEqual(confirmed_cap, set())
+
+        # 3) Integración en main() (censo nacional): la baja confirmada se quita de antenas.json
+        #    (total, operators, provinces, antenas) + live removedAntennaIds + eliminaciones.json,
+        #    mientras que la antena reaparecida se conserva intacta con sus bandas previas
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            elim_path = tmp / "eliminaciones.json"
+            live_dir = tmp / "live"
+
+            prior_records = [
+                {
+                    "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - STAY_1",
+                    "gid": "STAY_1",
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 40.42,
+                    "lon": -3.71,
+                    "dir": "CL S",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["700 MHz"],
+                    "frecuencias": ["778.00 - 788.00"],
+                    "concesiones": [{"ref": "S-1", "freq": "778.00 - 788.00"}],
+                    "bandsScannedAt": "2026-11-22T10:00:00Z",
+                },
+                missing[0],  # GONE_URBAN -> baja real confirmada
+                missing[2],  # GLITCH_BACK -> reaparece en verificación -> restaurada
+            ]
+            prior_ds = fa.build_dataset(
+                prior_records,
+                crawl_stats={"requestsCount": 5, "isPartialSeed": False},
+                updated_at="2026-11-22T10:00:00Z",
+            )
+            fa.write_compact_dataset(prior_ds, ant_path)
+
+            class _FakeNationalVerifyCrawler(fa.InfoantenasCrawler):
+                def __init__(self, **kwargs: object) -> None:
+                    super().__init__(
+                        delay_seconds=0.0,
+                        fetch_fn=fake_verify_fetch,
+                        sleep_fn=clock.sleep,
+                        clock_fn=clock.time,
+                    )
+
+                def crawl(self, region: str = "all") -> dict[str, object]:
+                    self.requests_count = 10
+                    return fa.build_dataset(
+                        [
+                            {
+                                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - STAY_1",
+                                "gid": "STAY_1",
+                                "op": "movistar",
+                                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                                "lat": 40.42,
+                                "lon": -3.71,
+                                "dir": "CL S",
+                                "mun": "MADRID",
+                                "prov": "MADRID",
+                            }
+                        ],
+                        crawl_stats={
+                            "requestsCount": 10,
+                            "durationSeconds": 1.0,
+                            "gridBoxesVisited": 1,
+                            "isPartialSeed": region != "all",
+                        },
+                        updated_at="2026-11-23T10:00:00Z",
+                    )
+
+            with mock.patch.object(fa, "InfoantenasCrawler", _FakeNationalVerifyCrawler):
+                rc = fa.main(
+                    [
+                        "--region",
+                        "all",
+                        "--output",
+                        str(ant_path),
+                        "--preserve-from",
+                        str(ant_path),
+                        "--eliminaciones-output",
+                        str(elim_path),
+                        "--eliminaciones-mode",
+                        "reset",
+                        "--live-dir",
+                        str(live_dir),
+                        "--live-mode",
+                        "reset",
+                        "--scan-id",
+                        "scan-verify-1",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            final_ds = json.loads(ant_path.read_text(encoding="utf-8"))
+            self.assertEqual(final_ds["total"], 2)
+            self.assertEqual(
+                sorted(a["id"] for a in final_ds["antenas"]),
+                [
+                    "TELEFONICA MOVILES ESPAÑA, S.A.U. - STAY_1",
+                    "VODAFONE ESPAÑA, S.A.U. - GLITCH_BACK",
+                ],
+            )
+            self.assertEqual(final_ds["operators"]["orange"]["count"], 0)
+            self.assertEqual(final_ds["operators"]["vodafone"]["count"], 1)
+            self.assertEqual(final_ds["operators"]["movistar"]["count"], 1)
+            by_id_final = {a["id"]: a for a in final_ds["antenas"]}
+            self.assertEqual(
+                by_id_final["VODAFONE ESPAÑA, S.A.U. - GLITCH_BACK"]["bandas"],
+                ["900 MHz"],
+            )
+
+            elim_doc = json.loads(elim_path.read_text(encoding="utf-8"))
+            self.assertEqual(elim_doc["antenasEliminadas"], 1)
+            self.assertEqual(elim_doc["frecuenciasEliminadas"], 1)
+            self.assertEqual(
+                [r["id"] for r in elim_doc["eliminaciones"]],
+                [
+                    "del-ant:ORANGE ESPAGNE, S.A.U. - GONE_URBAN",
+                    "del-freq:ORANGE ESPAGNE, S.A.U. - GONE_URBAN:GU-1:758.00 - 768.00",
+                ],
+            )
+
+            tail_doc = json.loads((live_dir / "live-tail.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                tail_doc["removedAntennaIds"],
+                ["ORANGE ESPAGNE, S.A.U. - GONE_URBAN"],
+            )
+
+    def test_parallel_empty_verification_waits_for_soft_anomaly_window_and_lost_merged_gid_rescans(
+        self,
+    ) -> None:
+        # 1) Si desaparece un sub-GID fusionado, preserve_bands_in_records omite bandsScannedAt
+        #    para forzar el re-escaneo y purgar las concesiones del sub-emplazamiento desaparecido
+        prior = {
+            "antenas": [
+                {
+                    "id": "VODAFONE ESPAÑA, S.A.U. - 65660",
+                    "gid": "65660",
+                    "mergedGids": ["65660", "065660"],
+                    "op": "vodafone",
+                    "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+                    "bandas": ["700 MHz", "800 MHz"],
+                    "frecuencias": ["768.00 - 778.00", "842.00 - 852.00"],
+                    "concesiones": [
+                        {"ref": "V-1", "freq": "768.00 - 778.00"},
+                        {"ref": "V-2", "freq": "842.00 - 852.00"},
+                    ],
+                    "bandsScannedAt": "2026-11-22T10:00:00Z",
+                }
+            ]
+        }
+        shrunk_record = [
+            {
+                "id": "VODAFONE ESPAÑA, S.A.U. - 65660",
+                "gid": "65660",
+                "op": "vodafone",
+                "opRaw": "VODAFONE ESPAÑA, S.A.U.",
+            }
+        ]
+        fa.preserve_bands_in_records(shrunk_record, prior)
+        self.assertEqual(shrunk_record[0]["bandas"], ["700 MHz", "800 MHz"])
+        self.assertNotIn("bandsScannedAt", shrunk_record[0])
+
+        # 2) En modo paralelo, si hubo una ráfaga de anomalías reciente justo antes de la ola
+        #    de verificación calmada, espera a que expire la ventana y confirma la baja real
+        empty_table_html = """
+        <html><body>
+          <h2>CARACTERISTICAS T&Eacute;CNICAS</h2>
+          <table>
+            <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+          </table>
+        </body></html>
+        """
+        old_ts = "2026-11-21T09:55:16Z"
+        ds = {
+            "updatedAt": old_ts,
+            "sourceUrl": fa.PORTAL_SOURCE_URL,
+            "total": 1,
+            "crawlStats": {"requestsCount": 1},
+            "operators": {},
+            "provinces": [],
+            "antenas": [
+                {
+                    "id": "ORANGE ESPAGNE, S.A.U. - WAIT_VERIFY",
+                    "gid": "WAIT_VERIFY",
+                    "op": "orange",
+                    "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                    "lat": 40.40,
+                    "lon": -3.70,
+                    "dir": "CL W",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "bandas": ["700 MHz"],
+                    "frecuencias": ["758.00 - 768.00"],
+                    "concesiones": [{"ref": "WV-1", "freq": "758.00 - 768.00"}],
+                    "bandsScannedAt": old_ts,
+                }
+            ],
+        }
+        clock = FakeClock()
+        enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=2,
+            rescan_since="2026-11-22T23:00:00Z",
+            record_novedades=True,
+            fetch_fn=lambda _gid: empty_table_html,
+            sleep_fn=clock.sleep,
+            clock_fn=clock.time,
+        )
+        for _ in range(3):
+            enricher._http_client.record_soft_anomaly(clock_fn=clock.time)
+        enricher.enrich_dataset(ds)
+
+        self.assertEqual(ds["antenas"][0]["bandas"], [])
+        self.assertEqual(ds["antenas"][0]["frecuencias"], [])
+        self.assertEqual(ds["antenas"][0]["concesiones"], [])
+        self.assertEqual(enricher.verified_empty_removals_count, 1)
+        self.assertEqual(len(enricher.discovered_eliminaciones), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

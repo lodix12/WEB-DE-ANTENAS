@@ -11,7 +11,9 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
   getComunidadAutonomaByProvince,
+  inferOperatorKeyFromAntennaId,
   matchesAntennaBandsFilter,
+  resolveLiveSelectedAntenna,
   useAntenasData,
   useFilteredAntenas,
 } from '../hooks/useAntenasData';
@@ -100,9 +102,17 @@ export function MapaView() {
     const targetKey = `${targetId ?? ''}|${targetGid ?? ''}|${targetLat ?? ''}|${targetLon ?? ''}`;
     if (appliedGidRef.current === targetKey) return;
 
+    const exactById = targetId ? derived.byId.get(targetId) : undefined;
+    const candidateByGid = targetGid ? derived.byGid.get(targetGid) : undefined;
+    const expectedOpFromId = targetId
+      ? inferOperatorKeyFromAntennaId(targetId)
+      : null;
     const found =
-      (targetId ? derived.byId.get(targetId) : undefined) ??
-      (targetGid ? derived.byGid.get(targetGid) : undefined);
+      exactById ??
+      (candidateByGid &&
+      (!expectedOpFromId || candidateByGid.op === expectedOpFromId)
+        ? candidateByGid
+        : undefined);
     if (found) {
       appliedGidRef.current = targetKey;
       if (
@@ -159,14 +169,16 @@ export function MapaView() {
     exclusiveBands,
   });
 
-  const liveSelectedAntenna = useMemo(() => {
-    if (!selectedAntenna || !derived) return selectedAntenna;
-    return (
-      derived.byId.get(selectedAntenna.id) ??
-      derived.byGid.get(selectedAntenna.gid) ??
-      selectedAntenna
-    );
-  }, [selectedAntenna, derived]);
+  const liveSelectedAntenna = useMemo(
+    () => resolveLiveSelectedAntenna(selectedAntenna, derived),
+    [selectedAntenna, derived],
+  );
+
+  useEffect(() => {
+    if (selectedAntenna && derived && !liveSelectedAntenna) {
+      setSelectedAntenna(null);
+    }
+  }, [selectedAntenna, derived, liveSelectedAntenna, setSelectedAntenna]);
 
   if (isError) {
     return (
