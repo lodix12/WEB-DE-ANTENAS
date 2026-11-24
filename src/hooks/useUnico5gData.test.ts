@@ -807,8 +807,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(html).not.toContain('Avatel');
     expect(html).not.toMatch(/avatel/i);
 
-    // Tarjeta 2: Declaradas por operadora y pestañas de banda RF 5G
-    expect(html).toContain('Declaradas por operadora');
+    // Tarjeta 2: DECLARADAS X/X (Y%) y pestañas de banda RF 5G
+    expect(html).toContain('DECLARADAS 2/9.291 (0,0%)');
+    expect(html).not.toContain('Declaradas por operadora');
     expect(html).toContain('Todo');
     expect(html).toContain('N78');
     expect(html).toContain('N28');

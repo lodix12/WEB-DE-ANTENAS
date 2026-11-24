@@ -245,8 +245,8 @@ export function Unico5gView() {
 
   const declaredTitle =
     !isDeclaredReady && isAntenasLoading
-      ? 'Declaradas por operadora (cruzando censo real ≤ 1.000 m…)'
-      : `Declaradas por operadora (${formatUnicoInt(summary.totalDeclared)}/${formatUnicoInt(summary.totalAntennas)}, ${formatUnicoPercent(summary.totalDeclared, summary.totalAntennas)})`;
+      ? 'DECLARADAS (cruzando censo real ≤ 1.000 m…)'
+      : `DECLARADAS ${formatUnicoInt(summary.totalDeclared)}/${formatUnicoInt(summary.totalAntennas)} (${formatUnicoPercent(summary.totalDeclared, summary.totalAntennas)})`;
 
   return (
     <main className="page-container unico-simple-page">
