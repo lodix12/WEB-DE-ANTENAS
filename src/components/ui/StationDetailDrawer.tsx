@@ -394,8 +394,12 @@ export function StationDetailDrawer({
           {antenna.mergedGids && antenna.mergedGids.length > 1 && (
             <div className="detail-kv-row">
               <span className="detail-kv-label">
-                Declaraciones Fusionadas (&lt; 35 m) ·{' '}
-                {antenna.mergedGids.length} expedientes
+                {antenna.op === 'vodafone'
+                  ? 'Declaraciones Fusionadas (< 35 m)'
+                  : antenna.op === 'orange'
+                    ? 'Declaraciones Fusionadas'
+                    : 'Declaraciones Fusionadas (misma coordenada)'}{' '}
+                · {antenna.mergedGids.length} expedientes
               </span>
               <div className="merged-gids-wrap">
                 {antenna.mergedGids.map((gid) => (

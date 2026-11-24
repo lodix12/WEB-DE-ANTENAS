@@ -5,6 +5,7 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 import {
+  inferOperatorKeyFromAntennaId,
   normalizeOperatorKeyInput,
   type AntennaRecord,
   type ConcesionBanda,
@@ -939,16 +940,15 @@ export function accumulateLiveDeltaChunks(
   const newAntennas: AntennaRecord[] = [];
   for (const ant of newAntennasMap.values()) {
     let patch = bandPatchesById.get(ant.id);
-    if (
-      !patch &&
-      (ant.op === 'vodafone' || ant.op === 'orange') &&
-      ant.mergedGids
-    ) {
+    if (!patch && ant.mergedGids) {
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const candidatePatch = bandPatchesByGid.get(ant.mergedGids[g]);
         if (candidatePatch) {
-          patch = candidatePatch;
-          break;
+          const patchOp = inferOperatorKeyFromAntennaId(candidatePatch.id);
+          if (!patchOp || patchOp === ant.op) {
+            patch = candidatePatch;
+            break;
+          }
         }
       }
     }

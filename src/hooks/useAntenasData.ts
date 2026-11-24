@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import {
   OPERATOR_META,
   OPERATOR_ORDER,
+  buildSameOperatorExactCoordKey,
+  inferOperatorKeyFromAntennaId,
   isXferaLegalEntity,
   normalizeOperatorKeyInput,
   type AntenasDataset,
@@ -22,7 +24,11 @@ import {
   type LiveScanMergedDelta,
 } from './useScanProgress';
 
-export { isXferaLegalEntity, normalizeOperatorKeyInput };
+export {
+  inferOperatorKeyFromAntennaId,
+  isXferaLegalEntity,
+  normalizeOperatorKeyInput,
+};
 
 export interface MunicipalityOption {
   mun: string;
@@ -807,7 +813,9 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
   }
 
   const parsedDataset = raw as unknown as AntenasDataset;
-  const fusedDataset = fuseXferaIntoOrangeInDataset(parsedDataset);
+  const fusedDataset = fuseSameOperatorExactCoordsInDataset(
+    fuseXferaIntoOrangeInDataset(parsedDataset),
+  );
   if (
     anyAntennaOpNormalized &&
     fusedDataset === parsedDataset &&
@@ -1522,7 +1530,8 @@ export function fuseXferaIntoOrangeInDataset(
  * Fusiona de forma pura e idempotente declaraciones duplicadas de Vodafone a
  * estrictamente `< maxDistanceMeters` metros (por defecto 35 m) usando malla
  * espacial + Union-Find y recalcula totales por operador y provincia si hubo fusiones.
- * Las estaciones de Telefónica (`movistar`) y demás operadores jamás se fusionan consigo mismas.
+ * Este pase solo actúa sobre Vodafone; la fusión de duplicados en la misma coordenada exacta
+ * para todas las operadoras se aplica en `fuseSameOperatorExactCoordsInDataset`.
  */
 export function fuseVodafoneAntennasInDataset(
   dataset: AntenasDataset,
@@ -1738,6 +1747,246 @@ export function fuseVodafoneAntennasInDataset(
       ...dataset.crawlStats,
       vodafoneFusedDuplicates:
         (dataset.crawlStats.vodafoneFusedDuplicates ?? 0) + fusionsCount,
+      ...(dataset.crawlStats.bandsPopulatedCount !== undefined ||
+      fusedBandsPopulated > 0
+        ? { bandsPopulatedCount: fusedBandsPopulated }
+        : {}),
+    },
+    operators: updatedOperators,
+    provinces: updatedProvinces,
+    antenas: fusedAntenas,
+  };
+}
+
+function compareExactCoordCanonical(
+  a: AntennaRecord,
+  b: AntennaRecord,
+): number {
+  const effOp = normalizeOperatorKeyInput(a.op, a.opRaw) ?? a.op;
+  if (effOp === 'orange') {
+    const aXfera =
+      (a.op as string) === 'masmovil' || isXferaLegalEntity(a.opRaw) ? 1 : 0;
+    const bXfera =
+      (b.op as string) === 'masmovil' || isXferaLegalEntity(b.opRaw) ? 1 : 0;
+    if (aXfera !== bXfera) return aXfera - bXfera;
+  }
+
+  const aGid = a.gid.trim();
+  const bGid = b.gid.trim();
+  const aEmpty = aGid.length === 0 ? 1 : 0;
+  const bEmpty = bGid.length === 0 ? 1 : 0;
+  if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+
+  if (effOp === 'vodafone') {
+    const aZeros = countRedundantLeadingZeros(aGid);
+    const bZeros = countRedundantLeadingZeros(bGid);
+    if (aZeros !== bZeros) return aZeros - bZeros;
+  }
+
+  const aHasDir = a.dir.trim().length > 0 ? 1 : 0;
+  const bHasDir = b.dir.trim().length > 0 ? 1 : 0;
+  const aHasMun = a.mun.trim().length > 0 ? 1 : 0;
+  const bHasMun = b.mun.trim().length > 0 ? 1 : 0;
+  const aProv = a.prov.trim();
+  const bProv = b.prov.trim();
+  const aHasProv = aProv.length > 0 && aProv !== 'SIN PROVINCIA' ? 1 : 0;
+  const bHasProv = bProv.length > 0 && bProv !== 'SIN PROVINCIA' ? 1 : 0;
+
+  const aComp = aHasDir + aHasMun + aHasProv;
+  const bComp = bHasDir + bHasMun + bHasProv;
+  if (aComp !== bComp) return bComp - aComp;
+
+  if (aHasDir !== bHasDir) return bHasDir - aHasDir;
+  if (aHasMun !== bHasMun) return bHasMun - aHasMun;
+  if (aHasProv !== bHasProv) return bHasProv - aHasProv;
+
+  if (aGid !== bGid) return aGid < bGid ? -1 : 1;
+  const aId = a.id.trim();
+  const bId = b.id.trim();
+  if (aId !== bId) return aId < bId ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Fusiona de forma pura e idempotente declaraciones duplicadas de cualquier misma
+ * operadora (incluyendo Orange, Telefónica/Movistar, Vodafone, DIGI y operadores
+ * regionales con idéntica razón social) declaradas en la MISMA coordenada exacta `(lat, lon)`.
+ * Las estaciones de Telefónica, Orange nativo, DIGI u otros en coordenadas distintas
+ * (aunque disten pocos metros) jamás se fusionan en este pase.
+ */
+export function fuseSameOperatorExactCoordsInDataset(
+  dataset: AntenasDataset,
+): AntenasDataset {
+  const { antenas } = dataset;
+  if (antenas.length <= 1) {
+    return dataset;
+  }
+
+  const firstIdxByKey = new Map<string, number>();
+  let duplicateGroups: Map<string, number[]> | null = null;
+  let keyByIdx: (string | null)[] | null = null;
+
+  for (let i = 0; i < antenas.length; i++) {
+    const key = buildSameOperatorExactCoordKey(antenas[i]);
+    if (keyByIdx !== null) {
+      keyByIdx[i] = key;
+    }
+    if (key === null) continue;
+    const firstIdx = firstIdxByKey.get(key);
+    if (firstIdx !== undefined) {
+      if (duplicateGroups === null) {
+        duplicateGroups = new Map<string, number[]>();
+        keyByIdx = new Array<string | null>(antenas.length);
+        for (let p = 0; p < i; p++) {
+          keyByIdx[p] = buildSameOperatorExactCoordKey(antenas[p]);
+        }
+        keyByIdx[i] = key;
+      }
+      let bucket = duplicateGroups.get(key);
+      if (!bucket) {
+        bucket = [firstIdx, i];
+        duplicateGroups.set(key, bucket);
+      } else {
+        bucket.push(i);
+      }
+    } else {
+      firstIdxByKey.set(key, i);
+    }
+  }
+
+  if (duplicateGroups === null || keyByIdx === null) {
+    return dataset;
+  }
+
+  const mergedByKey = new Map<string, AntennaRecord>();
+  let fusionsCount = 0;
+
+  for (const [key, indices] of duplicateGroups.entries()) {
+    fusionsCount += indices.length - 1;
+    const members = indices.map((idx) => antenas[idx]);
+    const sortedMembers = [...members].sort(compareExactCoordCanonical);
+    const normalizedOp =
+      normalizeOperatorKeyInput(sortedMembers[0].op, sortedMembers[0].opRaw) ??
+      sortedMembers[0].op;
+    mergedByKey.set(
+      key,
+      mergeAntennaComponentMembers(sortedMembers, false, normalizedOp),
+    );
+  }
+
+  const emittedKeys = new Set<string>();
+  const fusedAntenas: AntennaRecord[] = [];
+  for (let i = 0; i < antenas.length; i++) {
+    const key = keyByIdx[i];
+    if (key === null) {
+      fusedAntenas.push(antenas[i]);
+      continue;
+    }
+    const mergedRec = mergedByKey.get(key);
+    if (!mergedRec) {
+      fusedAntenas.push(antenas[i]);
+      continue;
+    }
+    if (!emittedKeys.has(key)) {
+      emittedKeys.add(key);
+      fusedAntenas.push(mergedRec);
+    }
+  }
+
+  const opCounts: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    digi: 0,
+    otros: 0,
+  };
+  const opEntities: Record<OperatorKey, Set<string>> = {
+    movistar: new Set<string>(),
+    orange: new Set<string>(),
+    vodafone: new Set<string>(),
+    digi: new Set<string>(),
+    otros: new Set<string>(),
+  };
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+    const normOp = normalizeOperatorKeyInput(ant.op, ant.opRaw) ?? ant.op;
+    if (ant.opRaw) {
+      opEntities[normOp].add(ant.opRaw);
+    }
+  }
+
+  const provMap = new Map<
+    string,
+    { count: number; byOperator: Partial<Record<OperatorKey, number>> }
+  >();
+  let fusedBandsPopulated = 0;
+
+  for (let i = 0; i < fusedAntenas.length; i++) {
+    const ant = fusedAntenas[i];
+    opCounts[ant.op] = (opCounts[ant.op] ?? 0) + 1;
+    if (ant.opRaw) {
+      opEntities[ant.op].add(ant.opRaw);
+    }
+    if (Array.isArray(ant.bandas)) {
+      fusedBandsPopulated += 1;
+    }
+    if (ant.prov) {
+      let provEntry = provMap.get(ant.prov);
+      if (!provEntry) {
+        provEntry = { count: 0, byOperator: {} };
+        provMap.set(ant.prov, provEntry);
+      }
+      provEntry.count += 1;
+      provEntry.byOperator[ant.op] = (provEntry.byOperator[ant.op] ?? 0) + 1;
+    }
+  }
+
+  const updatedOperators = {} as Record<OperatorKey, OperatorSummary>;
+  for (const opKey of OPERATOR_ORDER) {
+    const prev = dataset.operators?.[opKey];
+    const entities = Array.from(opEntities[opKey]).sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+    updatedOperators[opKey] = {
+      key: opKey,
+      name: prev?.name ?? OPERATOR_META[opKey].name,
+      count: opCounts[opKey],
+      legalEntities:
+        entities.length > 0
+          ? entities
+          : opCounts[opKey] > 0 && prev?.legalEntities
+            ? prev.legalEntities
+            : [],
+    };
+  }
+
+  const updatedProvinces: ProvinceSummary[] = Array.from(provMap.entries())
+    .map(([provincia, stats]) => {
+      const orderedByOp: Partial<Record<OperatorKey, number>> = {};
+      for (const opKey of OPERATOR_ORDER) {
+        const count = stats.byOperator[opKey] ?? 0;
+        if (count > 0) {
+          orderedByOp[opKey] = count;
+        }
+      }
+      return {
+        provincia,
+        count: stats.count,
+        byOperator: orderedByOp,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.count - a.count || a.provincia.localeCompare(b.provincia, 'es'),
+    );
+
+  return {
+    ...dataset,
+    total: fusedAntenas.length,
+    crawlStats: {
+      ...dataset.crawlStats,
+      exactCoordFusedDuplicates:
+        (dataset.crawlStats.exactCoordFusedDuplicates ?? 0) + fusionsCount,
       ...(dataset.crawlStats.bandsPopulatedCount !== undefined ||
       fusedBandsPopulated > 0
         ? { bandsPopulatedCount: fusedBandsPopulated }
@@ -2065,8 +2314,10 @@ function formatRfBandMaskText(codeMask: number): string {
 export function buildDerivedAntenasStructures(
   inputDataset: AntenasDataset,
 ): DerivedAntenasStructures {
-  const fusedDataset = fuseVodafoneAntennasInDataset(
-    fuseXferaIntoOrangeInDataset(inputDataset),
+  const fusedDataset = fuseSameOperatorExactCoordsInDataset(
+    fuseVodafoneAntennasInDataset(
+      fuseXferaIntoOrangeInDataset(inputDataset),
+    ),
   );
   let normalizedAntenas: AntennaRecord[] | null = null;
   for (let i = 0; i < fusedDataset.antenas.length; i++) {
@@ -2513,11 +2764,7 @@ export function mergeLiveDeltaIntoAntenasDataset(
     }
 
     let patch = delta.bandPatchesById.get(ant.id);
-    if (
-      !patch &&
-      (ant.op === 'vodafone' || ant.op === 'orange') &&
-      ant.mergedGids
-    ) {
+    if (!patch && ant.mergedGids) {
       for (let g = 0; g < ant.mergedGids.length; g++) {
         const candidatePatch = delta.bandPatchesByGid.get(ant.mergedGids[g]);
         if (candidatePatch) {
@@ -2703,6 +2950,9 @@ export function mergeLiveDeltaIntoAntenasDataset(
   if (addedVodafone) {
     result = fuseVodafoneAntennasInDataset(result, 35);
   }
+  if (addedCount > 0 || normalizedBaseLegacyOp) {
+    result = fuseSameOperatorExactCoordsInDataset(result);
+  }
   return result;
 }
 
@@ -2721,8 +2971,10 @@ export function useAntenasData() {
     () =>
       query.data
         ? mergeLiveDeltaIntoAntenasDataset(
-            fuseVodafoneAntennasInDataset(
-              fuseXferaIntoOrangeInDataset(query.data),
+            fuseSameOperatorExactCoordsInDataset(
+              fuseVodafoneAntennasInDataset(
+                fuseXferaIntoOrangeInDataset(query.data),
+              ),
             ),
             liveDelta,
           )
@@ -2740,29 +2992,6 @@ export function useAntenasData() {
     data: mergedData,
     derived,
   };
-}
-
-export function inferOperatorKeyFromAntennaId(id: string): OperatorKey | null {
-  const trimmed = id.trim();
-  if (!trimmed) return null;
-  if (isXferaLegalEntity(trimmed)) return 'orange';
-  const norm = trimmed
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase();
-  if (norm.includes('TELEFONICA') || norm.includes('MOVISTAR')) {
-    return 'movistar';
-  }
-  if (norm.includes('VODAFONE') || norm.includes('AIRTEL')) {
-    return 'vodafone';
-  }
-  if (norm.includes('ORANGE')) {
-    return 'orange';
-  }
-  if (/\bDIGI\b/.test(norm) || norm.includes('DS MOBILE')) {
-    return 'digi';
-  }
-  return null;
 }
 
 /**

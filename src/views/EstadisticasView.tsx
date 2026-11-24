@@ -238,6 +238,7 @@ export function EstadisticasView() {
   const maxOperatorCount = operatorRows[0]?.count || 1;
   const { crawlStats } = dataset;
   const vodafoneFused = crawlStats.vodafoneFusedDuplicates ?? 0;
+  const exactCoordFused = crawlStats.exactCoordFusedDuplicates ?? 0;
 
   return (
     <main className="page-container">
@@ -261,8 +262,17 @@ export function EstadisticasView() {
             {dataset.total.toLocaleString('es-ES')}
           </span>
           <span className="metric-sub">
-            {vodafoneFused > 0
-              ? `${vodafoneFused.toLocaleString('es-ES')} declaraciones duplicadas de Vodafone (< 35 m) fusionadas`
+            {vodafoneFused > 0 || exactCoordFused > 0
+              ? `${[
+                  vodafoneFused > 0
+                    ? `${vodafoneFused.toLocaleString('es-ES')} Vodafone (< 35 m)`
+                    : null,
+                  exactCoordFused > 0
+                    ? `${exactCoordFused.toLocaleString('es-ES')} misma coordenada`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')} fusionadas`
               : 'Emplazamientos únicos deduplicados'}
           </span>
         </div>
@@ -817,7 +827,7 @@ export function EstadisticasView() {
           </div>
         </div>
 
-        {vodafoneFused > 0 && (
+        {(vodafoneFused > 0 || exactCoordFused > 0) && (
           <div
             className="section-block-body"
             style={{
@@ -827,15 +837,30 @@ export function EstadisticasView() {
             }}
           >
             <div className="callout-note">
-              <strong>Deduplicación espacial de Vodafone (&lt; 35 m):</strong>{' '}
-              <span className="mono" style={{ fontWeight: 700 }}>
-                {vodafoneFused.toLocaleString('es-ES')}
-              </span>{' '}
-              declaraciones duplicadas de Vodafone (&lt; 35 m) fusionadas en
-              emplazamientos únicos, contabilizadas como{' '}
+              <strong>Deduplicación del censo:</strong>{' '}
+              {vodafoneFused > 0 && (
+                <>
+                  <span className="mono" style={{ fontWeight: 700 }}>
+                    {vodafoneFused.toLocaleString('es-ES')}
+                  </span>{' '}
+                  declaraciones duplicadas de Vodafone (&lt; 35 m)
+                  {exactCoordFused > 0 ? ' y ' : ' '}
+                </>
+              )}
+              {exactCoordFused > 0 && (
+                <>
+                  <span className="mono" style={{ fontWeight: 700 }}>
+                    {exactCoordFused.toLocaleString('es-ES')}
+                  </span>{' '}
+                  declaraciones duplicadas de una misma operadora en la misma
+                  coordenada exacta (incluyendo Orange y Telefónica){' '}
+                </>
+              )}
+              fusionadas en emplazamientos únicos, contabilizadas como{' '}
               <strong>1 sola antena</strong> tanto en el censo nacional como en
               las cuotas por operador y provincia. Las antenas de Telefónica
-              (Movistar) nunca se fusionan consigo mismas.
+              (Movistar) en coordenadas distintas nunca se fusionan consigo
+              mismas.
             </div>
           </div>
         )}

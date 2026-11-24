@@ -718,7 +718,7 @@ export function AntenasMap(props: AntenasMapProps) {
     [styleId],
   );
 
-  // Agrupación espacial en memoria (< 15 m entre distintos operadores sin auto-fusionar Telefónica + fusión defensiva Vodafone < 35 m)
+  // Agrupación espacial en memoria (fusión defensiva Vodafone < 35 m + misma coordenada exacta por operadora + multioperador < 15 m)
   // hacia geometrías puntuales para el motor WebGL de MapLibre GL JS
   const { antenasGeoJson, antenasById, sitesById, multiIconKeys } =
     useMemo(() => {

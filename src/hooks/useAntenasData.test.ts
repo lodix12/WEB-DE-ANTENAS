@@ -69,6 +69,7 @@ import {
   compareFrequencyRanges,
   computeAntennaRfBandMask,
   filterAntenas,
+  fuseSameOperatorExactCoordsInDataset,
   fuseVodafoneAntennasInDataset,
   fuseXferaIntoOrangeInDataset,
   getCanonicalSpanishProvince,
@@ -528,7 +529,7 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
     expect(derived.dataset.antenas).toHaveLength(5);
   });
 
-  it('nunca fusiona antenas de Telefónica (movistar) entre sí a < 35 m (incluso a 0 m o 20 m)', () => {
+  it('fusiona antenas de Telefónica (movistar) en la misma coordenada exacta (0 m) y nunca las fusiona cuando distan > 0 m (ej. 20 m)', () => {
     const base = createSampleCustomDataset();
     const telefonicaCloseDataset: AntenasDataset = {
       ...base,
@@ -559,7 +560,7 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
       ],
       antenas: [
         ...base.antenas,
-        // Segunda antena de Telefónica a 0 m exactos de 2800001 (40.4168, -3.7038)
+        // Segunda antena de Telefónica en la misma coordenada exacta de 2800001 (40.4168, -3.7038) -> SÍ se fusiona
         {
           id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800098',
           gid: '2800098',
@@ -571,7 +572,7 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
           mun: 'MADRID',
           prov: 'MADRID',
         },
-        // Tercera antena de Telefónica a ~20 m (< 35 m) de 2800001
+        // Tercera antena de Telefónica a ~20 m (< 35 m, distinta coordenada) de 2800001 -> NO se fusiona
         {
           id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800099',
           gid: '2800099',
@@ -609,22 +610,25 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
       ],
     };
 
+    // El pase exclusivo de Vodafone solo fusiona Vodafone (< 35 m)
     const fusedOnly = fuseVodafoneAntennasInDataset(telefonicaCloseDataset);
     expect(fusedOnly.operators.movistar.count).toBe(4);
     expect(fusedOnly.operators.vodafone.count).toBe(1);
     expect(fusedOnly.total).toBe(6);
 
+    // El pipeline completo fusiona también Telefónica en la misma coordenada exacta (2800001 + 2800098),
+    // manteniendo estrictamente separada 2800099 (~20 m)
     const derived = buildDerivedAntenasStructures(telefonicaCloseDataset);
-    expect(derived.operatorCounts.movistar).toBe(4);
+    expect(derived.operatorCounts.movistar).toBe(3);
     expect(derived.operatorCounts.vodafone).toBe(1);
-    expect(derived.dataset.antenas.filter((a) => a.op === 'movistar')).toHaveLength(4);
-    expect(derived.byGid.get('2800001')).not.toBe(derived.byGid.get('2800098'));
+    expect(derived.dataset.crawlStats.exactCoordFusedDuplicates).toBe(1);
+    expect(derived.dataset.antenas.filter((a) => a.op === 'movistar')).toHaveLength(3);
+    expect(derived.byGid.get('2800001')).toBe(derived.byGid.get('2800098'));
+    expect(derived.byGid.get('2800001')?.mergedGids).toEqual(['2800001', '2800098']);
     expect(derived.byGid.get('2800001')).not.toBe(derived.byGid.get('2800099'));
-    for (const ant of derived.dataset.antenas.filter((a) => a.op === 'movistar')) {
-      expect(ant.mergedGids).toBeUndefined();
-    }
+    expect(derived.byGid.get('2800099')?.mergedGids).toBeUndefined();
     const madrid = derived.provincesByCount.find((p) => p.provincia === 'MADRID');
-    expect(madrid?.byOperator.movistar).toBe(3);
+    expect(madrid?.byOperator.movistar).toBe(2);
     expect(madrid?.byOperator.vodafone).toBe(1);
   });
 });
@@ -8443,6 +8447,257 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (4
     expect(mapCssSource).toContain(".map-style-swatch[data-style='osm']");
     expect(mapCssSource).toMatch(
       /\.map-style-swatch\[data-style='osm'\]\s*\{[\s\S]*?#f2efe9[\s\S]*?#add19e[\s\S]*?#f9b29c[\s\S]*?#aad3df[\s\S]*?\}/i,
+    );
+  });
+});
+
+describe('Fusión de declaraciones de la misma operadora en la misma coordenada exacta (incluido Orange y Telefónica)', () => {
+  it('fusiona Orange, Telefónica, DIGI y Otros (misma razón social) en la misma coordenada exacta, preserva coordenadas distintas y actualiza live deltas y UI', async () => {
+    const base = createSampleCustomDataset();
+    const rawDataset: AntenasDataset = {
+      ...base,
+      total: 8,
+      antenas: [
+        // Telefónica par exacto (0600001 + 600001 -> 0600001 con bandas unidas)
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 600001',
+          gid: '600001',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 38.873417,
+          lon: -6.973722,
+          dir: 'CL ENRIQUE SEGURA OTAÑO, 7',
+          mun: 'BADAJOZ',
+          prov: 'BADAJOZ',
+          bandas: ['3500 MHz'],
+          frecuencias: ['3460.00 - 3600.00'],
+          concesiones: [{ ref: 'MV-3500', freq: '3460.00 - 3600.00' }],
+          bandsScannedAt: '2026-11-23T23:51:38Z',
+        },
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 0600001',
+          gid: '0600001',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 38.873417,
+          lon: -6.973722,
+          dir: 'CL Enrique Segura Otaño, 7',
+          mun: 'BADAJOZ',
+          prov: 'BADAJOZ',
+          bandas: ['700 MHz', '800 MHz'],
+          frecuencias: ['778.00 - 788.00', '852.00 - 862.00'],
+          concesiones: [
+            { ref: 'MV-700', freq: '778.00 - 788.00' },
+            { ref: 'MV-800', freq: '852.00 - 862.00' },
+          ],
+          bandsScannedAt: '2026-11-23T23:59:28Z',
+        },
+        // Orange nativo par exacto (GALR0044A + GALR0044C) + Orange cercana distinta (~0.33 m)
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - GALR0044C',
+          gid: 'GALR0044C',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.353278,
+          lon: -8.423861,
+          dir: 'CL COPÉRNICO, 6',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+          bandas: ['800 MHz', '900 MHz'],
+          frecuencias: ['832.00 - 842.00', '925.10 - 935.10'],
+          concesiones: [{ ref: 'OR-800', freq: '832.00 - 842.00' }],
+          bandsScannedAt: '2026-11-23T23:48:03Z',
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - GALR0044A',
+          gid: 'GALR0044A',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.353278,
+          lon: -8.423861,
+          dir: 'CL COPERNICO, 6',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+          bandas: ['700 MHz', '900 MHz'],
+          frecuencias: ['758.00 - 768.00', '925.10 - 935.10'],
+          concesiones: [{ ref: 'OR-700', freq: '758.00 - 768.00' }],
+          bandsScannedAt: '2026-11-23T23:48:05Z',
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - GALR0044Z',
+          gid: 'GALR0044Z',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.353281, // ~0.33 m -> NO fusiona
+          lon: -8.423861,
+          dir: 'CL COPERNICO, 8',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+          bandas: ['1800 MHz'],
+        },
+        // Otros: misma razón social fusiona, distinta razón social se conserva separada
+        {
+          id: 'RETEVISION MOVIL SA - R1',
+          gid: 'R1',
+          op: 'otros',
+          opRaw: 'RETEVISION MOVIL SA',
+          lat: 41.39,
+          lon: 2.16,
+          dir: 'TORRE',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['900 MHz'],
+        },
+        {
+          id: 'RETEVISION MOVIL SA - R2',
+          gid: 'R2',
+          op: 'otros',
+          opRaw: 'RETEVISIÓN MOVIL SA',
+          lat: 41.39,
+          lon: 2.16,
+          dir: 'TORRE',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['1800 MHz'],
+        },
+        {
+          id: 'TELEAST DIGITAL, SL - T1',
+          gid: 'T1',
+          op: 'otros',
+          opRaw: 'TELEAST DIGITAL, SL',
+          lat: 41.39,
+          lon: 2.16,
+          dir: 'TORRE',
+          mun: 'BARCELONA',
+          prov: 'BARCELONA',
+          bandas: ['2600 MHz'],
+        },
+      ],
+    };
+
+    const fused = fuseSameOperatorExactCoordsInDataset(rawDataset);
+    expect(fused.total).toBe(5);
+    expect(fused.crawlStats.exactCoordFusedDuplicates).toBe(3);
+    expect(fused.operators.movistar.count).toBe(1);
+    expect(fused.operators.orange.count).toBe(2);
+    expect(fused.operators.otros.count).toBe(2);
+    // Idempotencia: segunda llamada devuelve la misma referencia exacta
+    expect(fuseSameOperatorExactCoordsInDataset(fused)).toBe(fused);
+
+    const derived = buildDerivedAntenasStructures(rawDataset);
+    const mov = derived.byGid.get('0600001');
+    expect(mov).toBeDefined();
+    expect(derived.byGid.get('600001')).toBe(mov);
+    expect(mov?.mergedGids).toEqual(['0600001', '600001']);
+    expect(mov?.bandas).toEqual(['700 MHz', '800 MHz', '3500 MHz']);
+
+    const ora = derived.byGid.get('GALR0044A');
+    expect(ora).toBeDefined();
+    expect(derived.byGid.get('GALR0044C')).toBe(ora);
+    expect(ora?.mergedGids).toEqual(['GALR0044A', 'GALR0044C']);
+    expect(ora?.bandas).toEqual(['700 MHz', '800 MHz', '900 MHz']);
+    expect(derived.byGid.get('GALR0044Z')?.mergedGids).toBeUndefined();
+
+    // Live delta: una nueva Telefónica en la misma coord exacta se fusiona; y un bandPatch dirigido al GID secundario (600001) actualiza la estación fusionada
+    const liveMergedDelta = accumulateLiveDeltaChunks(
+      [
+        {
+          schemaVersion: 2,
+          scanId: 'scan-exact-1',
+          seq: 1,
+          chunkIndex: 0,
+          isTail: true,
+          updatedAt: '2026-11-24T10:00:00Z',
+          recordNovedades: true,
+          previousScanAt: '2026-11-23T23:59:28Z',
+          newAntennas: [
+            {
+              id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 0600001_BIS',
+              gid: '0600001_BIS',
+              op: 'movistar',
+              opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+              lat: 38.873417,
+              lon: -6.973722,
+              dir: 'CL Enrique Segura Otaño, 7',
+              mun: 'BADAJOZ',
+              prov: 'BADAJOZ',
+              bandas: ['2600 MHz'],
+              frecuencias: ['2620.00 - 2640.00'],
+            },
+          ],
+          bandPatches: [
+            {
+              id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 600001',
+              gid: '600001',
+              mergedGids: ['0600001', '600001'],
+              bandas: ['700 MHz', '800 MHz', '2100 MHz', '3500 MHz'],
+              frecuencias: [
+                '778.00 - 788.00',
+                '852.00 - 862.00',
+                '2155.00 - 2170.00',
+                '3460.00 - 3600.00',
+              ],
+              concesiones: [],
+              bandsScannedAt: '2026-11-24T10:00:00Z',
+            },
+          ],
+          novedades: [],
+        },
+      ],
+      'scan-exact-1',
+    );
+    const liveResult = mergeLiveDeltaIntoAntenasDataset(fused, liveMergedDelta);
+    expect(liveResult.total).toBe(5);
+    expect(liveResult.operators.movistar.count).toBe(1);
+    const movLive = liveResult.antenas.find((a) => a.gid === '0600001');
+    expect(movLive?.mergedGids).toEqual(['0600001', '600001', '0600001_BIS']);
+    expect(movLive?.bandas).toEqual([
+      '700 MHz',
+      '800 MHz',
+      '2100 MHz',
+      '2600 MHz',
+      '3500 MHz',
+    ]);
+
+    // SSR de StationDetailDrawer muestra etiqueta precisa por operador
+    const movDrawerHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: mov!,
+        allAntenas: derived.dataset.antenas,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(movDrawerHtml).toContain('Declaraciones Fusionadas (misma coordenada)');
+    expect(movDrawerHtml).not.toContain('Declaraciones Fusionadas (&lt; 35 m)');
+
+    const oraDrawerHtml = renderToStaticMarkup(
+      createElement(StationDetailDrawer, {
+        antenna: ora!,
+        allAntenas: derived.dataset.antenas,
+        onClose: () => {},
+        onSelectAntenna: () => {},
+      }),
+    );
+    expect(oraDrawerHtml).toContain('Declaraciones Fusionadas');
+    expect(oraDrawerHtml).not.toContain('Declaraciones Fusionadas (&lt; 35 m)');
+
+    // Verificación directa sobre public/data/antenas.json real en disco: 0 duplicados de misma operadora en misma coordenada exacta
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const staticDataset = JSON.parse(
+      readFileSync(
+        new URL('../../public/data/antenas.json', import.meta.url),
+        'utf-8',
+      ),
+    ) as AntenasDataset;
+    expect(fuseSameOperatorExactCoordsInDataset(staticDataset)).toBe(
+      staticDataset,
+    );
+    expect(staticDataset.crawlStats.exactCoordFusedDuplicates).toBeGreaterThan(
+      0,
     );
   });
 });

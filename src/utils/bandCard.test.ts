@@ -1347,4 +1347,56 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
     expect(boostedMov).not.toBeNull();
     expect(boostedMov).not.toBe(plainMov);
   });
+
+  it('renders a single combined band row per operator when two Orange or Telefónica declarations share the exact same coordinate', () => {
+    const sites = groupColocatedAntennasForMap([
+      makeAntenna({
+        id: 'ORANGE ESPAGNE, S.A.U. - GALR0044A',
+        gid: 'GALR0044A',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 43.353278,
+        lon: -8.423861,
+        bandas: ['700 MHz', '900 MHz'],
+        frecuencias: ['758.00 - 768.00', '925.10 - 935.10'],
+      }),
+      makeAntenna({
+        id: 'ORANGE ESPAGNE, S.A.U. - GALR0044C',
+        gid: 'GALR0044C',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 43.353278,
+        lon: -8.423861,
+        bandas: ['800 MHz', '3500 MHz'],
+        frecuencias: ['832.00 - 842.00', '3600.00 - 3700.00'],
+      }),
+      makeAntenna({
+        id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 0600001',
+        gid: '0600001',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        lat: 43.353278,
+        lon: -8.423861,
+        bandas: ['800 MHz', '1800 MHz'],
+        frecuencias: ['852.00 - 862.00', '1805.10 - 1825.10'],
+      }),
+      makeAntenna({
+        id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 600001',
+        gid: '600001',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        lat: 43.353278,
+        lon: -8.423861,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3460.00 - 3600.00'],
+      }),
+    ]);
+
+    expect(sites).toHaveLength(1);
+    expect(sites[0].members).toHaveLength(2);
+    expect(buildSiteBandCardRows(sites[0])).toEqual([
+      { op: 'movistar', color: OPERATOR_META.movistar.color, text: 'N78 B3 B20' },
+      { op: 'orange', color: OPERATOR_META.orange.color, text: 'N78 G9 B20 N28' },
+    ]);
+  });
 });

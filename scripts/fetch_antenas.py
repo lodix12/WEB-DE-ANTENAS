@@ -1456,6 +1456,11 @@ class InfoantenasCrawler:
             if _normalize_operator_key(r.get("op"), r.get("opRaw")) == "orange"
             for g in get_record_gids(r)
         }
+        self._provisional_exact_op_coords: set[tuple[str, str, float, float]] = set()
+        for r in prior_records:
+            exact_key = _same_operator_exact_coord_key(r)
+            if exact_key is not None:
+                self._provisional_exact_op_coords.add(exact_key)
 
     def load_checkpoint(self) -> bool:
         if not self.checkpoint_path or not self.checkpoint_path.exists():
@@ -1469,6 +1474,9 @@ class InfoantenasCrawler:
                         norm_rec.get("op"), norm_rec.get("opRaw")
                     )
                     self.records_by_id[norm_rec["id"]] = norm_rec
+                    exact_key = _same_operator_exact_coord_key(norm_rec)
+                    if exact_key is not None:
+                        self._provisional_exact_op_coords.add(exact_key)
                     if norm_rec["op"] == "orange":
                         for g in get_record_gids(norm_rec):
                             self._provisional_orange_gids.add(g)
@@ -1681,6 +1689,12 @@ class InfoantenasCrawler:
                 and self._prior_index is not None
                 and match_prior_antenna(rec, self._prior_index) is None
             ):
+                exact_coord_key = _same_operator_exact_coord_key(rec)
+                if (
+                    exact_coord_key is not None
+                    and exact_coord_key in self._provisional_exact_op_coords
+                ):
+                    continue
                 if rec["op"] == "vodafone":
                     lat_f = float(rec["lat"])
                     lon_f = float(rec["lon"])
@@ -1721,6 +1735,8 @@ class InfoantenasCrawler:
                     if gid_str:
                         self._provisional_orange_gids.add(gid_str)
 
+                if exact_coord_key is not None:
+                    self._provisional_exact_op_coords.add(exact_coord_key)
                 provisional_antennas.append(dict(rec))
                 if self._record_novedades:
                     scan_iso = _utc_now_iso(self._now_utc)
@@ -2254,8 +2270,9 @@ def fuse_vodafone_duplicates(
     Fusiona declaraciones duplicadas de Vodafone (`op == "vodafone"`) situadas a
     estrictamente `< max_distance_m` metros (por defecto 35.0 m) usando malla espacial
     (`cell_deg = max(0.0006, (max_distance_m / 111320.0) / 0.65)`) + Union-Find.
-    Las estaciones de Telefónica (`op == "movistar"`) y del resto de operadores
-    jamás se fusionan entre sí en el dataset.
+    Las estaciones de otros operadores no se modifican en este pase (la fusión de
+    duplicados en la misma coordenada exacta para todas las operadoras se aplica en
+    `fuse_same_operator_exact_coords`).
 
     Conserva 1 única estación canónica por componente conexa (manteniendo sus
     coordenadas reales WGS84 `lat`, `lon` para garantizar que ningún par de
@@ -2731,6 +2748,258 @@ def fuse_xfera_into_orange(
         if root not in emitted_roots:
             emitted_roots.add(root)
             output_records.append(merged_by_root[root])
+
+    return output_records, fused_duplicates
+
+
+def _normalize_otros_op_raw(op_raw: str) -> str:
+    """Normaliza la razón social de un operador en `'otros'` para identificar si es la misma operadora."""
+    return " ".join(_strip_accents(str(op_raw or "").upper()).split()).strip()
+
+
+def _same_operator_exact_coord_key(
+    rec: dict[str, Any],
+) -> tuple[str, str, float, float] | None:
+    """
+    Construye la clave determinista `(op, sub_op, lat, lon)` para detectar declaraciones
+    de la misma operadora en la misma coordenada exacta WGS84.
+    """
+    lat = _parse_float(rec.get("lat"))
+    lon = _parse_float(rec.get("lon"))
+    if lat is None or lon is None:
+        return None
+    lat_norm = 0.0 if lat == 0.0 else lat
+    lon_norm = 0.0 if lon == 0.0 else lon
+    eff_op = _normalize_operator_key(rec.get("op"), rec.get("opRaw")) or "otros"
+    sub_op = (
+        _normalize_otros_op_raw(str(rec.get("opRaw") or ""))
+        if eff_op == "otros"
+        else ""
+    )
+    return (eff_op, sub_op, lat_norm, lon_norm)
+
+
+def _exact_coord_canonical_sort_key(
+    rec: dict[str, Any],
+) -> tuple[int, int, int, int, int, int, int, str, str]:
+    eff_op = _normalize_operator_key(rec.get("op"), rec.get("opRaw")) or "otros"
+    is_xfera_rank = (
+        1
+        if eff_op == "orange"
+        and (
+            str(rec.get("op") or "").strip() == "masmovil"
+            or is_xfera_entity(str(rec.get("opRaw") or ""))
+        )
+        else 0
+    )
+    gid = str(rec.get("gid") or "").strip()
+    rec_id = str(rec.get("id") or "").strip()
+    leading_zeros = _redundant_leading_zeros(gid) if eff_op == "vodafone" else 0
+    has_dir = bool(str(rec.get("dir") or "").strip())
+    has_mun = bool(str(rec.get("mun") or "").strip())
+    prov_str = str(rec.get("prov") or "").strip()
+    has_prov = bool(prov_str and prov_str != "SIN PROVINCIA")
+    completeness = int(has_dir) + int(has_mun) + int(has_prov)
+    return (
+        is_xfera_rank,
+        0 if gid else 1,
+        leading_zeros,
+        -completeness,
+        0 if has_dir else 1,
+        0 if has_mun else 1,
+        0 if has_prov else 1,
+        gid,
+        rec_id,
+    )
+
+
+def _needs_exact_coord_fusion(raw_list: list[dict[str, Any]]) -> bool:
+    """Comprueba en O(N) si existen dos o más declaraciones de la misma operadora en la misma coordenada exacta."""
+    if len(raw_list) <= 1:
+        return False
+    seen: set[tuple[str, str, float, float]] = set()
+    for rec in raw_list:
+        if not isinstance(rec, dict):
+            continue
+        key = _same_operator_exact_coord_key(rec)
+        if key is None:
+            continue
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
+def fuse_same_operator_exact_coords(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Fusiona declaraciones duplicadas de cualquier misma operadora (incluyendo Orange,
+    Telefónica/Movistar, Vodafone, DIGI y operadores regionales con idéntica razón social)
+    declaradas en la MISMA coordenada exacta `(lat, lon)`.
+
+    Las antenas de Telefónica, Orange nativo, DIGI u otros con coordenadas distintas
+    (aunque disten pocos metros) jamás se fusionan en este pase.
+    Devuelve `(registros_fusionados, duplicados_eliminados)` preservando el orden original.
+    """
+    def _copy_normalized(item: dict[str, Any]) -> dict[str, Any]:
+        copied = dict(item)
+        copied["op"] = _normalize_operator_key(copied.get("op"), copied.get("opRaw"))
+        if isinstance(copied.get("mergedGids"), list):
+            copied["mergedGids"] = list(copied["mergedGids"])
+        if isinstance(copied.get("bandas"), list):
+            copied["bandas"] = normalize_band_labels(copied["bandas"])
+        if isinstance(copied.get("frecuencias"), list):
+            copied["frecuencias"] = list(copied["frecuencias"])
+        if isinstance(copied.get("concesiones"), list):
+            copied["concesiones"] = [
+                dict(c) for c in copied["concesiones"] if isinstance(c, dict)
+            ]
+        return copied
+
+    if len(records) <= 1:
+        return [_copy_normalized(r) for r in records], 0
+
+    groups_by_key: dict[tuple[str, str, float, float], list[int]] = {}
+    key_by_idx: dict[int, tuple[str, str, float, float]] = {}
+    has_duplicates = False
+
+    for idx, rec in enumerate(records):
+        key = _same_operator_exact_coord_key(rec)
+        if key is None:
+            continue
+        key_by_idx[idx] = key
+        bucket = groups_by_key.get(key)
+        if bucket is not None:
+            bucket.append(idx)
+            has_duplicates = True
+        else:
+            groups_by_key[key] = [idx]
+
+    if not has_duplicates:
+        return [_copy_normalized(r) for r in records], 0
+
+    merged_by_key: dict[tuple[str, str, float, float], dict[str, Any]] = {}
+    fused_duplicates = 0
+
+    for key, member_indices in groups_by_key.items():
+        if len(member_indices) == 1:
+            merged_by_key[key] = _copy_normalized(records[member_indices[0]])
+            continue
+
+        fused_duplicates += len(member_indices) - 1
+        comp_members = [records[i] for i in member_indices]
+        sorted_members = sorted(comp_members, key=_exact_coord_canonical_sort_key)
+        merged_rec = _copy_normalized(sorted_members[0])
+        merged_rec["op"] = key[0]
+
+        for member in sorted_members[1:]:
+            if not str(merged_rec.get("gid") or "").strip() and str(
+                member.get("gid") or ""
+            ).strip():
+                merged_rec["gid"] = str(member["gid"]).strip()
+            if not str(merged_rec.get("dir") or "").strip() and str(
+                member.get("dir") or ""
+            ).strip():
+                merged_rec["dir"] = member["dir"]
+            if not str(merged_rec.get("mun") or "").strip() and str(
+                member.get("mun") or ""
+            ).strip():
+                merged_rec["mun"] = member["mun"]
+            cur_prov = str(merged_rec.get("prov") or "").strip()
+            cand_prov = str(member.get("prov") or "").strip()
+            if (
+                (not cur_prov or cur_prov == "SIN PROVINCIA")
+                and cand_prov
+                and cand_prov != "SIN PROVINCIA"
+            ):
+                merged_rec["prov"] = member["prov"]
+            elif not cur_prov and cand_prov:
+                merged_rec["prov"] = member["prov"]
+
+        seen_gids: set[str] = set()
+        merged_gids: list[str] = []
+        any_member_had_merged_gids = False
+        for member in sorted_members:
+            mgid = str(member.get("gid") or "").strip()
+            if mgid and mgid not in seen_gids:
+                seen_gids.add(mgid)
+                merged_gids.append(mgid)
+            extra = member.get("mergedGids")
+            if isinstance(extra, list):
+                any_member_had_merged_gids = True
+                for eg in extra:
+                    eg_str = str(eg or "").strip()
+                    if eg_str and eg_str not in seen_gids:
+                        seen_gids.add(eg_str)
+                        merged_gids.append(eg_str)
+
+        if len(merged_gids) > 1 or (any_member_had_merged_gids and merged_gids):
+            merged_rec["mergedGids"] = merged_gids
+        else:
+            merged_rec.pop("mergedGids", None)
+
+        if all(isinstance(m.get("bandas"), list) for m in sorted_members):
+            combined_freqs: list[str] = []
+            for member in sorted_members:
+                for freq_item in member.get("frecuencias") or []:
+                    if isinstance(freq_item, str):
+                        combined_freqs.append(freq_item)
+            bandas_from_freqs, freqs_u = summarize_frequency_ranges(combined_freqs)
+            extra_bands = {
+                str(b).strip()
+                for member in sorted_members
+                for b in (member.get("bandas") or [])
+                if str(b).strip()
+            }
+            merged_rec["bandas"] = normalize_band_labels(
+                set(bandas_from_freqs) | extra_bands
+            )
+            merged_rec["frecuencias"] = freqs_u
+        else:
+            merged_rec.pop("bandas", None)
+            merged_rec.pop("frecuencias", None)
+
+        if all(isinstance(m.get("concesiones"), list) for m in sorted_members):
+            combined_concs: list[dict[str, Any]] = []
+            for member in sorted_members:
+                for conc_item in member.get("concesiones") or []:
+                    if isinstance(conc_item, dict):
+                        combined_concs.append(conc_item)
+            merged_rec["concesiones"] = summarize_concessions(combined_concs)
+        else:
+            merged_rec.pop("concesiones", None)
+
+        has_all_bands = isinstance(merged_rec.get("bandas"), list)
+        has_partial_concs = any(
+            isinstance(m.get("concesiones"), list) for m in sorted_members
+        ) and not isinstance(merged_rec.get("concesiones"), list)
+        if (
+            has_all_bands
+            and not has_partial_concs
+            and all(
+                isinstance(m.get("bandsScannedAt"), str) and m.get("bandsScannedAt")
+                for m in sorted_members
+            )
+        ):
+            merged_rec["bandsScannedAt"] = min(
+                _normalize_iso_utc(str(m["bandsScannedAt"])) for m in sorted_members
+            )
+        else:
+            merged_rec.pop("bandsScannedAt", None)
+
+        merged_by_key[key] = merged_rec
+
+    emitted_keys: set[tuple[str, str, float, float]] = set()
+    output_records: list[dict[str, Any]] = []
+    for idx, rec in enumerate(records):
+        key = key_by_idx.get(idx)
+        if key is None:
+            output_records.append(_copy_normalized(rec))
+            continue
+        if key not in emitted_keys:
+            emitted_keys.add(key)
+            output_records.append(merged_by_key[key])
 
     return output_records, fused_duplicates
 
@@ -3458,18 +3727,20 @@ def _load_records_from_preserve_source(
     if not raw_list:
         return []
     if _needs_xfera_fusion(raw_list):
-        fused, _ = fuse_xfera_into_orange(raw_list)
-        return fused
-    normalized: list[dict[str, Any]] = []
-    for r in raw_list:
-        eff_op = _normalize_operator_key(r.get("op"), r.get("opRaw"))
-        if eff_op != r.get("op"):
-            rcopy = dict(r)
-            rcopy["op"] = eff_op
-            normalized.append(rcopy)
-        else:
-            normalized.append(r)
-    return normalized
+        result, _ = fuse_xfera_into_orange(raw_list)
+    else:
+        result = []
+        for r in raw_list:
+            eff_op = _normalize_operator_key(r.get("op"), r.get("opRaw"))
+            if eff_op != r.get("op"):
+                rcopy = dict(r)
+                rcopy["op"] = eff_op
+                result.append(rcopy)
+            else:
+                result.append(r)
+    if _needs_exact_coord_fusion(result):
+        result, _ = fuse_same_operator_exact_coords(result)
+    return result
 
 
 def build_prior_antenna_index(
@@ -6919,7 +7190,9 @@ def build_dataset(
     """
     Construye el objeto `AntenasDataset` tipado según `src/types/antena.ts`,
     fusionando previamente declaraciones duplicadas de Vodafone a `< max_distance_m`
-    (por defecto `< 35 m`), preservando opcionalmente `bandas`/`frecuencias`/`concesiones`
+    (por defecto `< 35 m`), integrando Xfera en Orange y fusionando declaraciones
+    duplicadas de cualquier misma operadora en la misma coordenada exacta (incluyendo
+    Orange y Telefónica), preservando opcionalmente `bandas`/`frecuencias`/`concesiones`
     previas y ordenando las antenas determinísticamente por `(prov, mun, id)`.
     """
     raw_records = (
@@ -6933,6 +7206,9 @@ def build_dataset(
     fused_records, _ = fuse_xfera_into_orange(
         fused_records, max_distance_m=DEFAULT_XFERA_ORANGE_FUSION_M
     )
+    fused_records, exact_coord_fused_count = fuse_same_operator_exact_coords(
+        fused_records
+    )
 
     if preserve_from is not None:
         preserve_bands_in_records(fused_records, preserve_from)
@@ -6940,6 +7216,14 @@ def build_dataset(
     prior_fused = int(crawl_stats.get("vodafoneFusedDuplicates") or 0)
     crawl_stats_out = dict(crawl_stats)
     crawl_stats_out["vodafoneFusedDuplicates"] = prior_fused + fused_count
+    prior_exact_fused = int(crawl_stats.get("exactCoordFusedDuplicates") or 0)
+    if (
+        exact_coord_fused_count > 0
+        or "exactCoordFusedDuplicates" in crawl_stats
+    ):
+        crawl_stats_out["exactCoordFusedDuplicates"] = (
+            prior_exact_fused + exact_coord_fused_count
+        )
 
     sorted_antenas = sorted(
         fused_records,
@@ -7663,17 +7947,21 @@ def main(argv: list[str] | None = None) -> int:
             logging.error("No existe el archivo de entrada: %s", input_path)
             return 1
         dataset = json.loads(input_path.read_text(encoding="utf-8"))
-        migrated_legacy_masmovil = False
-        if "masmovil" in (dataset.get("operators") or {}) or any(
-            isinstance(r, dict) and r.get("op") == "masmovil"
-            for r in (dataset.get("antenas") or [])
+        migrated_legacy_dataset = False
+        if (
+            "masmovil" in (dataset.get("operators") or {})
+            or any(
+                isinstance(r, dict) and r.get("op") == "masmovil"
+                for r in (dataset.get("antenas") or [])
+            )
+            or _needs_exact_coord_fusion(dataset.get("antenas") or [])
         ):
             dataset = build_dataset(
                 dataset.get("antenas") or [],
                 crawl_stats=dataset.get("crawlStats") or {},
                 updated_at=dataset.get("updatedAt"),
             )
-            migrated_legacy_masmovil = True
+            migrated_legacy_dataset = True
         prev_updated_at = (
             dataset.get("updatedAt")
             if isinstance(dataset.get("updatedAt"), str)
@@ -7728,7 +8016,7 @@ def main(argv: list[str] | None = None) -> int:
         enricher.enrich_dataset(dataset)
         if not enricher.saved_final_checkpoint and (
             enricher.requests_count > 0
-            or migrated_legacy_masmovil
+            or migrated_legacy_dataset
             or output_path.resolve() != input_path.resolve()
         ):
             write_compact_dataset(dataset, output_path)

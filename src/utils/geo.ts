@@ -1,7 +1,11 @@
 import type { Feature, Polygon } from 'geojson';
 import {
   OPERATOR_ORDER,
+  buildSameOperatorExactCoordKey,
+  isXferaLegalEntity,
+  normalizeOperatorKeyInput,
   type AntennaRecord,
+  type ConcesionBanda,
   type OperatorKey,
 } from '../types/antena';
 import type { NearestAntennaResult } from '../types/map';
@@ -516,6 +520,202 @@ function clusterMultiOperatorSitesByCompleteLinkage(
   return result;
 }
 
+function normalizeMapBandLabel(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (/^2[67](?:[.,]\d+)?\s*[mg]hz$/i.test(trimmed)) {
+    return '26 GHz';
+  }
+  const mhzMatch = /^(\d+(?:[.,]\d+)?)\s*mhz$/i.exec(trimmed);
+  if (mhzMatch) {
+    return `${mhzMatch[1]} MHz`;
+  }
+  const ghzMatch = /^(\d+(?:[.,]\d+)?)\s*ghz$/i.exec(trimmed);
+  if (ghzMatch) {
+    return `${ghzMatch[1]} GHz`;
+  }
+  return trimmed;
+}
+
+function parseMapBandMhzWeight(label: string): number {
+  const normalized = normalizeMapBandLabel(label);
+  const match = /(\d+(?:[.,]\d+)?)/.exec(normalized);
+  if (!match) return Number.POSITIVE_INFINITY;
+  const num = Number(match[1].replace(',', '.'));
+  if (!Number.isFinite(num)) return Number.POSITIVE_INFINITY;
+  return /ghz/i.test(normalized) ? num * 1000 : num;
+}
+
+function compareMapBandLabels(a: string, b: string): number {
+  const diff = parseMapBandMhzWeight(a) - parseMapBandMhzWeight(b);
+  if (diff !== 0) return diff;
+  return a.localeCompare(b, 'es', { numeric: true });
+}
+
+function parseMapFreqBounds(raw: string): [number, number] {
+  const nums =
+    raw.match(/\d+(?:[.,]\d+)?/g)?.map((n) => Number(n.replace(',', '.'))) ?? [];
+  const rawStart = nums[0];
+  if (rawStart === undefined || !Number.isFinite(rawStart)) {
+    return [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
+  }
+  const rawEnd =
+    nums[1] !== undefined && Number.isFinite(nums[1]) ? nums[1] : rawStart;
+  const lo = Math.min(rawStart, rawEnd);
+  const hi = Math.max(rawStart, rawEnd);
+  const scaleToMhz =
+    (lo >= 24 && hi <= 29.5) || (/ghz/i.test(raw) && hi < 100);
+  return scaleToMhz ? [rawStart * 1000, rawEnd * 1000] : [rawStart, rawEnd];
+}
+
+function compareMapFreqRanges(a: string, b: string): number {
+  const [startA, endA] = parseMapFreqBounds(a);
+  const [startB, endB] = parseMapFreqBounds(b);
+  if (startA !== startB) return startA - startB;
+  if (endA !== endB) return endA - endB;
+  return a.localeCompare(b, 'es', { numeric: true });
+}
+
+function countMapRedundantLeadingZeros(gid: string): number {
+  if (gid.length <= 1) return 0;
+  let zeros = 0;
+  while (zeros < gid.length - 1 && gid.charCodeAt(zeros) === 48) {
+    zeros++;
+  }
+  return zeros;
+}
+
+function compareMapExactCoordCanonical(
+  a: AntennaRecord,
+  b: AntennaRecord,
+): number {
+  const effOp = normalizeOperatorKeyInput(a.op, a.opRaw) ?? a.op;
+  if (effOp === 'orange') {
+    const aXfera =
+      (a.op as string) === 'masmovil' || isXferaLegalEntity(a.opRaw) ? 1 : 0;
+    const bXfera =
+      (b.op as string) === 'masmovil' || isXferaLegalEntity(b.opRaw) ? 1 : 0;
+    if (aXfera !== bXfera) return aXfera - bXfera;
+  }
+
+  const aGid = a.gid.trim();
+  const bGid = b.gid.trim();
+  const aEmpty = aGid.length === 0 ? 1 : 0;
+  const bEmpty = bGid.length === 0 ? 1 : 0;
+  if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+
+  if (effOp === 'vodafone') {
+    const aZeros = countMapRedundantLeadingZeros(aGid);
+    const bZeros = countMapRedundantLeadingZeros(bGid);
+    if (aZeros !== bZeros) return aZeros - bZeros;
+  }
+
+  const aHasDir = a.dir.trim().length > 0 ? 1 : 0;
+  const bHasDir = b.dir.trim().length > 0 ? 1 : 0;
+  const aHasMun = a.mun.trim().length > 0 ? 1 : 0;
+  const bHasMun = b.mun.trim().length > 0 ? 1 : 0;
+  const aProv = a.prov.trim();
+  const bProv = b.prov.trim();
+  const aHasProv = aProv.length > 0 && aProv !== 'SIN PROVINCIA' ? 1 : 0;
+  const bHasProv = bProv.length > 0 && bProv !== 'SIN PROVINCIA' ? 1 : 0;
+
+  const aComp = aHasDir + aHasMun + aHasProv;
+  const bComp = bHasDir + bHasMun + bHasProv;
+  if (aComp !== bComp) return bComp - aComp;
+
+  if (aHasDir !== bHasDir) return bHasDir - aHasDir;
+  if (aHasMun !== bHasMun) return bHasMun - aHasMun;
+  if (aHasProv !== bHasProv) return bHasProv - aHasProv;
+
+  if (aGid !== bGid) return aGid < bGid ? -1 : 1;
+  const aId = a.id.trim();
+  const bId = b.id.trim();
+  if (aId !== bId) return aId < bId ? -1 : 1;
+  return 0;
+}
+
+function mergeRfFieldsFromMembers(
+  sorted: readonly AntennaRecord[],
+  target: AntennaRecord,
+): void {
+  let anyHasBandas = false;
+  const seenBandas = new Set<string>();
+  let anyHasFrecuencias = false;
+  const seenFrecuencias = new Set<string>();
+  let anyHasConcesiones = false;
+  const seenConcesionKeys = new Set<string>();
+  const mergedConcesiones: ConcesionBanda[] = [];
+  let latestScannedAt: string | undefined;
+  let latestScannedMs = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const item = sorted[i];
+    if (Array.isArray(item.bandas)) {
+      anyHasBandas = true;
+      for (let b = 0; b < item.bandas.length; b++) {
+        const norm = normalizeMapBandLabel(item.bandas[b]);
+        if (norm) seenBandas.add(norm);
+      }
+    }
+    if (Array.isArray(item.frecuencias)) {
+      anyHasFrecuencias = true;
+      for (let f = 0; f < item.frecuencias.length; f++) {
+        const trimmed = item.frecuencias[f].trim();
+        if (trimmed) seenFrecuencias.add(trimmed);
+      }
+    }
+    if (Array.isArray(item.concesiones)) {
+      anyHasConcesiones = true;
+      for (let c = 0; c < item.concesiones.length; c++) {
+        const conc = item.concesiones[c];
+        const ref = conc.ref.trim();
+        const freq = conc.freq.trim();
+        if (!ref && !freq) continue;
+        const key = `${ref}|${freq}`;
+        if (!seenConcesionKeys.has(key)) {
+          seenConcesionKeys.add(key);
+          mergedConcesiones.push({ ref, freq });
+        }
+      }
+    }
+    if (typeof item.bandsScannedAt === 'string') {
+      const candidate = item.bandsScannedAt.trim();
+      if (candidate) {
+        const ms = Date.parse(candidate);
+        if (Number.isFinite(ms)) {
+          if (ms > latestScannedMs) {
+            latestScannedMs = ms;
+            latestScannedAt = candidate;
+          }
+        } else if (
+          latestScannedAt === undefined ||
+          (latestScannedMs === Number.NEGATIVE_INFINITY &&
+            candidate > latestScannedAt)
+        ) {
+          latestScannedAt = candidate;
+        }
+      }
+    }
+  }
+
+  if (anyHasBandas) {
+    target.bandas = Array.from(seenBandas).sort(compareMapBandLabels);
+  }
+  if (anyHasFrecuencias) {
+    target.frecuencias = Array.from(seenFrecuencias).sort(compareMapFreqRanges);
+  }
+  if (anyHasConcesiones) {
+    target.concesiones = mergedConcesiones.sort(
+      (a, b) =>
+        compareMapFreqRanges(a.freq, b.freq) ||
+        a.ref.localeCompare(b.ref, 'es', { numeric: true }),
+    );
+  }
+  if (latestScannedAt !== undefined) {
+    target.bandsScannedAt = latestScannedAt;
+  }
+}
+
 function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
   const sorted = [...group].sort((a, b) => {
     const gidCmp = a.gid.localeCompare(b.gid, 'es');
@@ -531,7 +731,10 @@ function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
     const item = sorted[i];
     sumLat += item.lat;
     sumLon += item.lon;
-    const gids = item.mergedGids && item.mergedGids.length > 0 ? item.mergedGids : [item.gid];
+    const gids =
+      item.mergedGids && item.mergedGids.length > 0
+        ? item.mergedGids
+        : [item.gid];
     for (let g = 0; g < gids.length; g++) {
       if (!seenGids.has(gids[g])) {
         seenGids.add(gids[g]);
@@ -540,23 +743,93 @@ function fuseVodafoneGroup(group: AntennaRecord[]): AntennaRecord {
     }
   }
 
-  return {
+  const fused: AntennaRecord = {
     ...sorted[0],
     lat: sumLat / sorted.length,
     lon: sumLon / sorted.length,
     mergedGids: mergedGids.length > 1 ? mergedGids : sorted[0].mergedGids,
   };
+  mergeRfFieldsFromMembers(sorted, fused);
+  return fused;
+}
+
+function fuseExactCoordSameOperatorGroup(group: AntennaRecord[]): AntennaRecord {
+  const sorted = [...group].sort(compareMapExactCoordCanonical);
+  const normalizedOp =
+    normalizeOperatorKeyInput(sorted[0].op, sorted[0].opRaw) ?? sorted[0].op;
+  const fused: AntennaRecord = {
+    ...sorted[0],
+    op: normalizedOp,
+  };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const cand = sorted[i];
+    if (!fused.gid.trim() && cand.gid.trim()) {
+      fused.gid = cand.gid;
+    }
+    if (!fused.dir.trim() && cand.dir.trim()) {
+      fused.dir = cand.dir;
+    }
+    if (!fused.mun.trim() && cand.mun.trim()) {
+      fused.mun = cand.mun;
+    }
+    const curProv = fused.prov.trim();
+    const candProv = cand.prov.trim();
+    if (
+      (!curProv || curProv === 'SIN PROVINCIA') &&
+      candProv &&
+      candProv !== 'SIN PROVINCIA'
+    ) {
+      fused.prov = cand.prov;
+    } else if (!curProv && candProv) {
+      fused.prov = cand.prov;
+    }
+  }
+
+  const seenGids = new Set<string>();
+  const mergedGids: string[] = [];
+  let anyMemberHadMergedGids = false;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const item = sorted[i];
+    const mgid = item.gid.trim();
+    if (mgid && !seenGids.has(mgid)) {
+      seenGids.add(mgid);
+      mergedGids.push(mgid);
+    }
+    if (item.mergedGids !== undefined) {
+      anyMemberHadMergedGids = true;
+      for (let g = 0; g < item.mergedGids.length; g++) {
+        const eg = item.mergedGids[g].trim();
+        if (eg && !seenGids.has(eg)) {
+          seenGids.add(eg);
+          mergedGids.push(eg);
+        }
+      }
+    }
+  }
+
+  if (mergedGids.length > 1 || (anyMemberHadMergedGids && mergedGids.length > 0)) {
+    fused.mergedGids = mergedGids;
+  } else {
+    delete fused.mergedGids;
+  }
+
+  mergeRfFieldsFromMembers(sorted, fused);
+  return fused;
 }
 
 /**
  * Agrupa las antenas colocalizadas para su representación en MapLibre:
  * - Fusiona de forma defensiva registros residuales de Vodafone a `< 35 m`
  *   (`Math.max(maxDistanceMeters, VODAFONE_DEFENSIVE_FUSION_METERS)` cuando `maxDistanceMeters > 0`).
+ * - Fusiona de forma defensiva declaraciones duplicadas de cualquier misma operadora
+ *   (incluyendo Orange y Telefónica/Movistar) situadas en la MISMA coordenada exacta `(lat, lon)`.
  * - Agrupa en 1 único `MapSiteEntry` multicolor antenas de `>= 2` operadores distintos situadas
  *   a `< maxDistanceMeters` (`15 m` por defecto, `MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS`) mediante
  *   enlace completo en orden de distancia creciente.
- * - Las antenas de Telefónica (`movistar`) NUNCA se fusionan con otra antena de Telefónica (`movistar`),
- *   ni directamente ni de forma transitiva a través de otro operador.
+ * - Las antenas de Telefónica (`movistar`) en coordenadas distintas (`> 0 m`) NUNCA se fusionan
+ *   entre sí, ni directamente ni de forma transitiva a través de otro operador.
  */
 export function groupColocatedAntennasForMap(
   antenas: AntennaRecord[],
@@ -629,7 +902,70 @@ export function groupColocatedAntennasForMap(
     }
   }
 
-  // 2. Agrupación multi-operador a < maxDistanceMeters (15 m por defecto) con enlace completo y restricción estricta de Telefónica.
+  // 1b. Pase defensivo de misma coordenada exacta para cualquier operadora (incluido Orange y Telefónica).
+  if (normalizedRecords.length >= 2) {
+    const firstIdxByKey = new Map<string, number>();
+    let duplicateGroups: Map<string, number[]> | null = null;
+    for (let i = 0; i < normalizedRecords.length; i++) {
+      const key = buildSameOperatorExactCoordKey(normalizedRecords[i]);
+      if (key === null) continue;
+      const firstIdx = firstIdxByKey.get(key);
+      if (firstIdx !== undefined) {
+        if (duplicateGroups === null) {
+          duplicateGroups = new Map<string, number[]>();
+        }
+        let bucket = duplicateGroups.get(key);
+        if (!bucket) {
+          bucket = [firstIdx, i];
+          duplicateGroups.set(key, bucket);
+        } else {
+          bucket.push(i);
+        }
+      } else {
+        firstIdxByKey.set(key, i);
+      }
+    }
+
+    if (duplicateGroups !== null) {
+      const replacementAtNormIdx = new Map<number, AntennaRecord>();
+      const skipNormIdx = new Set<number>();
+      if (!extraMergedIdsByPrimaryId) {
+        extraMergedIdsByPrimaryId = new Map<string, string[]>();
+      }
+
+      for (const indices of duplicateGroups.values()) {
+        const group = indices.map((idx) => normalizedRecords[idx]);
+        const fused = fuseExactCoordSameOperatorGroup(group);
+        replacementAtNormIdx.set(indices[0], fused);
+
+        const coveredIds: string[] = [];
+        for (let g = 0; g < group.length; g++) {
+          const prevExpanded = extraMergedIdsByPrimaryId.get(group[g].id);
+          if (prevExpanded) {
+            coveredIds.push(...prevExpanded);
+          } else {
+            coveredIds.push(group[g].id);
+          }
+        }
+        extraMergedIdsByPrimaryId.set(fused.id, coveredIds);
+
+        for (let k = 1; k < indices.length; k++) {
+          skipNormIdx.add(indices[k]);
+        }
+      }
+
+      const dedupedRecords: AntennaRecord[] = [];
+      for (let i = 0; i < normalizedRecords.length; i++) {
+        if (skipNormIdx.has(i)) continue;
+        dedupedRecords.push(
+          replacementAtNormIdx.get(i) ?? normalizedRecords[i],
+        );
+      }
+      normalizedRecords = dedupedRecords;
+    }
+  }
+
+  // 2. Agrupación multi-operador a < maxDistanceMeters (15 m por defecto) con enlace completo y restricción estricta de Telefónica en coordenadas distintas.
   const components = clusterMultiOperatorSitesByCompleteLinkage(
     normalizedRecords,
     maxDistanceMeters,

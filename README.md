@@ -7,7 +7,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 ## Características Principales
 
 - **Mapa Vectorial de Alto Rendimiento (MapLibre GL JS + OpenFreeMap)**:
-  - Renderizado WebGL fluido de decenas de miles de emplazamientos en Península, Islas Baleares, Islas Canarias, Ceuta y Melilla con agrupación dinámica (*clustering*), codificación cromática por operador y **agrupación visual multi-operador (`< 15 m`)** en un icono multicolor compartido cuando distintas redes comparten mástil o azotea (sin fusionar jamás estaciones de Telefónica consigo mismas).
+  - Renderizado WebGL fluido de decenas de miles de emplazamientos en Península, Islas Baleares, Islas Canarias, Ceuta y Melilla con agrupación dinámica (*clustering*), codificación cromática por operador, **fusión de declaraciones duplicadas de una misma operadora en la misma coordenada exacta** (incluyendo Orange y Telefónica) y **agrupación visual multi-operador (`< 15 m`)** en un icono multicolor compartido cuando distintas redes comparten mástil o azotea (sin fusionar estaciones de Telefónica en coordenadas distintas).
   - Seis estilos cartográficos sin claves ni límites de cuota: **OSM Retina** (teselas oficiales de OpenStreetMap en modo Retina 4× con `tileSize: 64`) junto a los estilos vectoriales de OpenFreeMap **Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**, sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
 - **Medición de Distancia en Mapa**:
   - Permite seleccionar múltiples puntos sobre la cartografía mostrando los segmentos geodésicos y la distancia exacta.

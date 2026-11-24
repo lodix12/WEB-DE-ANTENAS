@@ -33,7 +33,7 @@ export interface AntennaRecord {
   mun: string;
   /** Provincia oficial normalizada */
   prov: string;
-  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (< 35 m en Vodafone) */
+  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (Vodafone < 35 m, Xfera en Orange o mismo operador en la misma coordenada exacta) */
   mergedGids?: string[];
   /** Bandas comerciales activas en MHz extraídas de detalleEstacion.do (ej. ["700 MHz", "800 MHz", "1800 MHz", "3500 MHz"]) */
   bandas?: string[];
@@ -70,6 +70,8 @@ export interface CrawlStats {
   vodafoneFusedDuplicates?: number;
   /** Declaraciones colocalizadas o de idéntico Gis_ID de Xfera fusionadas en Orange */
   xferaFusedIntoOrange?: number;
+  /** Declaraciones duplicadas de una misma operadora en la misma coordenada exacta (incluyendo Orange y Telefónica) fusionadas */
+  exactCoordFusedDuplicates?: number;
   /** Número de antenas del JSON que ya disponen de sus bandas/frecuencias extraídas */
   bandsPopulatedCount?: number;
   /** Peticiones a detalleEstacion.do realizadas en la última sincronización de bandas */
@@ -389,6 +391,76 @@ export function normalizeOperatorKeyInput(
     return op as OperatorKey;
   }
   return null;
+}
+
+/**
+ * Infiere la clave normalizada de operador a partir del identificador completo `antenna.id`
+ * (ej. `"TELEFONICA MOVILES ESPAÑA, S.A.U. - 2800001"` -> `'movistar'`).
+ */
+export function inferOperatorKeyFromAntennaId(id: string): OperatorKey | null {
+  const trimmed = id.trim();
+  if (!trimmed) return null;
+  if (isXferaLegalEntity(trimmed)) return 'orange';
+  const norm = trimmed
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  if (norm.includes('TELEFONICA') || norm.includes('MOVISTAR')) {
+    return 'movistar';
+  }
+  if (norm.includes('VODAFONE') || norm.includes('AIRTEL')) {
+    return 'vodafone';
+  }
+  if (norm.includes('ORANGE')) {
+    return 'orange';
+  }
+  if (/\bDIGI\b/.test(norm) || norm.includes('DS MOBILE')) {
+    return 'digi';
+  }
+  return null;
+}
+
+/**
+ * Normaliza la razón social de un operador regional (`op === 'otros'`) para distinguir
+ * con precisión cuándo dos declaraciones pertenecen realmente a la misma operadora.
+ */
+export function normalizeOtrosOperatorIdentity(opRaw: string): string {
+  if (typeof opRaw !== 'string' || !opRaw) return '';
+  return opRaw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Construye la clave exacta `(operadora, lat, lon)` para detectar declaraciones
+ * duplicadas de una misma operadora en la misma coordenada exacta WGS84.
+ * Devuelve `null` si las coordenadas no son finitas.
+ */
+export function buildSameOperatorExactCoordKey(
+  ant: Pick<AntennaRecord, 'op' | 'opRaw' | 'lat' | 'lon'>,
+): string | null {
+  if (!Number.isFinite(ant.lat) || !Number.isFinite(ant.lon)) {
+    return null;
+  }
+  const latNorm = ant.lat === 0 ? 0 : ant.lat;
+  const lonNorm = ant.lon === 0 ? 0 : ant.lon;
+  const rawOp = ant.op;
+  if (
+    rawOp === 'movistar' ||
+    rawOp === 'orange' ||
+    rawOp === 'vodafone' ||
+    rawOp === 'digi'
+  ) {
+    return `${rawOp}|${latNorm}|${lonNorm}`;
+  }
+  const normalizedOp = normalizeOperatorKeyInput(rawOp, ant.opRaw) ?? rawOp;
+  if (normalizedOp === 'otros') {
+    return `otros::${normalizeOtrosOperatorIdentity(ant.opRaw)}|${latNorm}|${lonNorm}`;
+  }
+  return `${normalizedOp}|${latNorm}|${lonNorm}`;
 }
 
 export interface OpenFreeMapStyleOption {
