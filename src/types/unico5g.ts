@@ -27,7 +27,7 @@ export const UNICO_OPERATOR_ORDER: readonly UnicoOperatorKey[] = [
 export const UNICO_OPERATOR_META: Record<UnicoOperatorKey, UnicoOperatorMeta> = {
   movistar: {
     key: 'movistar',
-    name: 'Movistar',
+    name: 'Telefonica',
     color: '#3B82F6',
   },
   orange: {

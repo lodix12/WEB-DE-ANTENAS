@@ -33,7 +33,7 @@ REL_ID_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationsh
 OPERATOR_ORDER = ("movistar", "orange", "vodafone")
 
 OPERATOR_LABELS: dict[str, str] = {
-    "movistar": "Movistar",
+    "movistar": "Telefonica",
     "orange": "Orange",
     "vodafone": "Vodafone",
 }

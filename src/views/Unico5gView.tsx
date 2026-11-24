@@ -243,11 +243,6 @@ export function Unico5gView() {
     );
   }
 
-  const declaredTitle =
-    !isDeclaredReady && isAntenasLoading
-      ? 'DECLARADAS (cruzando censo real ≤ 1.000 m…)'
-      : `DECLARADAS ${formatUnicoInt(summary.totalDeclared)}/${formatUnicoInt(summary.totalAntennas)} (${formatUnicoPercent(summary.totalDeclared, summary.totalAntennas)})`;
-
   return (
     <main className="page-container unico-simple-page">
       <h1 className="sr-only">
@@ -437,7 +432,10 @@ export function Unico5gView() {
 
           <div className="unico-pie-legend-col">
             <h2 id="unico-pie-heading" className="unico-card-title">
-              Antenas por operadora ({formatUnicoInt(summary.totalAntennas)}{' '}
+              Antenas por operadora (
+              <span className="unico-count-pill">
+                {formatUnicoInt(summary.totalAntennas)}
+              </span>{' '}
               total)
             </h2>
 
@@ -454,8 +452,12 @@ export function Unico5gView() {
                       {item.meta.name}
                     </span>
                     <span className="unico-legend-op-sub">
-                      {formatUnicoInt(item.total)} (
-                      {formatUnicoPercent(item.total, summary.totalAntennas)})
+                      <span className="unico-count-pill">
+                        {formatUnicoInt(item.total)}
+                      </span>{' '}
+                      <span className="unico-pct-green">
+                        ({formatUnicoPercent(item.total, summary.totalAntennas)})
+                      </span>
                     </span>
                   </div>
                 </div>
@@ -471,8 +473,29 @@ export function Unico5gView() {
         className="unico-card unico-declared-card"
         aria-labelledby="unico-declared-heading"
       >
-        <h2 id="unico-declared-heading" className="unico-card-title">
-          {declaredTitle}
+        <h2
+          id="unico-declared-heading"
+          className="unico-card-title unico-declared-heading"
+        >
+          {!isDeclaredReady && isAntenasLoading ? (
+            'DECLARADAS (cruzando censo real ≤ 1.000 m…)'
+          ) : (
+            <>
+              <span>DECLARADAS</span>{' '}
+              <span className="unico-count-pill">
+                {formatUnicoInt(summary.totalDeclared)}/
+                {formatUnicoInt(summary.totalAntennas)}
+              </span>{' '}
+              <span className="unico-pct-green">
+                (
+                {formatUnicoPercent(
+                  summary.totalDeclared,
+                  summary.totalAntennas,
+                )}
+                )
+              </span>
+            </>
+          )}
         </h2>
 
         <div
@@ -504,8 +527,12 @@ export function Unico5gView() {
               <div className="unico-declared-row-head">
                 <span className="unico-declared-op-name">{item.meta.name}</span>
                 <span className="unico-declared-op-nums">
-                  {formatUnicoInt(item.declared)}/{formatUnicoInt(item.total)} (
-                  {formatUnicoPercent(item.declared, item.total)})
+                  <span className="unico-count-pill">
+                    {formatUnicoInt(item.declared)}/{formatUnicoInt(item.total)}
+                  </span>{' '}
+                  <span className="unico-pct-green">
+                    ({formatUnicoPercent(item.declared, item.total)})
+                  </span>
                 </span>
               </div>
 

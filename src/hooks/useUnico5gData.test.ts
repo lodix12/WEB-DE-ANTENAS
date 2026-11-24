@@ -799,16 +799,21 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(html).toContain('Por Comunidad');
     expect(html).toContain('Todas las provincias');
 
-    // Tarjeta 1: Antenas por operadora (Movistar, Orange, Vodafone; nunca Avatel)
+    // Tarjeta 1: Antenas por operadora (Telefonica, Orange, Vodafone; nunca Movistar ni Avatel)
     expect(html).toContain('Antenas por operadora');
-    expect(html).toContain('Movistar');
+    expect(html).toContain('Telefonica');
     expect(html).toContain('Orange');
     expect(html).toContain('Vodafone');
+    expect(html).not.toContain('Movistar');
     expect(html).not.toContain('Avatel');
     expect(html).not.toMatch(/avatel/i);
 
-    // Tarjeta 2: DECLARADAS X/X (Y%) y pestañas de banda RF 5G
-    expect(html).toContain('DECLARADAS 2/9.291 (0,0%)');
+    // Tarjeta 2: DECLARADAS X/X (Y%) con fondo morado en número de antenas y porcentaje en verde
+    expect(html).toContain('DECLARADAS');
+    expect(html).toContain('2/9.291');
+    expect(html).toContain('(0,0%)');
+    expect(html).toContain('unico-count-pill');
+    expect(html).toContain('unico-pct-green');
     expect(html).not.toContain('Declaradas por operadora');
     expect(html).toContain('Todo');
     expect(html).toContain('N78');
