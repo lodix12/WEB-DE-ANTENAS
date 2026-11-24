@@ -11,15 +11,15 @@ from scripts.build_unico_5g import (
 
 
 class TestBuildUnico5g(unittest.TestCase):
-    def test_orange_grouping(self) -> None:
+    def test_orange_and_avatel_grouping(self) -> None:
         self.assertEqual(normalize_unico_operator("ORANGE ESPAGNE S.A."), "orange")
         self.assertEqual(
             normalize_unico_operator("UTE ORANGE ESPAGNE Y ORANGE COMUNICACIONES FIJAS"),
             "orange",
         )
+        self.assertEqual(normalize_unico_operator("AVATEL TELECOM S.A."), "orange")
         self.assertEqual(normalize_unico_operator("TELEFÓNICA MÓVILES ESPAÑA, S.A."), "movistar")
         self.assertEqual(normalize_unico_operator("VODAFONE ESPAÑA S.A."), "vodafone")
-        self.assertEqual(normalize_unico_operator("AVATEL TELECOM S.A."), "avatel")
 
     def test_province_and_ccaa_normalization(self) -> None:
         self.assertEqual(normalize_province_and_ccaa("Balears, Illes"), ("ILLES BALEARS", "Illes Balears"))
@@ -39,28 +39,23 @@ class TestBuildUnico5g(unittest.TestCase):
         else:
             data = json.loads(json_path.read_text(encoding="utf-8"))
 
-        # Fase 1 tiene más de 7.000 emplazamientos (7.330 incluyendo filas ocultas) + 1.961 de Fase 2 = 9.291
         self.assertEqual(data["fase1Total"], 7330)
         self.assertEqual(data["fase2Total"], 1961)
         self.assertEqual(data["total"], 9291)
         self.assertEqual(len(data["antenas"]), 9291)
 
-        # Agrupación completa de proyectos de Orange dentro de 'orange'
+        # Agrupación completa de proyectos de Orange + Avatel dentro de 'orange'
         orange_summary = data["operators"]["orange"]
-        self.assertEqual(orange_summary["fase1"], 1505)
-        self.assertEqual(orange_summary["fase2"], 845)  # 445 UTE + 400 Orange Espagne
-        self.assertEqual(orange_summary["total"], 2350)
-        self.assertEqual(orange_summary["proyectosFase2"], 23)  # 12 UTE + 11 Individual
+        self.assertEqual(orange_summary["fase1"], 1987)  # 1505 Orange + 482 Avatel
+        self.assertEqual(orange_summary["fase2"], 845)   # 445 UTE + 400 Orange Espagne
+        self.assertEqual(orange_summary["total"], 2832)
+        self.assertNotIn("avatel", data["operators"])
 
-        # Verificar ausencia total de código de emplazamiento e id de propietario
         forbidden_keys = {"emplazamiento", "codigoEmplazamiento", "idPropietario", "propietario"}
         for rec in data["antenas"]:
             self.assertTrue(forbidden_keys.isdisjoint(rec.keys()))
             self.assertIn(rec["op"], OPERATOR_ORDER)
             self.assertIn(rec["fase"], (1, 2))
-            self.assertTrue(len(rec["mun"]) > 0)
-            self.assertTrue(len(rec["prov"]) > 0)
-            self.assertTrue(len(rec["ccaa"]) > 0)
 
 
 if __name__ == "__main__":

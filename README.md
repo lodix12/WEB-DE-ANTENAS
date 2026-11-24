@@ -17,7 +17,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
   - Filtros en cascada por comunidad autónoma, provincia y municipio, filtrado por operador y banda de frecuencia RF (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`), búsqueda por coordenadas/dirección/`Gis_ID` y exportación en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y **GeoJSON**.
 - **Sección de Novedades (`#/novedades`), Eliminaciones (`#/eliminaciones`), Estadísticas (`#/estadisticas`) y UNICO 5G (`#/unico-5g`)**:
   - Monitor en tiempo real durante escaneos forzados manuales (telemetría en la rama `scan-status`), historial acumulativo permanente en `public/data/novedades.json`, cuotas nacionales por operador y desglose por bandas de frecuencia.
-  - Visor específico **UNICO 5G Redes Activas** (`#/unico-5g`) con las **9.291 antenas subvencionadas** en **Fase 1 (7.330)** y **Fase 2 (1.961)**, agrupación integral de proyectos de **Orange**, filtros por Comunidad Autónoma, Provincia, Municipio y Fase, gráficas interactivas y cartografía WebGL.
+  - Panel simplificado **UNICO 5G** (`#/unico-5g`) con las **9.291 antenas subvencionadas** de **Fase 1 (7.330)** y **Fase 2 (1.961)**, unificación de proyectos de **Orange y Avatel** bajo **Orange**, filtros por provincia, comunidad autónoma y fase, reparto por operadora y detección automática de **antenas ya declaradas** (cruce con la antena real más próxima de la operadora hasta **1.000 m** con bandas **N28**, **N28+** o **N78**).
 
 ---
 

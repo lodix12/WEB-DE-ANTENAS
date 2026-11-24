@@ -1,1745 +1,415 @@
 /* ==========================================================================
-   UNICO 5G Redes Activas (#/unico-5g) — Hoja de Estilos Modular
+   UNICO 5G Redes Activas (#/unico-5g) — Vista Simplificada en 3 Tarjetas
    ========================================================================== */
 
-.page-container.unico-page {
-  max-width: 1260px;
-  gap: 26px;
+.unico-simple-page {
+  --unico-tab-green: #16a34a;
+  --unico-check-accent: #2563eb;
 }
 
-.unico-hero {
-  gap: 10px;
+[data-theme='dark'] .unico-simple-page {
+  --unico-tab-green: #22c55e;
+  --unico-check-accent: #3b82f6;
 }
 
-.unico-hero-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+.page-container.unico-simple-page {
+  max-width: 1020px;
+  gap: 18px;
 }
 
-.unico-hero-pills {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-program-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  border: 1px solid var(--border-subtle);
+.unico-card {
   background: var(--bg-surface);
-  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  box-shadow:
+    0 2px 10px rgba(15, 23, 42, 0.04),
+    0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
-.unico-program-chip.is-f1 {
-  background: rgba(2, 132, 199, 0.1);
-  border-color: rgba(2, 132, 199, 0.28);
-  color: var(--accent-primary);
+[data-theme='dark'] .unico-card {
+  box-shadow: var(--shadow-md);
 }
 
-.unico-program-chip.is-f2 {
-  background: rgba(217, 119, 6, 0.11);
-  border-color: rgba(217, 119, 6, 0.3);
-  color: var(--status-warn);
+.unico-error-msg {
+  color: var(--status-danger);
+  font-weight: 600;
 }
 
-/* ==========================================================================
-   Panel Maestro de Filtros UNICO 5G
-   ========================================================================== */
-
-.unico-filters-card {
-  overflow: visible;
-  box-shadow: var(--shadow-sm);
-}
-
-.unico-filters-header {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.unico-filters-title-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
-}
-
-.unico-filters-h2 {
-  font-size: 14px;
+.unico-card-title {
+  font-size: 15.5px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--text-primary);
+  line-height: 1.3;
   margin: 0;
 }
 
-.unico-filters-actions {
-  display: inline-flex;
+/* ==========================================================================
+   Pestañas con Subrayado Verde (Territorio y Bandas 5G) + Selector de Fase
+   ========================================================================== */
+
+.unico-top-tabs-row {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 2px 20px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.unico-underline-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
-.unico-filters-body {
-  padding: 18px 20px;
+.unico-underline-tab {
+  appearance: none;
+  position: relative;
+  border: none;
+  background: transparent;
+  padding: 12px 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.14s ease;
+}
+
+.unico-underline-tab:hover {
+  color: var(--text-primary);
+}
+
+.unico-underline-tab.is-active {
+  color: var(--unico-tab-green);
+  font-weight: 700;
+}
+
+.unico-underline-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2.5px;
+  border-radius: 2px 2px 0 0;
+  background: var(--unico-tab-green);
+}
+
+.unico-fase-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  margin: 6px 0;
+  border-radius: 8px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.unico-fase-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 4px 11px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.unico-fase-tab:hover {
+  color: var(--text-primary);
+}
+
+.unico-fase-tab.is-active {
+  background: var(--bg-surface);
+  color: var(--unico-tab-green);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+[data-theme='dark'] .unico-fase-tab.is-active {
+  box-shadow: 0 1px 3px rgba(2, 6, 23, 0.45);
+}
+
+/* ==========================================================================
+   Tarjeta 1: Cuadrícula de Provincias y Comunidades Autónomas
+   ========================================================================== */
+
+.unico-filter-card-body {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.unico-master-check-row {
+  display: flex;
+  align-items: center;
+}
+
+.unico-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+  transition: color 0.12s ease;
+}
+
+.unico-check-label:hover {
+  color: var(--text-primary);
+}
+
+.unico-check-label input[type='checkbox'] {
+  width: 15.5px;
+  height: 15.5px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--unico-check-accent);
+  cursor: pointer;
+}
+
+.unico-check-label.is-master {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.unico-check-label:not(.is-master):has(input:checked) {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.unico-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.unico-checkbox-grid.is-comunidades {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* ==========================================================================
+   Tarjeta 2: Gráfico Circular Sólido y Leyenda por Operadora
+   ========================================================================== */
+
+.unico-pie-card {
+  padding: 24px 28px;
+}
+
+.unico-pie-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.92fr) minmax(230px, 1.08fr);
+  align-items: center;
+  gap: 28px;
+}
+
+.unico-pie-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.unico-pie-svg {
+  width: 214px;
+  height: 214px;
+  max-width: 100%;
+  display: block;
+}
+
+.unico-pie-legend-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.unico-pie-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.unico-pie-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.unico-legend-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.unico-legend-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.unico-legend-op-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.unico-legend-op-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+/* ==========================================================================
+   Tarjeta 3: Antenas Declaradas y Filtro de Bandas (Todo / N78 / N28 / N28+)
+   ========================================================================== */
+
+.unico-declared-card {
+  padding: 22px 24px 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+.unico-band-tabs {
+  margin-top: 4px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 6px;
+}
+
+.unico-band-tabs .unico-underline-tab {
+  padding: 8px 10px 10px;
+  font-size: 13px;
+}
+
+.unico-declared-bars-list {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.unico-filter-block {
+.unico-declared-row {
   display: flex;
   flex-direction: column;
   gap: 7px;
 }
 
-.unico-filter-label-row {
+.unico-declared-row-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-filter-group-label {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.unico-filter-hint {
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
-.unico-phase-segmented {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.unico-phase-seg-btn {
-  appearance: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 40px;
-  padding: 8px 13px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.unico-phase-seg-btn:hover {
-  background: var(--bg-surface-hover);
-  border-color: var(--border-default);
-  color: var(--text-primary);
-}
-
-.unico-phase-seg-btn.is-active {
-  background: var(--accent-soft);
-  border-color: var(--accent-primary);
-  color: var(--text-primary);
-  box-shadow: 0 1px 2px rgba(2, 132, 199, 0.1);
-}
-
-.unico-phase-seg-btn.is-f2.is-active {
-  background: rgba(217, 119, 6, 0.12);
-  border-color: var(--status-warn);
-}
-
-.unico-phase-seg-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.unico-phase-seg-stat {
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.unico-phase-seg-btn.is-active .unico-phase-seg-stat {
-  color: var(--text-primary);
-  border-color: var(--border-default);
-}
-
-/* Operador Filter Chips */
-.unico-op-filter-chips {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-op-chip {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 4px 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color 0.14s ease,
-    border-color 0.14s ease,
-    opacity 0.14s ease,
-    transform 0.08s ease;
-}
-
-.unico-op-chip:hover {
-  background: var(--bg-surface-hover);
-  border-color: var(--border-default);
-}
-
-.unico-op-chip.is-isolated {
-  font-weight: 700;
-}
-
-.unico-op-chip.is-muted {
-  opacity: 0.48;
-}
-
-.unico-op-chip-name {
-  white-space: nowrap;
-}
-
-.unico-op-ute-pill {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: rgba(234, 88, 12, 0.15);
-  color: #ea580c;
-}
-
-[data-theme='dark'] .unico-op-ute-pill {
-  background: rgba(251, 146, 60, 0.18);
-  color: #fb923c;
-}
-
-.unico-op-chip-count {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.unico-op-chip.is-isolated .unico-op-chip-count {
-  color: var(--text-primary);
-}
-
-/* Cascading Territorial Grid */
-.unico-territorial-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(220px, 1.25fr);
-  gap: 10px;
-  align-items: end;
-}
-
-.unico-active-tags-bar {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.unico-active-tags-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-right: 2px;
-}
-
-.unico-active-filter-tag {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface-subtle);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
-}
-
-.unico-active-filter-tag:hover {
-  background: var(--bg-surface-hover);
-  border-color: var(--border-strong);
-}
-
-/* ==========================================================================
-   KPI Strip Estadístico
-   ========================================================================== */
-
-.unico-metric-val-row {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  flex-wrap: wrap;
-}
-
-.unico-metric-pct-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 700;
-  background: var(--accent-soft);
-  color: var(--accent-primary);
-  border: 1px solid var(--accent-soft-strong);
-}
-
-.unico-metric-pct-badge.is-f1 {
-  background: rgba(2, 132, 199, 0.12);
-  color: var(--accent-primary);
-  border-color: rgba(2, 132, 199, 0.28);
-}
-
-.unico-metric-pct-badge.is-f2 {
-  background: rgba(217, 119, 6, 0.13);
-  color: var(--status-warn);
-  border-color: rgba(217, 119, 6, 0.3);
-}
-
-.unico-metric-unit {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-/* ==========================================================================
-   Mapa Cartográfico Embebido (Unico5gMap.tsx)
-   ========================================================================== */
-
-.unico-map-section {
-  box-shadow: var(--shadow-sm);
-}
-
-.unico-map-shell {
-  position: relative;
-  width: 100%;
-  height: 540px;
-  min-height: 400px;
-  background: var(--bg-surface-subtle);
-  overflow: hidden;
-}
-
-.unico-map-canvas {
-  width: 100%;
-  height: 100%;
-}
-
-.unico-map-toolbar-tl {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 12;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  max-width: calc(100% - 190px);
-  pointer-events: none;
-}
-
-.unico-map-pill-group {
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  padding: 3px;
-  gap: 2px;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(15, 23, 42, 0.14);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-pill-group {
-  background: rgba(15, 23, 42, 0.88);
-  border-color: rgba(148, 163, 184, 0.24);
-  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.45);
-}
-
-.unico-map-pill {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: #334155;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 5px 9px;
-  border-radius: var(--radius-xs);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 0.14s ease, color 0.14s ease;
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-pill {
-  color: #cbd5e1;
-}
-
-.unico-map-pill:hover {
-  background: rgba(15, 23, 42, 0.07);
-  color: #0f172a;
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-pill:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ffffff;
-}
-
-.unico-map-pill.is-active {
-  background: #0284c7;
-  color: #ffffff;
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-pill.is-active {
-  background: #0ea5e9;
-  color: #0b1120;
-  font-weight: 700;
-}
-
-.unico-map-style-select {
-  position: absolute;
-  top: 12px;
-  right: 50px;
-  z-index: 12;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: var(--radius-sm);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.92);
-  color: #0f172a;
-  border: 1px solid rgba(15, 23, 42, 0.16);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.1);
-  cursor: pointer;
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-style-select {
-  background: rgba(15, 23, 42, 0.9);
-  color: #f1f5f9;
-  border-color: rgba(148, 163, 184, 0.28);
-}
-
-.unico-map-legend {
-  position: absolute;
-  bottom: 14px;
-  left: 12px;
-  z-index: 12;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 9px 12px;
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.93);
-  color: #0f172a;
-  border: 1px solid rgba(15, 23, 42, 0.14);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.12);
-  max-width: calc(100% - 24px);
-}
-
-.unico-map-shell[data-map-dark='true'] .unico-map-legend {
-  background: rgba(15, 23, 42, 0.9);
-  color: #f1f5f9;
-  border-color: rgba(148, 163, 184, 0.25);
-}
-
-.unico-map-legend-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
 }
 
-.unico-map-legend-title {
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.72;
-}
-
-.unico-map-legend-badge {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.unico-map-legend-items {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-map-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.unico-map-legend-note {
-  padding-left: 8px;
-  border-left: 1px solid rgba(148, 163, 184, 0.35);
-}
-
-/* Ficha Flotante de Antena Seleccionada en Mapa */
-.unico-map-selected-card {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  z-index: 16;
-  width: min(340px, calc(100% - 28px));
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  box-shadow: var(--shadow-lg);
-  padding: 13px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.unico-map-selected-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.unico-map-selected-badges {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.unico-map-op-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border-radius: var(--radius-xs);
-  border: 1px solid transparent;
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-map-fase-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 7px;
-  border-radius: var(--radius-xs);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.unico-map-selected-close {
-  appearance: none;
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  color: var(--text-secondary);
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-xs);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
-.unico-map-selected-close:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-}
-
-.unico-map-selected-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.unico-map-selected-mun {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-  line-height: 1.25;
-}
-
-.unico-map-selected-terr {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin: 0;
-}
-
-.unico-map-selected-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding-top: 4px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.unico-map-selected-field-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-
-.unico-map-selected-field-value {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  line-height: 1.35;
-}
-
-.unico-map-selected-coords-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-top: 4px;
-}
-
-.unico-map-selected-coords {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.unico-map-selected-coords-code {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.unico-map-copy-btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface-subtle);
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.unico-map-copy-btn:hover {
-  background: var(--bg-surface-hover);
-  color: var(--text-primary);
-}
-
-.unico-map-copy-btn.is-copied {
-  color: var(--status-ok);
-  border-color: var(--status-ok);
-}
-
-.unico-map-selected-actions {
-  display: grid;
-  grid-template-columns: 1.35fr 0.85fr;
-  gap: 7px;
-  padding-top: 4px;
-}
-
-.unico-map-action-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-default);
-  background: var(--bg-surface-subtle);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background-color 0.14s ease, border-color 0.14s ease;
-}
-
-.unico-map-action-btn:hover {
-  background: var(--bg-surface-hover);
-  text-decoration: none;
-}
-
-.unico-map-action-btn.is-primary {
-  background: var(--accent-primary);
-  border-color: var(--accent-primary);
-  color: #ffffff;
-}
-
-.unico-map-action-btn.is-primary:hover {
-  background: var(--accent-primary-hover);
-  border-color: var(--accent-primary-hover);
-  color: #ffffff;
-}
-
-/* ==========================================================================
-   Tabla Detallada de Ubicaciones Subvencionadas
-   ========================================================================== */
-
-.unico-table-count-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--bg-surface-subtle);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-}
-
-.unico-th-sort-btn {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  cursor: pointer;
-}
-
-.unico-th-sort-btn:hover {
-  color: var(--text-primary);
-}
-
-.unico-locations-table tr.is-selected-row td {
-  background: var(--accent-soft);
-}
-
-.unico-fase-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2.5px 8px;
-  border-radius: var(--radius-xs);
-  font-size: 11.5px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.unico-table-op-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.unico-ute-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 1.5px 6px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  background: rgba(234, 88, 12, 0.12);
-  color: #ea580c;
-  border: 1px solid rgba(234, 88, 12, 0.28);
-  white-space: nowrap;
-}
-
-[data-theme='dark'] .unico-ute-tag {
-  background: rgba(251, 146, 60, 0.16);
-  color: #fb923c;
-  border-color: rgba(251, 146, 60, 0.32);
-}
-
-.unico-td-mun {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.unico-td-prov {
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.unico-td-ccaa {
-  color: var(--text-secondary);
-}
-
-.unico-td-coords {
-  font-size: 12px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.unico-row-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.unico-sv-link {
-  width: 30px;
-  height: 28px;
-  padding: 0;
-}
-
-.unico-empty-cell {
-  padding: 40px 20px !important;
-}
-
-.unico-empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  text-align: center;
-  color: var(--text-secondary);
-}
-
-/* ==========================================================================
-   Gráficas Interactivas y Bloques Analíticos (Unico5gCharts.tsx)
-   ========================================================================== */
-
-.unico-charts-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 26px;
-}
-
-.unico-section-block {
-  box-shadow: var(--shadow-sm);
-}
-
-.unico-scope-badge {
-  font-size: 12px;
-}
-
-.unico-muted-pct {
-  color: var(--text-muted);
-  font-weight: 500;
-}
-
-/* Bloque 1: Anillo SVG + Tarjetas por Operador */
-.unico-operator-analytics-grid {
-  display: grid;
-  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
-  gap: 22px;
-  align-items: start;
-}
-
-.unico-donut-card {
-  padding: 18px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.unico-donut-svg {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
-.unico-donut-arc:focus-visible {
-  outline: none;
-}
-
-.unico-donut-center-op {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.unico-donut-center-value {
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
-  line-height: 1.15;
-}
-
-.unico-donut-center-pct {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--accent-primary);
-}
-
-.unico-donut-center-label {
-  font-size: 11.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.unico-donut-center-sub {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.unico-donut-hint {
-  margin: 0;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.unico-donut-phase-split {
-  padding-top: 12px;
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.unico-donut-phase-title {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.045em;
-  color: var(--text-muted);
-}
-
-.unico-global-phase-bar {
-  min-width: 0;
-  height: 10px;
-  background: var(--bg-surface);
-}
-
-.unico-donut-phase-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.unico-donut-phase-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.unico-phase-dot-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.unico-donut-phase-nums {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-
-/* Tarjetas de Operador */
-.unico-operator-cards-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.unico-op-stat-card {
-  padding: 15px 16px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  transition:
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    opacity 0.16s ease;
-}
-
-.unico-op-stat-card.is-hovered,
-.unico-op-stat-card.is-isolated {
-  box-shadow: var(--shadow-sm);
-}
-
-.unico-op-stat-card.is-excluded {
-  opacity: 0.52;
-}
-
-.unico-op-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.unico-op-identity {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.unico-op-name-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.unico-op-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
-}
-
-.unico-op-legal-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.unico-op-pct-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  font-size: 13px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-.unico-op-kpi-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.unico-op-kpi-main {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.unico-op-count {
-  font-size: 21px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-op-count-unit {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.unico-op-national-ref {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.unico-op-phase-breakdown {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.unico-op-phase-bar {
-  min-width: 0;
-  height: 8px;
-}
-
-.unico-op-phase-meta {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.unico-op-phase-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-/* Caja Especial de Proyectos Unificados de Orange */
-.unico-orange-projects-box {
-  margin-top: 2px;
-  padding: 11px 13px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.unico-orange-box-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-orange-box-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-orange-projects-pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-}
-
-.unico-orange-entities-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.unico-orange-entity-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 6px 9px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-}
-
-.unico-orange-entity-main {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
-}
-
-.unico-orange-entity-name {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-orange-proj-tag {
-  font-size: 10.5px;
-}
-
-.unico-orange-entity-stats {
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-
-/* Bloque 2: Comparativa Fase 1 vs Fase 2 */
-.unico-phase-filter-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.unico-phase-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.unico-phase-card {
-  appearance: none;
-  width: 100%;
-  text-align: left;
-  font-family: inherit;
-  padding: 16px 18px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  color: var(--text-primary);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.unico-phase-card:hover {
-  background: var(--bg-surface-hover);
-}
-
-.unico-phase-card.is-active {
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.unico-phase-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-phase-card-title-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.unico-phase-card-title {
+.unico-declared-op-name {
   font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
-.unico-phase-card-badge {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2.5px 8px;
-  border-radius: 999px;
-}
-
-.unico-phase-card-main {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-phase-card-count {
-  font-size: 26px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
-}
-
-.unico-phase-card-unit {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.unico-phase-card-pct {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-left: auto;
-}
-
-.unico-phase-card-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.unico-phase-metric-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-}
-
-.unico-phase-metric-label {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.unico-phase-comparison-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 16px 18px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-
-.unico-phase-comparison-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-subsection-title {
-  margin: 0;
+.unico-declared-op-nums {
   font-size: 13.5px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-.unico-phase-stacked-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.unico-phase-stacked-row {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.unico-phase-stacked-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-phase-row-label {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-phase-row-total {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.unico-phase-stacked-bar {
-  display: flex;
+.unico-declared-bar-track {
   width: 100%;
-  height: 24px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
   background: var(--bg-surface-subtle);
+  overflow: hidden;
 }
 
-.unico-phase-stacked-seg {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.unico-declared-bar-fill {
   height: 100%;
-  color: #ffffff;
-  font-size: 11px;
-  font-weight: 700;
-  overflow: hidden;
+  border-radius: 999px;
   transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.unico-phase-callouts {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-phase-callout-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg-surface-subtle);
-  border: 1px solid var(--border-subtle);
-}
-
-.unico-butterfly-wrap {
-  padding-top: 14px;
-  border-top: 1px solid var(--border-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.unico-butterfly-title-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.unico-butterfly-caption {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-butterfly-sub {
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
-.unico-butterfly-svg {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
-.unico-butterfly-note {
-  margin: 0;
-  padding: 10px 13px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface-subtle);
-  border: 1px solid var(--border-subtle);
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.55;
-}
-
-/* Bloque 3: Atlas Territorial Alfabético (A–Z) */
-.unico-territorial-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.unico-colormode-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.unico-territorial-legend-strip {
-  padding: 10px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.unico-ccaa-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.unico-ccaa-group {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  overflow: hidden;
-}
-
-.unico-ccaa-row {
-  padding: 11px 14px;
-  display: grid;
-  grid-template-columns: minmax(210px, 1.15fr) minmax(180px, 1.45fr) minmax(185px, auto) auto;
-  gap: 14px;
-  align-items: center;
-  transition: background-color 0.14s ease;
-}
-
-.unico-ccaa-row:hover {
-  background: var(--bg-surface-subtle);
-}
-
-.unico-ccaa-row.is-selected {
-  background: var(--accent-soft);
-}
-
-.unico-territory-identity {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-
-.unico-ccaa-chevron-btn {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  flex-shrink: 0;
-}
-
-.unico-territory-title-block {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.unico-ccaa-name {
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.unico-territory-subpill {
-  font-size: 10.5px;
-}
-
-.unico-territory-bar-col {
-  min-width: 0;
-}
-
-.unico-territory-bar-track {
-  width: 100%;
-  height: 11px;
-  border-radius: 999px;
-  background: var(--bg-surface-subtle);
-  overflow: hidden;
-}
-
-.unico-territory-bar-track.is-prov {
-  height: 8px;
-  background: var(--bg-surface);
-}
-
-.unico-territory-numbers {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
-  text-align: right;
-  font-size: 12px;
-}
-
-.unico-territory-main-num {
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.unico-territory-unit {
-  font-family: var(--font-sans);
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
-.unico-territory-pct {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--accent-primary);
-}
-
-.unico-territory-f1f2 {
-  font-size: 10.5px;
-  color: var(--text-muted);
-}
-
-.unico-territory-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.unico-prov-sublist {
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  display: flex;
-  flex-direction: column;
-}
-
-.unico-prov-row {
-  padding: 9px 14px 9px 50px;
-  border-bottom: 1px solid var(--border-subtle);
-  display: grid;
-  grid-template-columns: minmax(174px, 1.05fr) minmax(180px, 1.45fr) minmax(185px, auto) auto;
-  gap: 14px;
-  align-items: center;
-}
-
-.unico-prov-row:last-child {
-  border-bottom: none;
-}
-
-.unico-prov-row.is-selected {
-  background: var(--accent-soft);
-}
-
-.unico-prov-identity {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.unico-prov-name {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
 /* ==========================================================================
-   Adaptación Responsiva Integral
+   Adaptación Responsiva (Tablet <= 820px, Móvil <= 600px / <= 520px)
    ========================================================================== */
 
-@media (max-width: 1080px) {
-  .unico-territorial-grid {
+@media (max-width: 820px) {
+  .unico-checkbox-grid,
+  .unico-checkbox-grid.is-comunidades {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .unico-top-tabs-row {
+    padding: 4px 16px 6px;
+  }
+
+  .unico-filter-card-body {
+    padding: 14px 16px 18px;
+  }
+
+  .unico-pie-card {
+    padding: 20px 18px;
+  }
+
+  .unico-pie-layout {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .unico-pie-svg {
+    width: 192px;
+    height: 192px;
+  }
+
+  .unico-declared-card {
+    padding: 18px 16px 20px;
+  }
+}
+
+@media (max-width: 520px) {
+  .unico-checkbox-grid,
+  .unico-checkbox-grid.is-comunidades {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px 10px;
   }
 
-  .unico-operator-analytics-grid {
-    grid-template-columns: 1fr;
+  .unico-check-label {
+    font-size: 12.5px;
+    gap: 7px;
   }
 
-  .unico-donut-card {
-    max-width: 480px;
-    width: 100%;
-    margin: 0 auto;
+  .unico-underline-tab {
+    padding: 10px 9px;
+    font-size: 13px;
   }
 
-  .unico-ccaa-row,
-  .unico-prov-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
-  }
-
-  .unico-territory-bar-col {
-    grid-column: 1 / -1;
-    order: 3;
-  }
-
-  .unico-territory-actions {
-    grid-column: 1 / -1;
-    order: 4;
-    justify-content: flex-end;
-  }
-}
-
-@media (max-width: 860px) {
-  .unico-phase-segmented {
-    grid-template-columns: 1fr;
-  }
-
-  .unico-phase-cards-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .unico-map-shell {
-    height: 450px;
-  }
-
-  .unico-prov-row {
-    padding-left: 20px;
-  }
-}
-
-@media (max-width: 640px) {
-  .unico-territorial-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .unico-phase-card-metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .unico-map-toolbar-tl {
-    max-width: calc(100% - 24px);
-  }
-
-  .unico-map-style-select {
-    top: auto;
-    bottom: 14px;
-    right: 12px;
-  }
-
-  .unico-map-legend {
-    display: none;
-  }
-
-  .unico-map-selected-card {
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    width: auto;
+  .unico-fase-tab {
+    padding: 4px 9px;
+    font-size: 12px;
   }
 }

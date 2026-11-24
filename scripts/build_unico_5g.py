@@ -30,13 +30,12 @@ from typing import Any
 EXCEL_NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 REL_ID_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
 
-OPERATOR_ORDER = ("movistar", "orange", "vodafone", "avatel")
+OPERATOR_ORDER = ("movistar", "orange", "vodafone")
 
 OPERATOR_LABELS: dict[str, str] = {
-    "movistar": "Movistar (Telefónica)",
+    "movistar": "Movistar",
     "orange": "Orange",
     "vodafone": "Vodafone",
-    "avatel": "Avatel Telecom",
 }
 
 CANONICAL_PROVINCE_TO_CCAA: dict[str, str] = {
@@ -184,8 +183,8 @@ def strip_accents_sort_key(text: str) -> str:
 
 def normalize_unico_operator(raw_empresa: str) -> str:
     """
-    Agrupa todos los proyectos en los que esté implicado Orange (Orange Espagne,
-    UTE Orange Espagne y Orange Comunicaciones Fijas, MasOrange, Xfera, etc.) dentro de 'orange'.
+    Agrupa todos los proyectos de Orange (Orange Espagne, UTE Orange Espagne y
+    Orange Comunicaciones Fijas, MasOrange, Xfera) y los de Avatel dentro de 'orange'.
     """
     upper = strip_accents_sort_key(raw_empresa)
     if (
@@ -193,14 +192,13 @@ def normalize_unico_operator(raw_empresa: str) -> str:
         or "MASORANGE" in upper
         or "XFERA" in upper
         or "MASMOVIL" in upper
+        or "AVATEL" in upper
     ):
         return "orange"
     if "TELEFONICA" in upper or "MOVISTAR" in upper:
         return "movistar"
     if "VODAFONE" in upper:
         return "vodafone"
-    if "AVATEL" in upper:
-        return "avatel"
     raise ValueError(f"Operador no reconocido en UNICO 5G: {raw_empresa!r}")
 
 
