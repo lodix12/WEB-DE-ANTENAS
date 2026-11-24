@@ -463,6 +463,7 @@ jobs:
   deploy-pages:
     name: Publicar en GitHub Pages
     needs: [build-and-deploy]
+    if: always() && needs.build-and-deploy.result == 'success'
     runs-on: ubuntu-latest
     concurrency:
       group: 'pages-update-and-deploy'
