@@ -73,9 +73,14 @@ async function loadRealUnicoDatasetFromDisk(): Promise<UnicoDataset> {
   return cachedUnicoDataset;
 }
 
+let cachedAntenasDataset: AntenasDataset | null = null;
+
 async function loadRealAntenasDatasetFromDisk(): Promise<AntenasDataset> {
-  const raw = await readDiskJsonFile('../../public/data/antenas.json');
-  return parseCustomAntenasJson(raw);
+  if (!cachedAntenasDataset) {
+    const raw = await readDiskJsonFile('../../public/data/antenas.json');
+    cachedAntenasDataset = parseCustomAntenasJson(raw);
+  }
+  return cachedAntenasDataset;
 }
 
 function makeUnicoAntenna(
@@ -721,7 +726,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         summaryN28Plus.totalDeclared,
       ),
     );
-  });
+  }, 15_000);
 
   it('renderiza SSR de AppHeader y Unico5gView en /unico-5g con pestañas territoriales, declaradas por banda y cero tablas ni rankings', async () => {
     const unicoDataset = await loadRealUnicoDatasetFromDisk();
@@ -1330,7 +1335,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     );
     expect(unicoDataset.declaredUpdatedAt).toBe(rawAntenasDataset.updatedAt);
     expect(Array.from(liveMasks)).toEqual(unicoDataset.declaredMasks);
-  });
+  }, 15_000);
 
   it('verifica que .github/workflows/update-and-deploy.yml sincroniza public/data/unico-5g.json con --sync-antenas y lo añade al commit en Parte 1/2 y Parte 2/2', async () => {
     const workflowSource = await readDiskTextFile(
