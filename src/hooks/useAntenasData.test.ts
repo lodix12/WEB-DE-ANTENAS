@@ -2442,8 +2442,10 @@ describe('Filtro multifrecuencia ilimitado y casilla "Exclusivamente"', () => {
     expect(html.match(/class="band-filter-pill is-active"/g)).toHaveLength(3);
     expect(html).toContain('id="bands-select-all-btn"');
     expect(html).toContain('id="filter-bands-exclusive-checkbox"');
+    expect(html).toContain('bands-exclusive-compact');
     expect(html).toContain('Exclusivamente');
-    expect(html).toContain('ni más ni menos');
+    expect(html).not.toContain('Por defecto:');
+    expect(html).not.toContain('bands-exclusive-hint');
     expect(html).toContain('checked=""');
   });
 });
@@ -4264,9 +4266,10 @@ describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pa
 
     expect(mobileFilterHtml).toContain('is-mobile-open');
     expect(mobileFilterHtml).toContain('id="sidebar-collapse-btn"');
+    expect(mobileFilterHtml).toContain('class="filter-close-btn"');
     expect(mobileFilterHtml).toContain('aria-label="Cerrar panel de filtros"');
-    expect(mobileFilterHtml).toContain('sidebar-close-icon-mobile');
-    expect(mobileFilterHtml).toContain('sidebar-close-icon-desktop');
+    expect(mobileFilterHtml).toContain('lucide-x');
+    expect(mobileFilterHtml).toContain('id="map-reset-filters-btn"');
 
     // En ruta desconocida (NotFoundView bajo RootLayout) también se muestra el botón flotante #page-open-sections-btn
     const queryClient = new QueryClient({
@@ -8006,9 +8009,9 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
     }
     expect(filterHtml).not.toContain('>1800 MHz<');
     expect(filterHtml).not.toContain('>2600 MHz<');
-    expect(filterHtml).toContain(
-      'Solo antenas con exactamente las bandas marcadas (ni más ni menos)',
-    );
+    expect(filterHtml).toContain('bands-exclusive-compact');
+    expect(filterHtml).toContain('>Exclusivamente<');
+    expect(filterHtml).not.toContain('Por defecto:');
 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -9016,6 +9019,111 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
     );
   });
 });
+
+describe('Mapa — FilterPanel: fila compacta "Exclusivamente" + Reset permanente + X roja y Ámbito Territorial en paralelo marrón clarito', () => {
+  it('elimina la descripción de "Exclusivamente", coloca Reset permanente y X roja en la misma fila (quitándolos de arriba) y usa selects territoriales en paralelo marrón clarito', async () => {
+    const sample = createSampleCustomDataset();
+    sample.antenas[0] = { ...sample.antenas[0], bandas: ['1800 MHz', '3500 MHz'] };
+    const derived = buildDerivedAntenasStructures(sample);
+
+    const renderPanel = (hasActiveFilters: boolean, exclusiveBands: boolean) =>
+      renderToStaticMarkup(
+        createElement(FilterPanel, {
+          derived,
+          filteredAntenas: derived.dataset.antenas,
+          collapsed: false,
+          mobileOpen: false,
+          onCollapseDesktop: () => {},
+          onCloseMobile: () => {},
+          searchQuery: '',
+          onSearchChange: () => {},
+          selectedComunidad: '',
+          onComunidadChange: () => {},
+          selectedProvince: '',
+          onProvinceChange: () => {},
+          selectedBands: hasActiveFilters ? ['B3'] : [],
+          onToggleBand: () => {},
+          onClearBands: () => {},
+          exclusiveBands,
+          onExclusiveBandsChange: () => {},
+          activeOperators: [...OPERATOR_ORDER],
+          onToggleOperator: () => {},
+          onSelectAllOperators: () => {},
+          onClearAllOperators: () => {},
+          hasActiveFilters,
+          onResetFilters: () => {},
+          onFlyTo: () => {},
+        }),
+      );
+
+    // 1. Sin filtros activos: Reset sigue visible de forma permanente y la X roja está en .bands-actions-row
+    const idleHtml = renderPanel(false, false);
+    const headerPart = idleHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+    const searchSection =
+      idleHtml.split('Búsqueda o Coordenadas WGS84')[1]?.split('</section>')[0] ?? '';
+    const bandsActionsPart = idleHtml.split('class="bands-actions-row"')[1] ?? '';
+
+    expect(headerPart).not.toContain('id="sidebar-collapse-btn"');
+    expect(searchSection).not.toContain('id="map-reset-filters-btn"');
+    expect(searchSection).not.toContain('Restablecer');
+
+    expect(bandsActionsPart).toContain('id="filter-bands-exclusive-checkbox"');
+    expect(bandsActionsPart).toContain('>Exclusivamente<');
+    expect(bandsActionsPart).not.toContain('Por defecto:');
+    expect(bandsActionsPart).not.toContain('bands-exclusive-hint');
+    expect(bandsActionsPart).toContain('id="map-reset-filters-btn"');
+    expect(bandsActionsPart).toContain('>Reset<');
+    expect(bandsActionsPart).toContain('id="sidebar-collapse-btn"');
+    expect(bandsActionsPart).toContain('class="filter-close-btn"');
+    expect(bandsActionsPart).toContain('lucide-x');
+
+    // 2. Con filtros activos: NO aparece ningún botón Reset arriba en búsqueda; solo el único permanente en la fila de Exclusivamente
+    const activeHtml = renderPanel(true, true);
+    const activeSearchSection =
+      activeHtml.split('Búsqueda o Coordenadas WGS84')[1]?.split('</section>')[0] ?? '';
+    expect(activeSearchSection).not.toContain('id="map-reset-filters-btn"');
+    expect(activeSearchSection).not.toContain('Restablecer');
+    expect(activeHtml.match(/id="map-reset-filters-btn"/g)).toHaveLength(1);
+    expect(activeHtml.match(/id="sidebar-collapse-btn"/g)).toHaveLength(1);
+    expect(activeHtml).toContain('filter-reset-btn has-active-filters');
+    expect(activeHtml).not.toContain('Por defecto:');
+
+    // 3. Selects de Ámbito Territorial con clase marrón clarito dentro de .territorial-selects-stack
+    expect(idleHtml).toContain('class="territorial-selects-stack"');
+    expect(idleHtml).toContain(
+      'id="map-ccaa-select" aria-label="Filtrar por comunidad autónoma" class="select-control territorial-select-control"',
+    );
+    expect(idleHtml).toContain(
+      'id="map-province-select" aria-label="Filtrar por provincia" class="select-control territorial-select-control"',
+    );
+
+    // 4. Reglas CSS: grid en paralelo de 2 columnas, fondo marrón clarito y botón X en color rojo
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.territorial-selects-stack\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.territorial-select-control\s*\{[^}]*background-color:\s*#e8d5c0;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\[data-theme='dark'\][^{]*\.territorial-select-control\s*\{[^}]*background-color:\s*#4a3a2d;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-close-btn\s*\{[^}]*color:\s*#dc2626;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.bands-actions-row\s*\{[^}]*display:\s*flex;/s,
+    );
+  });
+});
+
 
 
 

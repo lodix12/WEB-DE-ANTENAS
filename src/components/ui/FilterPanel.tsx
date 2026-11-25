@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import {
   MapPin,
-  PanelLeftClose,
   RotateCcw,
   Search,
   X,
@@ -100,6 +99,18 @@ export function FilterPanel({
 
   const totalStations = derived?.dataset.total ?? 0;
 
+  function handleClosePanel() {
+    if (
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(max-width: 860px)').matches
+    ) {
+      onCloseMobile();
+    } else {
+      onCollapseDesktop();
+      onCloseMobile();
+    }
+  }
+
   function handleComunidadSelect(ccaa: string) {
     onComunidadChange(ccaa);
     if (ccaa && derived) {
@@ -125,6 +136,33 @@ export function FilterPanel({
       }
     }
   }
+
+  const panelActionButtons = (
+    <>
+      <button
+        type="button"
+        id="map-reset-filters-btn"
+        className={`filter-reset-btn${hasActiveFilters ? ' has-active-filters' : ''}`}
+        onClick={onResetFilters}
+        title="Restablecer todos los filtros"
+        aria-label="Restablecer filtros"
+      >
+        <RotateCcw size={13} aria-hidden="true" />
+        <span>Reset</span>
+      </button>
+
+      <button
+        type="button"
+        id="sidebar-collapse-btn"
+        className="filter-close-btn"
+        onClick={handleClosePanel}
+        title="Cerrar filtros"
+        aria-label="Cerrar panel de filtros"
+      >
+        <X size={16} strokeWidth={2.25} aria-hidden="true" />
+      </button>
+    </>
+  );
 
   return (
     <aside
@@ -156,37 +194,6 @@ export function FilterPanel({
             align="right"
             idPrefix="map-sidebar-export"
           />
-
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => {
-              if (
-                typeof window !== 'undefined' &&
-                window.matchMedia?.('(max-width: 860px)').matches
-              ) {
-                onCloseMobile();
-              } else {
-                onCollapseDesktop();
-                onCloseMobile();
-              }
-            }}
-            id="sidebar-collapse-btn"
-            title="Cerrar filtros"
-            aria-label="Cerrar panel de filtros"
-            style={{ padding: '0 8px' }}
-          >
-            <PanelLeftClose
-              size={15}
-              className="sidebar-close-icon-desktop"
-              aria-hidden="true"
-            />
-            <X
-              size={16}
-              className="sidebar-close-icon-mobile"
-              aria-hidden="true"
-            />
-          </button>
         </div>
       </div>
 
@@ -197,21 +204,6 @@ export function FilterPanel({
             <label htmlFor="map-search-input">
               Búsqueda o Coordenadas WGS84
             </label>
-            {hasActiveFilters && (
-              <button
-                type="button"
-                className="text-link-btn"
-                onClick={onResetFilters}
-                id="map-reset-filters-btn"
-              >
-                <RotateCcw
-                  size={11}
-                  style={{ verticalAlign: '-1px', marginRight: 3 }}
-                  aria-hidden="true"
-                />
-                Restablecer
-              </button>
-            )}
           </div>
 
           <div className="search-input-wrap">
@@ -283,7 +275,7 @@ export function FilterPanel({
               <select
                 id="map-ccaa-select"
                 aria-label="Filtrar por comunidad autónoma"
-                className="select-control"
+                className="select-control territorial-select-control"
                 value={selectedComunidad}
                 onChange={(e) => handleComunidadSelect(e.target.value)}
               >
@@ -305,7 +297,7 @@ export function FilterPanel({
               <select
                 id="map-province-select"
                 aria-label="Filtrar por provincia"
-                className="select-control"
+                className="select-control territorial-select-control"
                 value={selectedProvince}
                 onChange={(e) => handleProvinceSelect(e.target.value)}
               >
@@ -431,26 +423,32 @@ export function FilterPanel({
               })}
             </div>
 
-            <label
-              htmlFor="filter-bands-exclusive-checkbox"
-              className={`bands-exclusive-row${exclusiveBands ? ' is-active' : ''}`}
-            >
-              <input
-                id="filter-bands-exclusive-checkbox"
-                type="checkbox"
-                className="bands-exclusive-checkbox"
-                checked={exclusiveBands}
-                onChange={(e) => onExclusiveBandsChange(e.target.checked)}
-              />
-              <span className="bands-exclusive-copy">
+            <div className="bands-actions-row">
+              <label
+                htmlFor="filter-bands-exclusive-checkbox"
+                className={`bands-exclusive-row bands-exclusive-compact${exclusiveBands ? ' is-active' : ''}`}
+                title="Solo antenas con exactamente las bandas marcadas"
+              >
+                <input
+                  id="filter-bands-exclusive-checkbox"
+                  type="checkbox"
+                  className="bands-exclusive-checkbox"
+                  checked={exclusiveBands}
+                  onChange={(e) => onExclusiveBandsChange(e.target.checked)}
+                />
                 <span className="bands-exclusive-title">Exclusivamente</span>
-                <span className="bands-exclusive-hint">
-                  {exclusiveBands
-                    ? 'Solo antenas con exactamente las bandas marcadas (ni más ni menos)'
-                    : 'Por defecto: antenas con al menos 1 de las bandas marcadas'}
-                </span>
-              </span>
-            </label>
+              </label>
+
+              <div className="bands-actions-buttons">{panelActionButtons}</div>
+            </div>
+          </section>
+        )}
+
+        {(!derived || derived.availableBands.length === 0) && (
+          <section className="panel-section">
+            <div className="bands-actions-buttons bands-actions-fallback">
+              {panelActionButtons}
+            </div>
           </section>
         )}
 
