@@ -11,7 +11,7 @@ Reglas de negocio:
   2. Todos los proyectos en los que participa Orange (`ORANGE ESPAGNE S.A.`,
      `UTE ORANGE ESPAGNE Y ORANGE COMUNICACIONES FIJAS`, etc.) se agrupan dentro de `orange` ("Orange").
   3. Se resuelven los códigos INE municipales de 5 dígitos de Fase 2 al nombre oficial del municipio.
-  4. Las provincias y comunidades autónomas se normalizan al estándar canónico de RadioMapa España,
+  4. Las provincias y comunidades autónomas se normalizan al estándar canónico de Redes Moviles España,
      ordenadas alfabéticamente (sin rankings).
 """
 

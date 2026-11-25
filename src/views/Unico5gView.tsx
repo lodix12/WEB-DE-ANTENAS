@@ -131,7 +131,7 @@ export function Unico5gView() {
 
   useEffect(() => {
     document.title =
-      'UNICO 5G · Antenas Subvencionadas y Declaradas · RadioMapa España';
+      'UNICO 5G · Antenas Subvencionadas y Declaradas · Redes Moviles España';
   }, []);
 
   const summary = useMemo(() => {

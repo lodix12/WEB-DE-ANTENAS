@@ -120,7 +120,7 @@ export interface ExportedAntennaJsonItem extends AntennaRecord {
 
 export interface CustomAntenasJsonExport {
   updatedAt: string;
-  source: 'RadioMapa España';
+  source: 'Redes Moviles España';
   total: number;
   radarPoint?: {
     lat: number;
@@ -132,7 +132,7 @@ export interface CustomAntenasJsonExport {
 }
 
 /**
- * Construye el objeto de exportación en el esquema JSON propio limpio de RadioMapa.
+ * Construye el objeto de exportación en el esquema JSON propio limpio de Redes Moviles España.
  */
 export function buildCustomJsonExportPayload(
   antenas: AntennaRecord[],
@@ -170,7 +170,7 @@ export function buildCustomJsonExportPayload(
 
   const payload: CustomAntenasJsonExport = {
     updatedAt: new Date().toISOString(),
-    source: 'RadioMapa España',
+    source: 'Redes Moviles España',
     total: items.length,
     ...(radarPoint
       ? {
@@ -191,12 +191,12 @@ export function buildCustomJsonExportPayload(
 }
 
 /**
- * Descarga las antenas filtradas en el esquema JSON propio de RadioMapa (.json).
+ * Descarga las antenas filtradas en el esquema JSON propio de Redes Moviles España (.json).
  */
 export function exportAntenasToJSON(
   antenas: AntennaRecord[],
   radarPoint?: RadarPoint | null,
-  filenamePrefix = 'radiomapa-antenas-espana',
+  filenamePrefix = 'redes-moviles-espana-antenas',
 ): void {
   const payload = buildCustomJsonExportPayload(antenas, radarPoint);
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -243,7 +243,7 @@ export function buildGeoJsonExportCollection(
  */
 export function exportAntenasToGeoJSON(
   antenas: AntennaRecord[],
-  filenamePrefix = 'radiomapa-antenas-espana',
+  filenamePrefix = 'redes-moviles-espana-antenas',
 ): void {
   const collection = buildGeoJsonExportCollection(antenas);
 
@@ -329,7 +329,7 @@ export function buildCsvExportContent(
 export function exportAntenasToCSV(
   antenas: AntennaRecord[],
   radarPoint?: RadarPoint | null,
-  filenamePrefix = 'radiomapa-antenas-espana',
+  filenamePrefix = 'redes-moviles-espana-antenas',
 ): void {
   // Incluir BOM UTF-8 (\uFEFF) para correcta visualización de acentos y 'ñ' en Excel
   const csvContent = `\uFEFF${buildCsvExportContent(antenas, radarPoint)}`;

@@ -124,7 +124,7 @@ export function AppHeader() {
           <div className="sidebar-header-stats">
             <span className="sidebar-header-title">Secciones</span>
             <span className="sidebar-header-sub">
-              Navegación y apariencia · RadioMapa España
+              Navegación y apariencia · Redes Moviles España
             </span>
           </div>
 
@@ -346,7 +346,7 @@ export function AppHeader() {
               {showInstallHelp && (
                 <p id="pwa-install-help" className="sections-pwa-help-note">
                   {installPlatform === 'ios'
-                    ? 'En Safari pulsa el icono Compartir y selecciona «Añadir a pantalla de inicio» para abrir RadioMapa a pantalla completa sin barra de navegación.'
+                    ? 'En Safari pulsa el icono Compartir y selecciona «Añadir a pantalla de inicio» para abrir Redes Moviles España a pantalla completa sin barra de navegación.'
                     : 'En Android (Chrome, Brave o Edge), toca el menú ⋮ del navegador y pulsa «Instalar aplicación» o «Añadir a pantalla de inicio» para instalarla sin barra de navegación.'}
                 </p>
               )}

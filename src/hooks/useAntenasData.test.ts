@@ -279,7 +279,7 @@ describe('parseCustomAntenasJson e importAntenasJsonDataset', () => {
     expect(parsed.antenas[0].gid).toBe('2800001');
   });
 
-  it('rechaza explícitamente una FeatureCollection GeoJSON exigiendo el JSON propio de RadioMapa', () => {
+  it('rechaza explícitamente una FeatureCollection GeoJSON exigiendo el JSON propio de Redes Moviles España', () => {
     const rawGeoJson = {
       type: 'FeatureCollection',
       features: [
@@ -363,7 +363,7 @@ describe('buildDerivedAntenasStructures y exportación en JSON propio', () => {
     const sample = createSampleCustomDataset();
 
     const withoutRadar = buildCustomJsonExportPayload(sample.antenas);
-    expect(withoutRadar.source).toBe('RadioMapa España');
+    expect(withoutRadar.source).toBe('Redes Moviles España');
     expect(withoutRadar.total).toBe(3);
     expect(withoutRadar.radarPoint).toBeUndefined();
     expect(withoutRadar.antenas[0].fichaMinetur).toContain('detalleEstacion.do');

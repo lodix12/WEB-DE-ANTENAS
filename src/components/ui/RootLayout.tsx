@@ -17,7 +17,7 @@ export function NotFoundView() {
         <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
           Ruta no encontrada
         </h1>
-        <p>La sección solicitada no existe en RadioMapa España.</p>
+        <p>La sección solicitada no existe en Redes Moviles España.</p>
         <Link to="/" className="btn btn-primary">
           Volver al Mapa Interactivo
         </Link>

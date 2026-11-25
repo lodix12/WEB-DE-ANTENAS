@@ -1,4 +1,4 @@
-# RadioMapa España · Mapa y Censo de Antenas de Redes Móviles
+# Redes Moviles España · Mapa y Censo de Antenas de Redes Móviles
 
 Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos para consultar las estaciones base de telefonía móvil registradas en toda España (**Movistar**, **Orange / MasOrange**, **Vodafone**, **DIGI** y operadores regionales) a partir de la fuente oficial **Infoantenas** del Ministerio para la Transformación Digital y de la Función Pública (MINETUR).
 

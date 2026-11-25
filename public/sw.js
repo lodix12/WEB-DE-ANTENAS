@@ -1,5 +1,5 @@
-/* RadioMapa España — App-Shell Service Worker */
-const CACHE_NAME = 'radiomapa-shell-v1';
+/* Redes Moviles España — App-Shell Service Worker */
+const CACHE_NAME = 'redes-moviles-espana-shell-v1';
 
 const PRECACHE_RELATIVE_URLS = [
   './',
@@ -41,7 +41,12 @@ self.addEventListener('activate', (event) => {
       const cacheNames = await caches.keys();
       await Promise.all(
         cacheNames
-          .filter((name) => name.startsWith('radiomapa-shell-') && name !== CACHE_NAME)
+          .filter(
+            (name) =>
+              (name.startsWith('redes-moviles-espana-shell-') ||
+                name.startsWith('radiomapa-shell-')) &&
+              name !== CACHE_NAME
+          )
           .map((name) => caches.delete(name))
       );
       await self.clients.claim();

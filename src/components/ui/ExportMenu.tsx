@@ -83,7 +83,7 @@ export function ExportMenu({
               </span>
             </span>
             <span className="export-option-desc">
-              Esquema compacto nativo de RadioMapa para integraciones y datos abiertos
+              Esquema compacto nativo de Redes Moviles España para integraciones y datos abiertos
               {radarPoint ? ' (incluye distancia y acimut)' : ''}
             </span>
           </button>

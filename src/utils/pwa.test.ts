@@ -402,7 +402,7 @@ describe('Sección "Aplicación móvil" en AppHeader (#sections-drawer) y CSS St
     expect(appHeaderRawSource).toContain('id="pwa-install-help"');
     expect(appHeaderRawSource).toContain('sections-pwa-help-note');
     expect(appHeaderRawSource).toContain(
-      'En Safari pulsa el icono Compartir y selecciona «Añadir a pantalla de inicio» para abrir RadioMapa a pantalla completa sin barra de navegación.',
+      'En Safari pulsa el icono Compartir y selecciona «Añadir a pantalla de inicio» para abrir Redes Moviles España a pantalla completa sin barra de navegación.',
     );
     expect(appHeaderRawSource).toContain(
       'En Android (Chrome, Brave o Edge), toca el menú ⋮ del navegador y pulsa «Instalar aplicación» o «Añadir a pantalla de inicio» para instalarla sin barra de navegación.',
@@ -463,6 +463,15 @@ describe('Manifiesto WebAPK, Iconos PNG y Service Worker (public/ e index.html)'
     );
     expect(indexHtml).toContain('viewport-fit=cover');
     expect(indexHtml).toContain(
+      '<meta name="application-name" content="Redes Moviles España" />',
+    );
+    expect(indexHtml).toContain(
+      '<meta name="apple-mobile-web-app-title" content="Redes Moviles España" />',
+    );
+    expect(indexHtml).toContain(
+      '<title>Redes Moviles España · Mapa y Censo de Antenas de Redes Móviles</title>',
+    );
+    expect(indexHtml).toContain(
       '<meta name="mobile-web-app-capable" content="yes" />',
     );
     expect(indexHtml).toContain(
@@ -484,6 +493,7 @@ describe('Manifiesto WebAPK, Iconos PNG y Service Worker (public/ e index.html)'
       display: string;
       start_url: string;
       scope: string;
+      name: string;
       short_name: string;
       icons: Array<{
         src: string;
@@ -497,7 +507,8 @@ describe('Manifiesto WebAPK, Iconos PNG y Service Worker (public/ e index.html)'
     expect(manifest.display).toBe('standalone');
     expect(manifest.start_url).toBe('./');
     expect(manifest.scope).toBe('./');
-    expect(manifest.short_name).toBe('RadioMapa');
+    expect(manifest.name).toBe('Redes Moviles España · Antenas Móviles');
+    expect(manifest.short_name).toBe('Redes Moviles España');
 
     const purposesAndSizes = manifest.icons.map(
       (icon) => `${icon.purpose}:${icon.sizes}:${icon.type}`,

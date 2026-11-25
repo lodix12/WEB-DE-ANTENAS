@@ -601,13 +601,13 @@ export function compareFrequencyRanges(a: string, b: string): number {
 
 /**
  * Valida que el contenido cargado corresponda exclusivamente al esquema JSON
- * propio compacto de RadioMapa (`AntenasDataset` en `data/antenas.json`) y
+ * propio compacto de Redes Moviles España (`AntenasDataset` en `data/antenas.json`) y
  * rechaza explícitamente cualquier colección o entidad GeoJSON (`FeatureCollection`).
  */
 export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
   if (!isPlainRecord(raw)) {
     throw new Error(
-      'Formato inválido: se esperaba un objeto con el esquema JSON propio de RadioMapa (data/antenas.json).',
+      'Formato inválido: se esperaba un objeto con el esquema JSON propio de Redes Moviles España (data/antenas.json).',
     );
   }
 
@@ -617,7 +617,7 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
     Array.isArray(raw.features)
   ) {
     throw new Error(
-      'Formato GeoJSON (FeatureCollection) no admitido: RadioMapa requiere importar exclusivamente su esquema JSON propio (data/antenas.json) y no carga desde GeoJSON.',
+      'Formato GeoJSON (FeatureCollection) no admitido: Redes Moviles España requiere importar exclusivamente su esquema JSON propio (data/antenas.json) y no carga desde GeoJSON.',
     );
   }
 
@@ -642,12 +642,12 @@ export function parseCustomAntenasJson(raw: unknown): AntenasDataset {
     const item: unknown = antenasList[i];
     if (!isPlainRecord(item)) {
       throw new Error(
-        `Registro inválido en antenas[${i}]: se esperaba un registro compacto del JSON propio de RadioMapa.`,
+        `Registro inválido en antenas[${i}]: se esperaba un registro compacto del JSON propio de Redes Moviles España.`,
       );
     }
     if (item.type === 'Feature' || 'geometry' in item) {
       throw new Error(
-        `Entidad GeoJSON detectada en antenas[${i}]: RadioMapa exige registros compactos del JSON propio ({ id, gid, op, lat, lon, ... }) y no admite GeoJSON.`,
+        `Entidad GeoJSON detectada en antenas[${i}]: Redes Moviles España exige registros compactos del JSON propio ({ id, gid, op, lat, lon, ... }) y no admite GeoJSON.`,
       );
     }
     const normalizedOp =

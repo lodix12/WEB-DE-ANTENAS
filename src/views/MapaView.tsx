@@ -77,7 +77,7 @@ export function MapaView() {
 
   useEffect(() => {
     document.title =
-      'RadioMapa España · Mapa Interactivo de Antenas de Redes Móviles';
+      'Redes Moviles España · Mapa Interactivo de Antenas de Redes Móviles';
   }, []);
 
   useEffect(() => {

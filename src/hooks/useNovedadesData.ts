@@ -122,7 +122,7 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
     Array.isArray(raw.features)
   ) {
     throw new Error(
-      'Formato GeoJSON (FeatureCollection) no admitido: RadioMapa requiere importar exclusivamente su esquema JSON propio (data/novedades.json) y no carga desde GeoJSON.',
+      'Formato GeoJSON (FeatureCollection) no admitido: Redes Moviles España requiere importar exclusivamente su esquema JSON propio (data/novedades.json) y no carga desde GeoJSON.',
     );
   }
 
@@ -156,7 +156,7 @@ export function parseCustomNovedadesJson(raw: unknown): NovedadesDataset {
     }
     if (item.type === 'Feature' || 'geometry' in item) {
       throw new Error(
-        `Entidad GeoJSON detectada en novedades[${i}]: RadioMapa exige registros compactos del JSON propio y no admite GeoJSON.`,
+        `Entidad GeoJSON detectada en novedades[${i}]: Redes Moviles España exige registros compactos del JSON propio y no admite GeoJSON.`,
       );
     }
     const validated = validateNovedadRecord(item);

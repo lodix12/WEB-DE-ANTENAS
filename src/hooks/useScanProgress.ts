@@ -64,7 +64,7 @@ const ACTIONS_CHECK_COOLDOWN_MS = 120_000;
 const LIVE_CHUNK_FETCH_CONCURRENCY = 6;
 
 const GEOJSON_LIVE_ERROR_MSG =
-  'Formato GeoJSON no admitido en el flujo en vivo: RadioMapa utiliza exclusivamente su esquema JSON propio.';
+  'Formato GeoJSON no admitido en el flujo en vivo: Redes Moviles España utiliza exclusivamente su esquema JSON propio.';
 
 const VALID_STATES = new Set<string>([
   'running',

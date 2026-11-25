@@ -85,7 +85,7 @@ export function EstadisticasView() {
 
   useEffect(() => {
     document.title =
-      'Estadísticas del Despliegue Móvil en España · RadioMapa España';
+      'Estadísticas del Despliegue Móvil en España · Redes Moviles España';
   }, []);
 
   const operatorRows = useMemo(() => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic high-resolution PWA icon generator for RadioMapa España.
+"""Deterministic high-resolution PWA icon generator for Redes Moviles España.
 
 Matches the visual identity of `public/favicon.svg` using 4x+ supersampling
 (2048x2048 master canvas downsampled with Lanczos resampling) to produce
