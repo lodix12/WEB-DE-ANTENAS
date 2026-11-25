@@ -209,7 +209,7 @@
   top: auto;
   bottom: calc(100% + 8px);
   right: 0;
-  width: 292px;
+  width: 316px;
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 80px);
   overflow-y: auto;
@@ -238,18 +238,19 @@
 }
 
 .map-style-options-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
 }
 
 .map-style-option {
   appearance: none;
   width: 100%;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
+  gap: 5px;
+  padding: 6px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -277,13 +278,33 @@
 }
 
 .map-style-swatch {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
   flex-shrink: 0;
   border: 1px solid var(--map-border-strong);
   position: relative;
   overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-style-option.is-selected .map-style-swatch {
+  border-color: var(--map-accent);
+}
+
+.map-style-option.is-selected .map-style-swatch::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 105, 161, 0.86);
+}
+
+.antenas-map-root[data-map-dark='true']
+  .map-style-option.is-selected
+  .map-style-swatch::after {
+  background: rgba(14, 165, 233, 0.78);
 }
 
 .map-style-swatch[data-style='osm'] {
@@ -359,6 +380,16 @@
   color: var(--map-text);
 }
 
+.map-style-option .map-style-option-title {
+  font-size: 11.5px;
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .map-style-option-desc {
   font-size: 11px;
   color: var(--map-text-subtle);
@@ -366,7 +397,9 @@
 }
 
 .map-style-check {
-  color: var(--map-accent);
+  position: relative;
+  z-index: 1;
+  color: #ffffff;
   flex-shrink: 0;
 }
 
@@ -393,8 +426,8 @@
   gap: 10px;
 }
 
-.map-clustering-control[data-clustering-level='normal'] .map-clustering-icon,
-.map-clustering-control[data-clustering-level='high'] .map-clustering-icon {
+.map-clustering-control:not([data-clustering-level='none'])
+  .map-clustering-icon {
   background: var(--map-accent-soft);
   border-color: var(--map-accent-border);
   color: var(--map-accent);
@@ -402,8 +435,8 @@
 
 .map-clustering-segmented {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
   padding: 2px;
   border-radius: 8px;
   background: var(--map-surface-subtle);
@@ -413,13 +446,13 @@
 .map-clustering-segment {
   appearance: none;
   height: 26px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--map-text-muted);
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 1;
   cursor: pointer;

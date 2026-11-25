@@ -911,7 +911,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [onToggleShowBandsOnMap]);
 
-  // Soporte híbrido controlado o autónomo para los 3 niveles de clustering ('none' | 'normal' | 'high')
+  // Soporte híbrido controlado o autónomo para los 4 niveles de clustering ('none' | 'normal' | 'high' | 'max')
   const [internalClusteringLevel, setInternalClusteringLevel] =
     useState<ClusteringLevel>(() => clusteringLevel ?? DEFAULT_CLUSTERING_LEVEL);
   const isClusteringLevelControlled =
@@ -1222,7 +1222,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
   }, [effectiveHighlightUnicoDeclared]);
 
-  // Sincronización inmediata en GPU al cambiar el nivel de agrupación en clústeres ('none' | 'normal' | 'high')
+  // Sincronización inmediata en GPU al cambiar el nivel de agrupación en clústeres ('none' | 'normal' | 'high' | 'max')
   useEffect(() => {
     clusteringLevelRef.current = effectiveClusteringLevel;
     const map = mapRef.current;

@@ -297,6 +297,7 @@ export function MapOverlays({
                         role="option"
                         aria-selected={selected}
                         className={`map-style-option${selected ? ' is-selected' : ''}`}
+                        title={option.label}
                         onClick={() => {
                           onStyleChange(option.id);
                           setStyleMenuOpen(false);
@@ -306,22 +307,19 @@ export function MapOverlays({
                           className="map-style-swatch"
                           data-style={option.id}
                           aria-hidden="true"
-                        />
-                        <span className="map-style-option-body">
-                          <span className="map-style-option-title">
-                            {option.label}
-                          </span>
-                          <span className="map-style-option-desc">
-                            {option.description}
-                          </span>
+                        >
+                          {selected && (
+                            <Check
+                              size={12}
+                              strokeWidth={3}
+                              className="map-style-check"
+                              aria-hidden="true"
+                            />
+                          )}
                         </span>
-                        {selected && (
-                          <Check
-                            size={15}
-                            className="map-style-check"
-                            aria-hidden="true"
-                          />
-                        )}
+                        <span className="map-style-option-title">
+                          {option.label}
+                        </span>
                       </button>
                     );
                   })}

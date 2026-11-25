@@ -21,7 +21,7 @@ export interface RadarPoint {
 
 export const MAX_MEASURE_POINTS = 10;
 
-export type ClusteringLevel = 'none' | 'normal' | 'high';
+export type ClusteringLevel = 'none' | 'normal' | 'high' | 'max';
 
 export interface ClusteringLevelOption {
   id: ClusteringLevel;
@@ -32,7 +32,7 @@ export interface ClusteringLevelOption {
   clusterRadius: number;
 }
 
-export const DEFAULT_CLUSTERING_LEVEL: ClusteringLevel = 'normal';
+export const DEFAULT_CLUSTERING_LEVEL: ClusteringLevel = 'max';
 
 export const CLUSTERING_LEVEL_OPTIONS: readonly ClusteringLevelOption[] = [
   {
@@ -59,6 +59,14 @@ export const CLUSTERING_LEVEL_OPTIONS: readonly ClusteringLevelOption[] = [
     clusterMaxZoom: 13,
     clusterRadius: 68,
   },
+  {
+    id: 'max',
+    label: 'Máximo',
+    description: 'Agrupación máxima al alejar el mapa',
+    cluster: true,
+    clusterMaxZoom: 14,
+    clusterRadius: 100,
+  },
 ];
 
 export function getClusteringLevelConfig(
@@ -66,7 +74,10 @@ export function getClusteringLevelConfig(
 ): ClusteringLevelOption {
   return (
     CLUSTERING_LEVEL_OPTIONS.find((option) => option.id === level) ??
-    CLUSTERING_LEVEL_OPTIONS[1]
+    CLUSTERING_LEVEL_OPTIONS.find(
+      (option) => option.id === DEFAULT_CLUSTERING_LEVEL,
+    ) ??
+    CLUSTERING_LEVEL_OPTIONS[CLUSTERING_LEVEL_OPTIONS.length - 1]
   );
 }
 
@@ -123,7 +134,7 @@ export interface AntenasMapProps {
   showBandsOnMap?: boolean;
   /** Alternar la visualización directa de bandas de frecuencia en el mapa */
   onToggleShowBandsOnMap?: () => void;
-  /** Nivel de agrupación en clústeres al alejar el mapa ('none' | 'normal' | 'high', por defecto 'normal') */
+  /** Nivel de agrupación en clústeres al alejar el mapa ('none' | 'normal' | 'high' | 'max', por defecto 'max') */
   clusteringLevel?: ClusteringLevel;
   /** Cambiar el nivel de agrupación en clústeres del mapa */
   onClusteringLevelChange?: (level: ClusteringLevel) => void;
