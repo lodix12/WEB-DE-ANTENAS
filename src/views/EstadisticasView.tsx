@@ -857,13 +857,15 @@ export function EstadisticasView() {
                     {exactCoordFused.toLocaleString('es-ES')}
                   </span>{' '}
                   declaraciones duplicadas de una misma operadora en la misma
-                  coordenada exacta (incluyendo Orange y Telefónica){' '}
+                  coordenada exacta (incluyendo Orange y Telefónica, salvo
+                  cuando dos antenas de Telefónica tienen banda N78 cada una){' '}
                 </>
               )}
               fusionadas en emplazamientos únicos, contabilizadas como{' '}
               <strong>1 sola antena</strong> tanto en el censo nacional como en
               las cuotas por operador y provincia. Las antenas de Telefónica
-              (Movistar) en coordenadas distintas nunca se fusionan consigo
+              (Movistar) en coordenadas distintas, o en la misma coordenada
+              cuando cada una dispone de banda N78, nunca se fusionan consigo
               mismas.
             </div>
           </div>

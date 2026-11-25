@@ -4,6 +4,7 @@ import {
   buildSameOperatorExactCoordKey,
   isXferaLegalEntity,
   normalizeOperatorKeyInput,
+  shouldSkipExactCoordSameOperatorFusion,
   type AntennaRecord,
   type ConcesionBanda,
   type OperatorKey,
@@ -824,12 +825,14 @@ function fuseExactCoordSameOperatorGroup(group: AntennaRecord[]): AntennaRecord 
  * - Fusiona de forma defensiva registros residuales de Vodafone a `< 35 m`
  *   (`Math.max(maxDistanceMeters, VODAFONE_DEFENSIVE_FUSION_METERS)` cuando `maxDistanceMeters > 0`).
  * - Fusiona de forma defensiva declaraciones duplicadas de cualquier misma operadora
- *   (incluyendo Orange y Telefónica/Movistar) situadas en la MISMA coordenada exacta `(lat, lon)`.
+ *   (incluyendo Orange y Telefónica/Movistar) situadas en la MISMA coordenada exacta `(lat, lon)`,
+ *   EXCEPTO cuando 2 o más antenas de Telefónica disponen cada una de banda N78 (3500 MHz).
  * - Agrupa en 1 único `MapSiteEntry` multicolor antenas de `>= 2` operadores distintos situadas
  *   a `< maxDistanceMeters` (`15 m` por defecto, `MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS`) mediante
  *   enlace completo en orden de distancia creciente.
- * - Las antenas de Telefónica (`movistar`) en coordenadas distintas (`> 0 m`) NUNCA se fusionan
- *   entre sí, ni directamente ni de forma transitiva a través de otro operador.
+ * - Las antenas de Telefónica (`movistar`) en coordenadas distintas (`> 0 m`), o en la misma
+ *   coordenada cuando cada una dispone de banda N78, NUNCA se fusionan entre sí, ni directamente
+ *   ni de forma transitiva a través de otro operador.
  */
 export function groupColocatedAntennasForMap(
   antenas: AntennaRecord[],
@@ -902,7 +905,7 @@ export function groupColocatedAntennasForMap(
     }
   }
 
-  // 1b. Pase defensivo de misma coordenada exacta para cualquier operadora (incluido Orange y Telefónica).
+  // 1b. Pase defensivo de misma coordenada exacta para cualquier operadora (incluido Orange y Telefónica, salvo parejas Telefónica con N78 en cada una).
   if (normalizedRecords.length >= 2) {
     const firstIdxByKey = new Map<string, number>();
     let duplicateGroups: Map<string, number[]> | null = null;
@@ -929,12 +932,15 @@ export function groupColocatedAntennasForMap(
     if (duplicateGroups !== null) {
       const replacementAtNormIdx = new Map<number, AntennaRecord>();
       const skipNormIdx = new Set<number>();
-      if (!extraMergedIdsByPrimaryId) {
-        extraMergedIdsByPrimaryId = new Map<string, string[]>();
-      }
 
       for (const indices of duplicateGroups.values()) {
         const group = indices.map((idx) => normalizedRecords[idx]);
+        if (shouldSkipExactCoordSameOperatorFusion(group)) {
+          continue;
+        }
+        if (!extraMergedIdsByPrimaryId) {
+          extraMergedIdsByPrimaryId = new Map<string, string[]>();
+        }
         const fused = fuseExactCoordSameOperatorGroup(group);
         replacementAtNormIdx.set(indices[0], fused);
 
@@ -954,18 +960,20 @@ export function groupColocatedAntennasForMap(
         }
       }
 
-      const dedupedRecords: AntennaRecord[] = [];
-      for (let i = 0; i < normalizedRecords.length; i++) {
-        if (skipNormIdx.has(i)) continue;
-        dedupedRecords.push(
-          replacementAtNormIdx.get(i) ?? normalizedRecords[i],
-        );
+      if (skipNormIdx.size > 0) {
+        const dedupedRecords: AntennaRecord[] = [];
+        for (let i = 0; i < normalizedRecords.length; i++) {
+          if (skipNormIdx.has(i)) continue;
+          dedupedRecords.push(
+            replacementAtNormIdx.get(i) ?? normalizedRecords[i],
+          );
+        }
+        normalizedRecords = dedupedRecords;
       }
-      normalizedRecords = dedupedRecords;
     }
   }
 
-  // 2. Agrupación multi-operador a < maxDistanceMeters (15 m por defecto) con enlace completo y restricción estricta de Telefónica en coordenadas distintas.
+  // 2. Agrupación multi-operador a < maxDistanceMeters (15 m por defecto) con enlace completo y restricción estricta de Telefónica.
   const components = clusterMultiOperatorSitesByCompleteLinkage(
     normalizedRecords,
     maxDistanceMeters,

@@ -7,6 +7,7 @@ import {
   inferOperatorKeyFromAntennaId,
   isXferaLegalEntity,
   normalizeOperatorKeyInput,
+  shouldSkipExactCoordSameOperatorFusion,
   type AntenasDataset,
   type AntennaRecord,
   type ConcesionBanda,
@@ -1811,6 +1812,8 @@ function compareExactCoordCanonical(
  * Fusiona de forma pura e idempotente declaraciones duplicadas de cualquier misma
  * operadora (incluyendo Orange, Telefónica/Movistar, Vodafone, DIGI y operadores
  * regionales con idéntica razón social) declaradas en la MISMA coordenada exacta `(lat, lon)`.
+ * Excepción Telefónica: si 2 o más antenas de Telefónica en la misma coordenada exacta
+ * disponen cada una de banda N78 (3500 MHz), NO se fusionan.
  * Las estaciones de Telefónica, Orange nativo, DIGI u otros en coordenadas distintas
  * (aunque disten pocos metros) jamás se fusionan en este pase.
  */
@@ -1862,8 +1865,11 @@ export function fuseSameOperatorExactCoordsInDataset(
   let fusionsCount = 0;
 
   for (const [key, indices] of duplicateGroups.entries()) {
-    fusionsCount += indices.length - 1;
     const members = indices.map((idx) => antenas[idx]);
+    if (shouldSkipExactCoordSameOperatorFusion(members)) {
+      continue;
+    }
+    fusionsCount += indices.length - 1;
     const sortedMembers = [...members].sort(compareExactCoordCanonical);
     const normalizedOp =
       normalizeOperatorKeyInput(sortedMembers[0].op, sortedMembers[0].opRaw) ??
@@ -1872,6 +1878,10 @@ export function fuseSameOperatorExactCoordsInDataset(
       key,
       mergeAntennaComponentMembers(sortedMembers, false, normalizedOp),
     );
+  }
+
+  if (fusionsCount === 0) {
+    return dataset;
   }
 
   const emittedKeys = new Set<string>();
@@ -2778,15 +2788,21 @@ export function mergeLiveDeltaIntoAntenasDataset(
     }
 
     if (patch && isPatchNewerOrEqual(patch.bandsScannedAt, ant.bandsScannedAt)) {
-      const nextMergedGids = patch.mergedGids ?? ant.mergedGids;
-      mergedAntenas.push({
+      const nextMergedGids =
+        patch.mergedGids !== undefined ? patch.mergedGids : ant.mergedGids;
+      const updatedRec: AntennaRecord = {
         ...ant,
-        ...(nextMergedGids !== undefined ? { mergedGids: nextMergedGids } : {}),
         bandas: normalizeAntennaBandsList(patch.bandas),
         frecuencias: patch.frecuencias,
         concesiones: patch.concesiones,
         bandsScannedAt: patch.bandsScannedAt,
-      });
+      };
+      if (nextMergedGids !== undefined && nextMergedGids.length > 0) {
+        updatedRec.mergedGids = nextMergedGids;
+      } else {
+        delete updatedRec.mergedGids;
+      }
+      mergedAntenas.push(updatedRec);
       anyChanged = true;
     } else {
       mergedAntenas.push(ant);
@@ -2802,14 +2818,17 @@ export function mergeLiveDeltaIntoAntenasDataset(
     const normalizedNewOp =
       normalizeOperatorKeyInput(rawNew.op, rawNew.opRaw) ?? rawNew.op;
     const newPatch = delta.bandPatchesById.get(rawNew.id);
-    const nextNewMergedGids = newPatch?.mergedGids ?? rawNew.mergedGids;
+    const nextNewMergedGids =
+      newPatch?.mergedGids !== undefined
+        ? newPatch.mergedGids
+        : rawNew.mergedGids;
     const candidate: AntennaRecord =
       newPatch &&
       isPatchNewerOrEqual(newPatch.bandsScannedAt, rawNew.bandsScannedAt)
         ? {
             ...rawNew,
             op: normalizedNewOp,
-            ...(nextNewMergedGids !== undefined
+            ...(nextNewMergedGids !== undefined && nextNewMergedGids.length > 0
               ? { mergedGids: nextNewMergedGids }
               : {}),
             bandas: normalizeAntennaBandsList(newPatch.bandas),
@@ -2824,12 +2843,27 @@ export function mergeLiveDeltaIntoAntenasDataset(
               bandas: normalizeAntennaBandsList(rawNew.bandas),
             }
           : { ...rawNew, op: normalizedNewOp };
+    if (
+      newPatch?.mergedGids !== undefined &&
+      newPatch.mergedGids.length === 0
+    ) {
+      delete candidate.mergedGids;
+    }
 
     let existingIdx = existingIndexById.get(candidate.id);
     const canReuseOpGidIndex = (idx: number | undefined): boolean => {
       if (idx === undefined) return false;
-      if (candidate.op !== 'orange') return true;
       const existing = mergedAntenas[idx];
+      if (
+        candidate.op === 'movistar' &&
+        existing.op === 'movistar' &&
+        candidate.gid &&
+        existing.gid !== candidate.gid &&
+        (!existing.mergedGids || !existing.mergedGids.includes(candidate.gid))
+      ) {
+        return false;
+      }
+      if (candidate.op !== 'orange') return true;
       return (
         isXferaLegalEntity(existing.opRaw) ===
         isXferaLegalEntity(candidate.opRaw)

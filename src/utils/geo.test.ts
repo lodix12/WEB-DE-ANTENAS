@@ -962,5 +962,103 @@ describe('groupColocatedAntennasForMap', () => {
     ]);
     expect(otrosSites.find((s) => s.primary.gid === 'T1')?.primary.mergedGids).toBeUndefined();
   });
+
+  it('does NOT fuse two Telefónica (Movistar) antennas at the exact same coordinate when each has band N78, while still fusing Orange N78 duplicates', () => {
+    const movN78A: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811896',
+      gid: '2811896',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'PZ Callao, 00001',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['2600 MHz', '3500 MHz'],
+      frecuencias: ['2620.00 - 2640.00', '3460.00 - 3600.00'],
+      concesiones: [
+        { ref: 'M M -2503308', freq: '2620.00 - 2640.00' },
+        { ref: 'M M -2503307', freq: '3460.00 - 3600.00' },
+      ],
+    };
+    const movN78B: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811897',
+      gid: '2811897',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'CL Preciados, 00032',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['2600 MHz', '3500 MHz'],
+      frecuencias: ['2620.00 - 2640.00', '3460.00 - 3600.00'],
+      concesiones: [
+        { ref: 'M M -2600525', freq: '2620.00 - 2640.00' },
+        { ref: 'M M -2600524', freq: '3460.00 - 3600.00' },
+      ],
+    };
+
+    // 1) Sin otros operadores: permanecen como 2 MapSiteEntry independientes (tanto con 15 m como con 0 m)
+    const separateDefault = groupColocatedAntennasForMap([movN78A, movN78B]);
+    expect(separateDefault).toHaveLength(2);
+    expect(separateDefault.map((s) => s.primary.gid).sort()).toEqual([
+      '2811896',
+      '2811897',
+    ]);
+    expect(separateDefault.every((s) => s.primary.mergedGids === undefined)).toBe(
+      true,
+    );
+
+    const separateZero = groupColocatedAntennasForMap([movN78A, movN78B], 0);
+    expect(separateZero).toHaveLength(2);
+
+    // 2) Con un tercer operador (Orange) en la misma coordenada exacta:
+    //    la regla de Telefónica en clusterMultiOperatorSitesByCompleteLinkage impide unir las 2 Movistar transitivamente
+    const orangeAtSame: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - MAD9999A',
+      gid: 'MAD9999A',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'PZ Callao, 1',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['3500 MHz'],
+      frecuencias: ['3600.00 - 3700.00'],
+    };
+    const orangeDupN78: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - MAD9999B',
+      gid: 'MAD9999B',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'PZ Callao, 1',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['3500 MHz'],
+      frecuencias: ['3600.00 - 3700.00'],
+    };
+
+    const withOrange = groupColocatedAntennasForMap([
+      movN78A,
+      movN78B,
+      orangeAtSame,
+      orangeDupN78,
+    ]);
+    // Las 2 Orange con N78 SÍ se fusionan entre sí en 1 Orange, que se agrupa con 1 Movistar; la 2.ª Movistar queda aparte
+    expect(withOrange).toHaveLength(2);
+    const multiSite = withOrange.find((s) => s.isMultiOperator);
+    const singleMovSite = withOrange.find((s) => !s.isMultiOperator);
+    expect(multiSite?.operators).toEqual(['movistar', 'orange']);
+    expect(multiSite?.members.filter((m) => m.op === 'movistar')).toHaveLength(1);
+    const orangeMember = multiSite?.members.find((m) => m.op === 'orange');
+    expect(orangeMember?.mergedGids).toEqual(['MAD9999A', 'MAD9999B']);
+    expect(singleMovSite?.operators).toEqual(['movistar']);
+    expect(singleMovSite?.primary.mergedGids).toBeUndefined();
+  });
 });
+
 

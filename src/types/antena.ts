@@ -33,7 +33,7 @@ export interface AntennaRecord {
   mun: string;
   /** Provincia oficial normalizada */
   prov: string;
-  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (Vodafone < 35 m, Xfera en Orange o mismo operador en la misma coordenada exacta) */
+  /** Gis_IDs originales fusionados cuando se agrupan declaraciones duplicadas (Vodafone < 35 m, Xfera en Orange o mismo operador en la misma coordenada exacta, salvo dos Telefónica con N78) */
   mergedGids?: string[];
   /** Bandas comerciales activas en MHz extraídas de detalleEstacion.do (ej. ["700 MHz", "800 MHz", "1800 MHz", "3500 MHz"]) */
   bandas?: string[];
@@ -70,7 +70,7 @@ export interface CrawlStats {
   vodafoneFusedDuplicates?: number;
   /** Declaraciones colocalizadas o de idéntico Gis_ID de Xfera fusionadas en Orange */
   xferaFusedIntoOrange?: number;
-  /** Declaraciones duplicadas de una misma operadora en la misma coordenada exacta (incluyendo Orange y Telefónica) fusionadas */
+  /** Declaraciones duplicadas de una misma operadora en la misma coordenada exacta (incluyendo Orange y Telefónica, salvo parejas Telefónica donde cada una tiene N78) fusionadas */
   exactCoordFusedDuplicates?: number;
   /** Número de antenas del JSON que ya disponen de sus bandas/frecuencias extraídas */
   bandsPopulatedCount?: number;
@@ -461,6 +461,92 @@ export function buildSameOperatorExactCoordKey(
     return `otros::${normalizeOtrosOperatorIdentity(ant.opRaw)}|${latNorm}|${lonNorm}`;
   }
   return `${normalizedOp}|${latNorm}|${lonNorm}`;
+}
+
+const N78_FREQ_NUM_TOKEN_RE = /\d+(?:[.,]\d+)?/g;
+const N78_GHZ_UNIT_RE = /ghz/i;
+const N78_DIRECT_CODE_RE = /^n78(?:\s*\+)?$/i;
+
+function frequencyTextMatchesN78(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  if (N78_DIRECT_CODE_RE.test(trimmed)) {
+    return true;
+  }
+  N78_FREQ_NUM_TOKEN_RE.lastIndex = 0;
+  const m1 = N78_FREQ_NUM_TOKEN_RE.exec(trimmed);
+  if (!m1) return false;
+  const m2 = N78_FREQ_NUM_TOKEN_RE.exec(trimmed);
+  const a = Number(m1[0].replace(',', '.'));
+  const b = m2 ? Number(m2[0].replace(',', '.')) : a;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+
+  let lo = a <= b ? a : b;
+  let hi = a <= b ? b : a;
+  if (N78_GHZ_UNIT_RE.test(trimmed) && hi < 1000) {
+    lo *= 1000;
+    hi *= 1000;
+  }
+  return lo >= 3300 && hi <= 3900;
+}
+
+/**
+ * Indica si una estación dispone de banda N78 (3500 MHz / 3,3–3,9 GHz) en sus
+ * campos `bandas`, `frecuencias` o `concesiones`.
+ */
+export function antennaHasN78Band(
+  ant: Pick<AntennaRecord, 'bandas' | 'frecuencias' | 'concesiones'>,
+): boolean {
+  const { bandas, frecuencias, concesiones } = ant;
+  if (bandas) {
+    for (let i = 0; i < bandas.length; i++) {
+      if (frequencyTextMatchesN78(bandas[i])) {
+        return true;
+      }
+    }
+  }
+  if (frecuencias) {
+    for (let i = 0; i < frecuencias.length; i++) {
+      if (frequencyTextMatchesN78(frecuencias[i])) {
+        return true;
+      }
+    }
+  }
+  if (concesiones) {
+    for (let i = 0; i < concesiones.length; i++) {
+      if (frequencyTextMatchesN78(concesiones[i].freq)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Regla de excepción de Telefónica (Movistar): si 2 o más antenas de Telefónica en la
+ * misma coordenada exacta disponen cada una de banda N78 (3500 MHz), NO deben fusionarse.
+ */
+export function shouldSkipExactCoordSameOperatorFusion(
+  group: ReadonlyArray<
+    Pick<AntennaRecord, 'op' | 'opRaw' | 'bandas' | 'frecuencias' | 'concesiones'>
+  >,
+): boolean {
+  if (group.length < 2) return false;
+  const firstOp =
+    normalizeOperatorKeyInput(group[0].op, group[0].opRaw) ?? group[0].op;
+  if (firstOp !== 'movistar') {
+    return false;
+  }
+  let n78Count = 0;
+  for (let i = 0; i < group.length; i++) {
+    if (antennaHasN78Band(group[i])) {
+      n78Count++;
+      if (n78Count >= 2) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export interface OpenFreeMapStyleOption {

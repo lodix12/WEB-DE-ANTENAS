@@ -1399,4 +1399,41 @@ describe('renderBandCardSprite, getOrCreateBandCardSprite & clearBandCardSpriteC
       { op: 'orange', color: OPERATOR_META.orange.color, text: 'N78 G9 B20 N28' },
     ]);
   });
+
+  it('keeps two Telefónica declarations with N78 at the exact same coordinate as separate sites with independent band cards', () => {
+    const sites = groupColocatedAntennasForMap([
+      makeAntenna({
+        id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2806035',
+        gid: '2806035',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        lat: 40.403592,
+        lon: -3.713472,
+        bandas: ['700 MHz', '800 MHz', '3500 MHz'],
+        frecuencias: ['778.00 - 788.00', '852.00 - 862.00', '3460.00 - 3600.00'],
+      }),
+      makeAntenna({
+        id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2812180',
+        gid: '2812180',
+        op: 'movistar',
+        opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+        lat: 40.403592,
+        lon: -3.713472,
+        bandas: ['2600 MHz', '3500 MHz'],
+        frecuencias: ['2620.00 - 2640.00', '3460.00 - 3600.00'],
+      }),
+    ]);
+
+    expect(sites).toHaveLength(2);
+    const rowsByGid = new Map(
+      sites.map((site) => [site.primary.gid, buildSiteBandCardRows(site)]),
+    );
+    expect(rowsByGid.get('2806035')).toEqual([
+      { op: 'movistar', color: OPERATOR_META.movistar.color, text: 'N78 B20 N28' },
+    ]);
+    expect(rowsByGid.get('2812180')).toEqual([
+      { op: 'movistar', color: OPERATOR_META.movistar.color, text: 'N78 B7' },
+    ]);
+  });
 });
+

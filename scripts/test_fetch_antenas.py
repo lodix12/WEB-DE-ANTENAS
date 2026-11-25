@@ -6403,7 +6403,403 @@ class FetchAntenasUnitTests(unittest.TestCase):
         )
         self.assertEqual([a["gid"] for a in captured_prov], ["NEWORA1"])
 
+    def test_telefonica_n78_exact_coords_not_fused_and_dynamic_split(self) -> None:
+        # 1) Dos Telefónica en la misma coordenada exacta donde AMBAS tienen N78 (3500 MHz) -> NO se fusionan
+        # 2) Tres Telefónica en la misma coordenada exacta donde 2 tienen N78 y 1 no -> NO se fusionan
+        # 3) Dos Telefónica en la misma coordenada exacta donde solo 1 tiene N78 -> SÍ se fusionan
+        # 4) Dos Orange en la misma coordenada exacta donde AMBAS tienen N78 -> SÍ se fusionan (regla exclusiva de Telefónica)
+        records = [
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811896",
+                "gid": "2811896",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.419803,
+                "lon": -3.706108,
+                "dir": "PZ Callao, 00001",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["2600 MHz", "3500 MHz"],
+                "frecuencias": ["2620.00 - 2640.00", "3460.00 - 3600.00"],
+                "concesiones": [
+                    {"ref": "M M -2503308", "freq": "2620.00 - 2640.00"},
+                    {"ref": "M M -2503307", "freq": "3460.00 - 3600.00"},
+                ],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811897",
+                "gid": "2811897",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.419803,
+                "lon": -3.706108,
+                "dir": "CL Preciados, 00032",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["2600 MHz", "3500 MHz"],
+                "frecuencias": ["2620.00 - 2640.00", "3460.00 - 3600.00"],
+                "concesiones": [
+                    {"ref": "M M -2600525", "freq": "2620.00 - 2640.00"},
+                    {"ref": "M M -2600524", "freq": "3460.00 - 3600.00"},
+                ],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            # Trío Telefónica con 2 N78 + 1 sin N78 -> NO se fusionan
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890001",
+                "gid": "2890001",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.450000,
+                "lon": -3.690000,
+                "dir": "PASEO CASTELLANA 10",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["800 MHz", "3500 MHz"],
+                "frecuencias": ["852.00 - 862.00", "3460.00 - 3600.00"],
+                "concesiones": [{"ref": "M1", "freq": "3460.00 - 3600.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890002",
+                "gid": "2890002",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.450000,
+                "lon": -3.690000,
+                "dir": "PASEO CASTELLANA 10",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["3500 MHz"],
+                "frecuencias": ["3500.00 - 3600.00"],
+                "concesiones": [{"ref": "M2", "freq": "3500.00 - 3600.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890003",
+                "gid": "2890003",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.450000,
+                "lon": -3.690000,
+                "dir": "PASEO CASTELLANA 10",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["1800 MHz"],
+                "frecuencias": ["1805.10 - 1825.10"],
+                "concesiones": [{"ref": "M3", "freq": "1805.10 - 1825.10"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            # Pareja Telefónica donde solo 1 tiene N78 -> SÍ se fusiona
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2891001",
+                "gid": "2891001",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.460000,
+                "lon": -3.680000,
+                "dir": "CL SERRANO 50",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["700 MHz", "800 MHz"],
+                "frecuencias": ["778.00 - 788.00", "852.00 - 862.00"],
+                "concesiones": [{"ref": "M4", "freq": "778.00 - 788.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2891002",
+                "gid": "2891002",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.460000,
+                "lon": -3.680000,
+                "dir": "CL SERRANO 50",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["3500 MHz"],
+                "frecuencias": ["3460.00 - 3600.00"],
+                "concesiones": [{"ref": "M5", "freq": "3460.00 - 3600.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            # Pareja Orange donde AMBAS tienen N78 -> SÍ se fusiona (la excepción aplica solo a Telefónica)
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - MADR9001A",
+                "gid": "MADR9001A",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.470000,
+                "lon": -3.670000,
+                "dir": "CL VELAZQUEZ 10",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["3500 MHz"],
+                "frecuencias": ["3600.00 - 3700.00"],
+                "concesiones": [{"ref": "OR1", "freq": "3600.00 - 3700.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+            {
+                "id": "ORANGE ESPAGNE, S.A.U. - MADR9001B",
+                "gid": "MADR9001B",
+                "op": "orange",
+                "opRaw": "ORANGE ESPAGNE, S.A.U.",
+                "lat": 40.470000,
+                "lon": -3.670000,
+                "dir": "CL VELAZQUEZ 10",
+                "mun": "MADRID",
+                "prov": "MADRID",
+                "bandas": ["3500 MHz"],
+                "frecuencias": ["3600.00 - 3700.00"],
+                "concesiones": [{"ref": "OR2", "freq": "3600.00 - 3700.00"}],
+                "bandsScannedAt": "2026-11-25T12:00:00Z",
+            },
+        ]
+
+        ds = fa.build_dataset(
+            records,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 0.1,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 0.0,
+            },
+            updated_at="2026-11-25T12:15:00Z",
+        )
+        # 9 iniciales - 2 fusiones (1 pareja Movistar complementaria + 1 pareja Orange N78) = 7
+        self.assertEqual(ds["total"], 7)
+        self.assertEqual(ds["crawlStats"]["exactCoordFusedDuplicates"], 2)
+        self.assertEqual(ds["operators"]["movistar"]["count"], 6)
+        self.assertEqual(ds["operators"]["orange"]["count"], 1)
+        self.assertFalse(fa._needs_exact_coord_fusion(ds["antenas"]))
+
+        by_gid = {a["gid"]: a for a in ds["antenas"]}
+        self.assertIn("2811896", by_gid)
+        self.assertIn("2811897", by_gid)
+        self.assertNotIn("mergedGids", by_gid["2811896"])
+        self.assertNotIn("mergedGids", by_gid["2811897"])
+        self.assertIn("2890001", by_gid)
+        self.assertIn("2890002", by_gid)
+        self.assertIn("2890003", by_gid)
+        self.assertEqual(by_gid["2891001"]["mergedGids"], ["2891001", "2891002"])
+        self.assertEqual(by_gid["MADR9001A"]["mergedGids"], ["MADR9001A", "MADR9001B"])
+
+        # Escaneo posterior de censo sin bandas contra prior ya separado:
+        # mantiene separadas las 2 Telefónica N78 gracias a `prior_index`
+        prior_idx = fa.build_prior_antenna_index(ds)
+        raw_census_only = [
+            {
+                k: v
+                for k, v in r.items()
+                if k not in ("bandas", "frecuencias", "concesiones", "bandsScannedAt")
+            }
+            for r in records
+        ]
+        ds_recrawl = fa.build_dataset(
+            raw_census_only,
+            crawl_stats={
+                "requestsCount": 1,
+                "durationSeconds": 0.1,
+                "gridBoxesVisited": 1,
+                "subdividedBoxes": 0,
+                "zoomParam": 7,
+                "delaySeconds": 0.0,
+            },
+            updated_at="2026-11-26T00:00:00Z",
+            prior_index=prior_idx,
+        )
+        self.assertEqual(ds_recrawl["total"], 7)
+        self.assertEqual(ds_recrawl["crawlStats"]["exactCoordFusedDuplicates"], 2)
+        recrawl_gids = {a["gid"] for a in ds_recrawl["antenas"]}
+        self.assertIn("2811896", recrawl_gids)
+        self.assertIn("2811897", recrawl_gids)
+
+        # BandEnricher divide automáticamente una Telefónica fusionada si descubre que ambos GIDs tienen N78,
+        # sin emitir bajas falsas de frecuencia y restaurando metadatos originales
+        fused_mov_ds = {
+            "updatedAt": "2026-11-25T12:00:00Z",
+            "total": 1,
+            "crawlStats": {"exactCoordFusedDuplicates": 1, "bandsPopulatedCount": 1},
+            "operators": {},
+            "provinces": [],
+            "antenas": [
+                {
+                    "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2891001",
+                    "gid": "2891001",
+                    "op": "movistar",
+                    "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                    "lat": 40.460000,
+                    "lon": -3.680000,
+                    "dir": "CL SERRANO 50",
+                    "mun": "MADRID",
+                    "prov": "MADRID",
+                    "mergedGids": ["2891001", "2891002"],
+                    "bandas": ["700 MHz", "3500 MHz"],
+                    "frecuencias": ["778.00 - 788.00", "3460.00 - 3600.00"],
+                    "concesiones": [
+                        {"ref": "M4", "freq": "778.00 - 788.00"},
+                        {"ref": "M5", "freq": "3460.00 - 3600.00"},
+                    ],
+                    "bandsScannedAt": "2026-11-25T10:00:00Z",
+                }
+            ],
+        }
+        raw_lookup = {
+            ("movistar", "2891001"): {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2891001",
+                "gid": "2891001",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.460000,
+                "lon": -3.680000,
+                "dir": "CL SERRANO 50",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+            ("movistar", "2891002"): {
+                "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2891002",
+                "gid": "2891002",
+                "op": "movistar",
+                "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                "lat": 40.460000,
+                "lon": -3.680000,
+                "dir": "CL SERRANO 52 (SMALL CELL)",
+                "mun": "MADRID",
+                "prov": "MADRID",
+            },
+        }
+        split_html = {
+            "2891001": """<html><body><h2>CARACTERISTICAS TECNICAS</h2><table>
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M4</td><td>778.00 - 788.00</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M6</td><td>3460.00 - 3600.00</td></tr>
+            </table></body></html>""",
+            "2891002": """<html><body><h2>CARACTERISTICAS TECNICAS</h2><table>
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M5</td><td>3460.00 - 3600.00</td></tr>
+            </table></body></html>""",
+        }
+        split_enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=1,
+            rescan_since="2026-11-25T11:00:00Z",
+            raw_records_by_op_gid=raw_lookup,
+            record_novedades=True,
+            fetch_fn=lambda g: split_html[g],
+            sleep_fn=lambda _: None,
+        )
+        split_enricher.enrich_dataset(fused_mov_ds)
+        self.assertEqual(fused_mov_ds["total"], 2)
+        self.assertEqual(fused_mov_ds["crawlStats"]["exactCoordFusedDuplicates"], 0)
+        self.assertEqual(fused_mov_ds["operators"]["movistar"]["count"], 2)
+        self.assertEqual(split_enricher.discovered_eliminaciones, [])
+        self.assertEqual(len(split_enricher.discovered_novedades), 1)
+        self.assertEqual(split_enricher.discovered_novedades[0]["codigoBanda"], "M6")
+        split_by_gid = {a["gid"]: a for a in fused_mov_ds["antenas"]}
+        self.assertEqual(split_by_gid["2891001"]["bandas"], ["700 MHz", "3500 MHz"])
+        self.assertEqual(split_by_gid["2891002"]["bandas"], ["3500 MHz"])
+        self.assertEqual(split_by_gid["2891002"]["dir"], "CL SERRANO 52 (SMALL CELL)")
+        self.assertNotIn("mergedGids", split_by_gid["2891001"])
+        self.assertNotIn("mergedGids", split_by_gid["2891002"])
+
+        # Si en un re-escaneo posterior una de las dos pierde N78, vuelven a fusionarse automáticamente
+        refuse_html = {
+            "2891001": """<html><body><h2>CARACTERISTICAS TECNICAS</h2><table>
+                <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                <tr><td>TELEFONICA MOVILES ESPAÑA, S.A.U.</td><td>M4</td><td>778.00 - 788.00</td></tr>
+            </table></body></html>""",
+            "2891002": split_html["2891002"],
+        }
+        refuse_enricher = fa.BandEnricher(
+            delay_seconds=0.0,
+            workers=1,
+            rescan_since="2099-01-01T00:00:00Z",
+            record_novedades=False,
+            fetch_fn=lambda g: refuse_html[g],
+            sleep_fn=lambda _: None,
+        )
+        refuse_enricher.enrich_dataset(fused_mov_ds)
+        self.assertEqual(fused_mov_ds["total"], 1)
+        self.assertEqual(fused_mov_ds["crawlStats"]["exactCoordFusedDuplicates"], 1)
+        self.assertEqual(fused_mov_ds["antenas"][0]["mergedGids"], ["2891001", "2891002"])
+
+        # Desfusión frente a un prior previamente fusionado: preserve_bands_in_records no contamina
+        # y _diff_record_removed_frequencies no genera bajas falsas
+        fused_prior_idx = fa.build_prior_antenna_index(
+            {
+                "updatedAt": "2026-11-24T00:00:00Z",
+                "antenas": [
+                    {
+                        "id": "TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811896",
+                        "gid": "2811896",
+                        "op": "movistar",
+                        "opRaw": "TELEFONICA MOVILES ESPAÑA, S.A.U.",
+                        "lat": 40.419803,
+                        "lon": -3.706108,
+                        "dir": "PZ Callao, 00001",
+                        "mun": "MADRID",
+                        "prov": "MADRID",
+                        "mergedGids": ["2811896", "2811897"],
+                        "bandas": ["2600 MHz", "3500 MHz"],
+                        "frecuencias": ["2620.00 - 2640.00", "3460.00 - 3600.00"],
+                        "concesiones": [
+                            {"ref": "M M -2503308", "freq": "2620.00 - 2640.00"},
+                            {"ref": "M M -2503307", "freq": "3460.00 - 3600.00"},
+                            {"ref": "M M -2600525", "freq": "2620.00 - 2640.00"},
+                            {"ref": "M M -2600524", "freq": "3460.00 - 3600.00"},
+                        ],
+                        "bandsScannedAt": "2026-11-24T00:00:00Z",
+                    }
+                ],
+            }
+        )
+        split_blank = [
+            {k: v for k, v in records[0].items() if k not in ("bandas", "frecuencias", "concesiones", "bandsScannedAt")},
+            {k: v for k, v in records[1].items() if k not in ("bandas", "frecuencias", "concesiones", "bandsScannedAt")},
+        ]
+        self.assertEqual(fa.preserve_bands_in_records(split_blank, fused_prior_idx), 0)
+        elims_piece_a = fa._diff_record_removed_frequencies(
+            split_blank[0],
+            [
+                {"referencia": "M M -2503308", "frecuencia": "2620.00 - 2640.00", "frecuenciaDeclarada": "2620.00 - 2640.00"},
+                {"referencia": "M M -2503307", "frecuencia": "3460.00 - 3600.00", "frecuenciaDeclarada": "3460.00 - 3600.00"},
+            ],
+            fetched_iso="2026-11-25T12:00:00Z",
+            prior_index=fused_prior_idx,
+            current_op_gids={("movistar", "2811896"), ("movistar", "2811897")},
+        )
+        self.assertEqual(elims_piece_a, [])
+
+        # Verificación directa sobre public/data/antenas.json real en disco
+        real_path = Path(__file__).resolve().parent.parent / "public" / "data" / "antenas.json"
+        if real_path.exists():
+            real_ds = json.loads(real_path.read_text(encoding="utf-8"))
+            self.assertFalse(fa._needs_exact_coord_fusion(real_ds["antenas"]))
+            real_mov_by_gid = {
+                a["gid"]: a for a in real_ds["antenas"] if a["op"] == "movistar"
+            }
+            for g1, g2 in [
+                ("0600001", "600001"),
+                ("0800220", "800220"),
+                ("3900821", "3900906"),
+                ("0701562", "0701969"),
+                ("2804649", "2811597"),
+                ("2806035", "2812180"),
+                ("2806353", "2811923"),
+                ("2811896", "2811897"),
+                ("2800039", "2812329"),
+                ("2903405", "2903406"),
+            ]:
+                self.assertIn(g1, real_mov_by_gid)
+                self.assertIn(g2, real_mov_by_gid)
+                self.assertNotIn("mergedGids", real_mov_by_gid[g1])
+                self.assertNotIn("mergedGids", real_mov_by_gid[g2])
+                self.assertTrue(fa._record_has_n78_band(real_mov_by_gid[g1]))
+                self.assertTrue(fa._record_has_n78_band(real_mov_by_gid[g2]))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

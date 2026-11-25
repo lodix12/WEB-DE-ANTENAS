@@ -36,12 +36,14 @@ import {
   OSM_RETINA_TILE_URL,
   OSM_STANDARD_ATTRIBUTION,
   OSM_STANDARD_TILE_URL,
+  antennaHasN78Band,
   buildGoogleHybridStyleSpec,
   buildGoogleStandardStyleSpec,
   buildOsmRetinaStyleSpec,
   buildOsmStandardStyleSpec,
   computeHighQualityMapPixelRatio,
   resolveMapStyleInput,
+  shouldSkipExactCoordSameOperatorFusion,
   type AntennaRecord,
   type AntenasDataset,
   type LiveScanDeltaChunk,
@@ -8722,6 +8724,223 @@ describe('Fusión de declaraciones de la misma operadora en la misma coordenada 
     expect(staticDataset.crawlStats.exactCoordFusedDuplicates).toBeGreaterThan(
       0,
     );
+  });
+
+  it('NO fusiona dos antenas de Telefónica en la misma coordenada exacta si ambas tienen banda N78 (3500 MHz), pero sí fusiona Orange/DIGI o Telefónica con N78 en una sola', async () => {
+    expect(antennaHasN78Band({ bandas: ['3500 MHz'] })).toBe(true);
+    expect(antennaHasN78Band({ bandas: ['N78'] })).toBe(true);
+    expect(antennaHasN78Band({ bandas: ['3.5 GHz'] })).toBe(true);
+    expect(antennaHasN78Band({ frecuencias: ['3460.00 - 3600.00'] })).toBe(true);
+    expect(
+      antennaHasN78Band({
+        concesiones: [{ ref: 'M M -1', freq: '3500.00 - 3600.00' }],
+      }),
+    ).toBe(true);
+    expect(antennaHasN78Band({ bandas: ['700 MHz', '2600 MHz', '26 GHz'] })).toBe(
+      false,
+    );
+    expect(antennaHasN78Band({})).toBe(false);
+
+    const movN78A: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811896',
+      gid: '2811896',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'PZ Callao, 00001',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['2600 MHz', '3500 MHz'],
+      frecuencias: ['2620.00 - 2640.00', '3460.00 - 3600.00'],
+      concesiones: [
+        { ref: 'M M -2503308', freq: '2620.00 - 2640.00' },
+        { ref: 'M M -2503307', freq: '3460.00 - 3600.00' },
+      ],
+      bandsScannedAt: '2026-11-25T12:00:00Z',
+    };
+    const movN78B: AntennaRecord = {
+      id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2811897',
+      gid: '2811897',
+      op: 'movistar',
+      opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+      lat: 40.419803,
+      lon: -3.706108,
+      dir: 'CL Preciados, 00032',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['2600 MHz', '3500 MHz'],
+      frecuencias: ['2620.00 - 2640.00', '3460.00 - 3600.00'],
+      concesiones: [
+        { ref: 'M M -2600525', freq: '2620.00 - 2640.00' },
+        { ref: 'M M -2600524', freq: '3460.00 - 3600.00' },
+      ],
+      bandsScannedAt: '2026-11-25T12:00:00Z',
+    };
+    const oraN78A: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - MADR1001A',
+      gid: 'MADR1001A',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: 40.425,
+      lon: -3.705,
+      dir: 'CL GRAN VIA 1',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['3500 MHz'],
+      frecuencias: ['3600.00 - 3700.00'],
+      concesiones: [{ ref: 'OR-1', freq: '3600.00 - 3700.00' }],
+      bandsScannedAt: '2026-11-25T12:00:00Z',
+    };
+    const oraN78B: AntennaRecord = {
+      id: 'ORANGE ESPAGNE, S.A.U. - MADR1001B',
+      gid: 'MADR1001B',
+      op: 'orange',
+      opRaw: 'ORANGE ESPAGNE, S.A.U.',
+      lat: 40.425,
+      lon: -3.705,
+      dir: 'CL GRAN VIA 1',
+      mun: 'MADRID',
+      prov: 'MADRID',
+      bandas: ['3500 MHz'],
+      frecuencias: ['3600.00 - 3700.00'],
+      concesiones: [{ ref: 'OR-2', freq: '3600.00 - 3700.00' }],
+      bandsScannedAt: '2026-11-25T12:00:00Z',
+    };
+
+    expect(shouldSkipExactCoordSameOperatorFusion([movN78A, movN78B])).toBe(true);
+    expect(shouldSkipExactCoordSameOperatorFusion([oraN78A, oraN78B])).toBe(false);
+
+    // Dataset que solo tiene la pareja Telefónica N78: devuelve exactamente la misma referencia sin fusionar
+    const movOnlyDataset: AntenasDataset = {
+      updatedAt: '2026-11-25T12:14:20Z',
+      sourceUrl: 'https://geoportal.minetur.gob.es/VCTEL/vcne.do',
+      total: 2,
+      crawlStats: {
+        requestsCount: 1,
+        durationSeconds: 0.1,
+        gridBoxesVisited: 1,
+        subdividedBoxes: 0,
+        zoomParam: 7,
+        delaySeconds: 0,
+        exactCoordFusedDuplicates: 0,
+        bandsPopulatedCount: 2,
+      },
+      operators: {
+        movistar: { key: 'movistar', name: OPERATOR_META.movistar.name, count: 2, legalEntities: ['TELEFONICA MOVILES ESPAÑA, S.A.U.'] },
+        orange: { key: 'orange', name: OPERATOR_META.orange.name, count: 0, legalEntities: [] },
+        vodafone: { key: 'vodafone', name: OPERATOR_META.vodafone.name, count: 0, legalEntities: [] },
+        digi: { key: 'digi', name: OPERATOR_META.digi.name, count: 0, legalEntities: [] },
+        otros: { key: 'otros', name: OPERATOR_META.otros.name, count: 0, legalEntities: [] },
+      },
+      provinces: [{ provincia: 'MADRID', count: 2, byOperator: { movistar: 2 } }],
+      antenas: [movN78A, movN78B],
+    };
+    expect(fuseSameOperatorExactCoordsInDataset(movOnlyDataset)).toBe(
+      movOnlyDataset,
+    );
+
+    // Dataset mixto: Telefónica N78 permanece separada (2), Orange N78 sí se fusiona (2 -> 1)
+    const mixedDataset: AntenasDataset = {
+      ...movOnlyDataset,
+      total: 4,
+      antenas: [movN78A, movN78B, oraN78A, oraN78B],
+    };
+    const fusedMixed = fuseSameOperatorExactCoordsInDataset(mixedDataset);
+    expect(fusedMixed.total).toBe(3);
+    expect(fusedMixed.crawlStats.exactCoordFusedDuplicates).toBe(1);
+    expect(fusedMixed.operators.movistar.count).toBe(2);
+    expect(fusedMixed.operators.orange.count).toBe(1);
+    expect(fusedMixed.antenas.filter((a) => a.op === 'movistar')).toHaveLength(2);
+    expect(
+      fusedMixed.antenas.find((a) => a.op === 'orange')?.mergedGids,
+    ).toEqual(['MADR1001A', 'MADR1001B']);
+
+    // Flujo en vivo: si una Telefónica fusionada se desfusiona en un delta (`mergedGids: []` + hermana en `newAntennas`), ambas quedan separadas
+    const liveBaseDataset: AntenasDataset = {
+      ...movOnlyDataset,
+      total: 1,
+      antenas: [
+        {
+          ...movN78A,
+          mergedGids: ['2811896', '2811897'],
+          bandsScannedAt: '2026-11-25T10:00:00Z',
+        },
+      ],
+    };
+    const liveSplitMerged = mergeLiveDeltaIntoAntenasDataset(liveBaseDataset, {
+      scanId: 'scan-split-test',
+      deltaSeq: 1,
+      recordNovedades: false,
+      previousScanAt: '2026-11-25T10:00:00Z',
+      updatedAt: '2026-11-25T12:30:00Z',
+      completedDatasetUpdatedAt: '',
+      newAntennas: [{ ...movN78B, bandsScannedAt: '2026-11-25T12:30:00Z' }],
+      bandPatchesById: new Map([
+        [
+          movN78A.id,
+          {
+            id: movN78A.id,
+            gid: movN78A.gid,
+            mergedGids: [],
+            bandas: movN78A.bandas!,
+            frecuencias: movN78A.frecuencias!,
+            concesiones: movN78A.concesiones!,
+            bandsScannedAt: '2026-11-25T12:30:00Z',
+          },
+        ],
+      ]),
+      bandPatchesByGid: new Map(),
+      novedades: [],
+      removedAntennaIds: new Set(),
+      eliminaciones: [],
+    });
+    expect(liveSplitMerged.total).toBe(2);
+    expect(liveSplitMerged.antenas.map((a) => a.gid).sort()).toEqual([
+      '2811896',
+      '2811897',
+    ]);
+    expect(
+      liveSplitMerged.antenas.every((a) => a.mergedGids === undefined),
+    ).toBe(true);
+
+    // Verificación directa sobre public/data/antenas.json real: las 10 parejas Telefónica N78 existen separadas
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const staticDataset = JSON.parse(
+      readFileSync(
+        new URL('../../public/data/antenas.json', import.meta.url),
+        'utf-8',
+      ),
+    ) as AntenasDataset;
+    const movByGid = new Map(
+      staticDataset.antenas
+        .filter((a) => a.op === 'movistar')
+        .map((a) => [a.gid, a]),
+    );
+    for (const [g1, g2] of [
+      ['0600001', '600001'],
+      ['0800220', '800220'],
+      ['3900821', '3900906'],
+      ['0701562', '0701969'],
+      ['2804649', '2811597'],
+      ['2806035', '2812180'],
+      ['2806353', '2811923'],
+      ['2811896', '2811897'],
+      ['2800039', '2812329'],
+      ['2903405', '2903406'],
+    ]) {
+      const a1 = movByGid.get(g1);
+      const a2 = movByGid.get(g2);
+      expect(a1).toBeDefined();
+      expect(a2).toBeDefined();
+      expect(a1?.mergedGids).toBeUndefined();
+      expect(a2?.mergedGids).toBeUndefined();
+      expect(antennaHasN78Band(a1!)).toBe(true);
+      expect(antennaHasN78Band(a2!)).toBe(true);
+    }
   });
 });
 

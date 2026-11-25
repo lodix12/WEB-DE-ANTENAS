@@ -2019,6 +2019,7 @@ class InfoantenasCrawler:
             self.records_by_id,
             crawl_stats=crawl_stats,
             updated_at=_utc_now_iso(self._now_utc),
+            prior_index=self._prior_index,
         )
 
     def _fetch_bbox_strict_calm(self, bbox: BBox) -> list[dict[str, Any]]:
@@ -2813,30 +2814,186 @@ def _exact_coord_canonical_sort_key(
     )
 
 
-def _needs_exact_coord_fusion(raw_list: list[dict[str, Any]]) -> bool:
-    """Comprueba en O(N) si existen dos o más declaraciones de la misma operadora en la misma coordenada exacta."""
+_N78_FREQ_NUM_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?", re.ASCII)
+_N78_GHZ_UNIT_RE = re.compile(r"ghz", re.IGNORECASE)
+_N78_DIRECT_CODE_RE = re.compile(r"^n78(?:\s*\+)?$", re.IGNORECASE)
+
+
+def _text_has_n78_band(raw: Any) -> bool:
+    """Indica si una etiqueta de banda o rango de frecuencia corresponde a banda N78 (3500 MHz / 3,3–3,9 GHz)."""
+    if not isinstance(raw, str):
+        return False
+    trimmed = raw.strip()
+    if not trimmed:
+        return False
+    if _N78_DIRECT_CODE_RE.match(trimmed):
+        return True
+    m1 = _N78_FREQ_NUM_TOKEN_RE.search(trimmed)
+    if m1 is None:
+        return False
+    m2 = _N78_FREQ_NUM_TOKEN_RE.search(trimmed, m1.end())
+    try:
+        a = float(m1.group(0).replace(",", "."))
+        b = float(m2.group(0).replace(",", ".")) if m2 is not None else a
+    except ValueError:
+        return False
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return False
+    lo, hi = (a, b) if a <= b else (b, a)
+    if _N78_GHZ_UNIT_RE.search(trimmed) and hi < 1000.0:
+        lo *= 1000.0
+        hi *= 1000.0
+    return 3300.0 <= lo and hi <= 3900.0
+
+
+def _entries_have_n78(entries: list[dict[str, Any]]) -> bool:
+    """Indica si las concesiones extraídas de `detalleEstacion.do` para un GID incluyen banda N78 (3500 MHz)."""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        banda = entry.get("banda")
+        if isinstance(banda, str) and _text_has_n78_band(banda):
+            return True
+        min_mhz = _parse_float(entry.get("minMhz"))
+        max_mhz = _parse_float(entry.get("maxMhz"))
+        if min_mhz is not None and max_mhz is not None:
+            lo, hi = (min_mhz, max_mhz) if min_mhz <= max_mhz else (max_mhz, min_mhz)
+            if 3300.0 <= lo and hi <= 3900.0:
+                return True
+        freq_str = entry.get("frecuencia") or entry.get("frecuenciaDeclarada")
+        if isinstance(freq_str, str) and _text_has_n78_band(freq_str):
+            return True
+    return False
+
+
+def _record_own_rf_has_n78(rec: dict[str, Any]) -> bool:
+    """Comprueba únicamente los campos RF propios (`bandas`, `frecuencias`, `concesiones`) de un registro."""
+    bandas = rec.get("bandas")
+    if isinstance(bandas, list):
+        for item in bandas:
+            if _text_has_n78_band(item):
+                return True
+    frecuencias = rec.get("frecuencias")
+    if isinstance(frecuencias, list):
+        for item in frecuencias:
+            if _text_has_n78_band(item):
+                return True
+    concesiones = rec.get("concesiones")
+    if isinstance(concesiones, list):
+        for item in concesiones:
+            if isinstance(item, dict) and _text_has_n78_band(item.get("freq")):
+                return True
+    return False
+
+
+def _record_has_n78_band(
+    rec: dict[str, Any],
+    prior_index: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Indica si una estación tiene banda N78 (3500 MHz).
+    Si el registro aún no tiene campos RF poblados (ej. fase de censo) y se proporciona
+    `prior_index`, consulta únicamente una coincidencia exacta 1-a-1 (no fusionada con
+    otros GIDs) en `prior_index` para preservar la separación de parejas Telefónica N78.
+    """
+    has_own_rf = (
+        isinstance(rec.get("bandas"), list)
+        or isinstance(rec.get("frecuencias"), list)
+        or isinstance(rec.get("concesiones"), list)
+    )
+    if has_own_rf:
+        return _record_own_rf_has_n78(rec)
+    if prior_index is None:
+        return False
+
+    rec_gids = set(get_record_gids(rec))
+    if not rec_gids:
+        return False
+    rec_op = _normalize_operator_key(rec.get("op"), rec.get("opRaw"))
+    by_id: dict[str, dict[str, Any]] = prior_index.get("by_id") or {}
+    rec_id = str(rec.get("id") or "").strip()
+    cand = by_id.get(rec_id) if rec_id else None
+    if cand is not None:
+        if set(get_record_gids(cand)) == rec_gids:
+            return _record_own_rf_has_n78(cand)
+        return False
+    if rec_op:
+        all_by_op_gid: dict[tuple[str, str], list[dict[str, Any]]] = (
+            prior_index.get("all_by_op_gid") or {}
+        )
+        by_op_gid: dict[tuple[str, str], dict[str, Any]] = (
+            prior_index.get("by_op_gid") or {}
+        )
+        for g in rec_gids:
+            cands = all_by_op_gid.get((rec_op, g))
+            if not cands:
+                single = by_op_gid.get((rec_op, g))
+                cands = [single] if single is not None else []
+            for old_rec in cands:
+                if set(get_record_gids(old_rec)) == rec_gids:
+                    return _record_own_rf_has_n78(old_rec)
+    return False
+
+
+def _should_skip_exact_coord_fusion_group(
+    op_key: str,
+    group: list[dict[str, Any]],
+    prior_index: dict[str, Any] | None = None,
+) -> bool:
+    """
+    Regla de excepción de Telefónica (Movistar): si 2 o más antenas de Telefónica
+    en la misma coordenada exacta disponen cada una de banda N78 (3500 MHz), NO se fusionan.
+    """
+    if op_key != "movistar" or len(group) < 2:
+        return False
+    n78_count = 0
+    for rec in group:
+        if _record_has_n78_band(rec, prior_index=prior_index):
+            n78_count += 1
+            if n78_count >= 2:
+                return True
+    return False
+
+
+def _needs_exact_coord_fusion(
+    raw_list: list[dict[str, Any]],
+    prior_index: dict[str, Any] | None = None,
+) -> bool:
+    """Comprueba en O(N) si existen declaraciones fusionables de la misma operadora en la misma coordenada exacta."""
     if len(raw_list) <= 1:
         return False
-    seen: set[tuple[str, str, float, float]] = set()
+    groups: dict[tuple[str, str, float, float], list[dict[str, Any]]] = {}
     for rec in raw_list:
         if not isinstance(rec, dict):
             continue
         key = _same_operator_exact_coord_key(rec)
         if key is None:
             continue
-        if key in seen:
+        bucket = groups.get(key)
+        if bucket is None:
+            groups[key] = [rec]
+        else:
+            bucket.append(rec)
+    for key, bucket in groups.items():
+        if len(bucket) >= 2 and not _should_skip_exact_coord_fusion_group(
+            key[0], bucket, prior_index=prior_index
+        ):
             return True
-        seen.add(key)
     return False
 
 
 def fuse_same_operator_exact_coords(
     records: list[dict[str, Any]],
+    prior_index: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Fusiona declaraciones duplicadas de cualquier misma operadora (incluyendo Orange,
     Telefónica/Movistar, Vodafone, DIGI y operadores regionales con idéntica razón social)
     declaradas en la MISMA coordenada exacta `(lat, lon)`.
+
+    Excepción Telefónica: si 2 o más antenas de Telefónica en la misma coordenada exacta
+    tienen banda N78 (3500 MHz) cada una, NO se fusionan y se mantienen como estaciones
+    separadas.
 
     Las antenas de Telefónica, Orange nativo, DIGI u otros con coordenadas distintas
     (aunque disten pocos metros) jamás se fusionan en este pase.
@@ -2880,6 +3037,7 @@ def fuse_same_operator_exact_coords(
         return [_copy_normalized(r) for r in records], 0
 
     merged_by_key: dict[tuple[str, str, float, float], dict[str, Any]] = {}
+    skipped_keys: set[tuple[str, str, float, float]] = set()
     fused_duplicates = 0
 
     for key, member_indices in groups_by_key.items():
@@ -2887,8 +3045,14 @@ def fuse_same_operator_exact_coords(
             merged_by_key[key] = _copy_normalized(records[member_indices[0]])
             continue
 
-        fused_duplicates += len(member_indices) - 1
         comp_members = [records[i] for i in member_indices]
+        if _should_skip_exact_coord_fusion_group(
+            key[0], comp_members, prior_index=prior_index
+        ):
+            skipped_keys.add(key)
+            continue
+
+        fused_duplicates += len(member_indices) - 1
         sorted_members = sorted(comp_members, key=_exact_coord_canonical_sort_key)
         merged_rec = _copy_normalized(sorted_members[0])
         merged_rec["op"] = key[0]
@@ -2994,7 +3158,7 @@ def fuse_same_operator_exact_coords(
     output_records: list[dict[str, Any]] = []
     for idx, rec in enumerate(records):
         key = key_by_idx.get(idx)
-        if key is None:
+        if key is None or key in skipped_keys:
             output_records.append(_copy_normalized(rec))
             continue
         if key not in emitted_keys:
@@ -4059,6 +4223,14 @@ def preserve_bands_in_records(
                 if old_gid:
                     by_op_gid[(old_op, old_gid)] = old_rec
 
+    current_gids_by_op: dict[str, set[str]] = {}
+    for rec in records:
+        rec_op = str(rec.get("op") or "").strip()
+        if rec_op:
+            op_set = current_gids_by_op.setdefault(rec_op, set())
+            for g in get_record_gids(rec):
+                op_set.add(g)
+
     restored = 0
     for rec in records:
         if isinstance(rec.get("bandas"), list):
@@ -4088,6 +4260,16 @@ def preserve_bands_in_records(
         new_gids = set(get_record_gids(rec))
         old_gids = set(get_record_gids(cand))
         if new_gids and not new_gids.issubset(old_gids):
+            continue
+        # Si un emplazamiento previamente fusionado (`old_gids > new_gids`) se ha separado
+        # en estaciones independientes presentes en `records`, omitir la copia de bandas
+        # combinadas para forzar un escaneo limpio por GID y evitar bajas falsas.
+        if (
+            new_gids
+            and len(new_gids) < len(old_gids)
+            and rec_op
+            and bool((old_gids - new_gids) & current_gids_by_op.get(rec_op, set()))
+        ):
             continue
 
         rec["bandas"] = normalize_band_labels(cand["bandas"])
@@ -4456,6 +4638,7 @@ def _diff_record_removed_frequencies(
     fetched_iso: str,
     new_antenna_ids: set[str] | None = None,
     prior_index: dict[str, Any] | None = None,
+    current_op_gids: set[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Detecta concesiones/frecuencias que existían previamente en `rec` (o en `prior_index`)
@@ -4486,8 +4669,9 @@ def _diff_record_removed_frequencies(
             prior_index.get("all_by_op_gid") or {}
         )
         rec_op = str(rec.get("op") or "").strip()
+        new_gids = set(get_record_gids(rec))
         if rec_op:
-            for g in get_record_gids(rec):
+            for g in new_gids:
                 for cand in all_by_op_gid.get((rec_op, g), ()):
                     if id(cand) not in seen_prior_objs:
                         seen_prior_objs.add(id(cand))
@@ -4498,6 +4682,12 @@ def _diff_record_removed_frequencies(
         any_conc = False
         any_freq = False
         for old_rec in matched_priors:
+            if current_op_gids is not None and rec_op and new_gids:
+                old_gids = set(get_record_gids(old_rec))
+                if len(old_gids) > len(new_gids) and any(
+                    (rec_op, og) in current_op_gids for og in (old_gids - new_gids)
+                ):
+                    continue
             if isinstance(old_rec.get("concesiones"), list):
                 any_conc = True
                 conc_acc.extend(
@@ -5704,6 +5894,7 @@ class BandEnricher:
         rescan_since: str | None = None,
         new_antenna_ids: set[str] | None = None,
         prior_index: dict[str, Any] | None = None,
+        raw_records_by_op_gid: dict[tuple[str, str], dict[str, Any]] | None = None,
         record_novedades: bool = True,
         novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
         eliminaciones_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
@@ -5739,6 +5930,7 @@ class BandEnricher:
         )
         self.new_antenna_ids: set[str] = set(new_antenna_ids or ())
         self.prior_index = prior_index
+        self._raw_records_by_op_gid = raw_records_by_op_gid
         self.record_novedades = bool(record_novedades)
         self._novedades_checkpoint_fn = novedades_checkpoint_fn
         self._eliminaciones_checkpoint_fn = eliminaciones_checkpoint_fn
@@ -5763,6 +5955,9 @@ class BandEnricher:
         self.saved_final_checkpoint: bool = False
         self.discovered_novedades: list[dict[str, Any]] = []
         self._seen_novedad_ids: set[str] = set()
+        self._current_op_gids: set[tuple[str, str]] | None = None
+        self._pending_movistar_n78_splits: dict[int, list[dict[str, Any]]] = {}
+        self._pending_split_live_siblings: list[dict[str, Any]] = []
         self.discovered_eliminaciones: list[dict[str, Any]] = []
         self._seen_eliminacion_ids: set[str] = set()
         self._last_request_ts: float | None = None
@@ -6342,14 +6537,15 @@ class BandEnricher:
 
             completed_pending_indices.add(rec_idx)
             matched_entries: list[dict[str, Any]] = []
+            entries_by_gid: dict[str, list[dict[str, Any]]] = {}
             for rg in rec_gids:
-                matched_entries.extend(
-                    _extract_record_concessions_for_gid(
-                        rec,
-                        gid_entries_cache[rg],
-                        all_records_per_gid.get(rg, [rec]),
-                    )
+                rg_entries = _extract_record_concessions_for_gid(
+                    rec,
+                    gid_entries_cache[rg],
+                    all_records_per_gid.get(rg, [rec]),
                 )
+                entries_by_gid[rg] = rg_entries
+                matched_entries.extend(rg_entries)
             if remaining_by_gid is not None:
                 for rg in rec_gids:
                     rem = remaining_by_gid.get(rg, 0) - 1
@@ -6411,12 +6607,97 @@ class BandEnricher:
                     fetched_iso=fetched_iso,
                     new_antenna_ids=self.new_antenna_ids,
                     prior_index=self.prior_index,
+                    current_op_gids=self._current_op_gids,
                 )
                 for elim in new_freq_elims:
                     elim_id = elim["id"]
                     if elim_id not in self._seen_eliminacion_ids:
                         self._seen_eliminacion_ids.add(elim_id)
                         self.discovered_eliminaciones.append(elim)
+
+            should_split_movistar_n78 = (
+                str(rec.get("op") or "").strip() == "movistar"
+                and len(rec_gids) >= 2
+                and sum(
+                    1
+                    for rg in rec_gids
+                    if _entries_have_n78(entries_by_gid.get(rg, []))
+                )
+                >= 2
+            )
+
+            if should_split_movistar_n78:
+                primary_gid = str(rec.get("gid") or "").strip()
+                ordered_gids = (
+                    [primary_gid] + [rg for rg in rec_gids if rg != primary_gid]
+                    if primary_gid in rec_gids
+                    else list(rec_gids)
+                )
+                split_records: list[dict[str, Any]] = []
+                for rg in ordered_gids:
+                    raw_meta = (
+                        self._raw_records_by_op_gid.get(("movistar", rg))
+                        if self._raw_records_by_op_gid is not None
+                        else None
+                    )
+                    if raw_meta is not None:
+                        member_rec = dict(raw_meta)
+                        member_rec.pop("mergedGids", None)
+                    else:
+                        member_rec = dict(rec)
+                        member_rec.pop("mergedGids", None)
+                        member_rec["gid"] = rg
+                        if rg != primary_gid:
+                            op_raw_label = str(
+                                rec.get("opRaw")
+                                or "TELEFONICA MOVILES ESPAÑA, S.A.U."
+                            ).strip()
+                            member_rec["id"] = f"{op_raw_label} - {rg}"
+                    rg_entries = entries_by_gid.get(rg, [])
+                    rg_ranges = [
+                        (float(e["minMhz"]), float(e["maxMhz"]))
+                        for e in rg_entries
+                    ]
+                    rg_bandas, rg_freqs = summarize_frequency_ranges(rg_ranges)
+                    rg_concs = summarize_concessions(rg_entries)
+                    member_rec["bandas"] = rg_bandas
+                    member_rec["frecuencias"] = rg_freqs
+                    member_rec["concesiones"] = rg_concs
+                    member_rec["bandsScannedAt"] = fetched_iso
+                    split_records.append(member_rec)
+
+                self._pending_movistar_n78_splits[rec_idx] = split_records
+                primary_split = split_records[0]
+                bandas_sorted = primary_split["bandas"]
+                freqs_sorted = primary_split["frecuencias"]
+                concs_sorted = primary_split["concesiones"]
+                rec.pop("mergedGids", None)
+                if not was_bandas_list:
+                    populated_delta += 1
+                rec["bandas"] = bandas_sorted
+                rec["frecuencias"] = freqs_sorted
+                rec["concesiones"] = concs_sorted
+                rec["bandsScannedAt"] = fetched_iso
+                newly_delta += 1
+
+                if self._live_stream is not None:
+                    batch_patches.append(
+                        {
+                            "id": rec["id"],
+                            "gid": rec["gid"],
+                            "mergedGids": [],
+                            "bandas": bandas_sorted,
+                            "frecuencias": freqs_sorted,
+                            "concesiones": concs_sorted,
+                            "bandsScannedAt": fetched_iso,
+                        }
+                    )
+                    self._pending_split_live_siblings.extend(split_records[1:])
+                    if new_freq_novs:
+                        batch_freq_novs.extend(new_freq_novs)
+                    if new_freq_elims and batch_freq_elims is not None:
+                        batch_freq_elims.extend(new_freq_elims)
+                continue
 
             combined_ranges = [
                 (float(e["minMhz"]), float(e["maxMhz"]))
@@ -6467,6 +6748,14 @@ class BandEnricher:
         antenas: list[dict[str, Any]] = dataset.get("antenas") or []
         crawl_stats = dataset.setdefault("crawlStats", {})
         self.saved_final_checkpoint = False
+        self._pending_movistar_n78_splits = {}
+        self._pending_split_live_siblings = []
+        self._current_op_gids = {
+            (str(r.get("op") or "").strip(), g)
+            for r in antenas
+            if isinstance(r, dict) and str(r.get("op") or "").strip()
+            for g in get_record_gids(r)
+        }
 
         all_records_per_gid: dict[str, list[dict[str, Any]]] = {}
         gids_by_idx: dict[int, list[str]] = {}
@@ -7087,11 +7376,57 @@ class BandEnricher:
         finally:
             self._http_client.close_all()
 
+        topology_changed = False
+        if self._pending_movistar_n78_splits:
+            split_added = 0
+            rebuilt_antenas: list[dict[str, Any]] = []
+            for idx, rec in enumerate(antenas):
+                split_group = self._pending_movistar_n78_splits.get(idx)
+                if split_group:
+                    rebuilt_antenas.extend(split_group)
+                    split_added += len(split_group) - 1
+                else:
+                    rebuilt_antenas.append(rec)
+            dataset["antenas"] = rebuilt_antenas
+            antenas = rebuilt_antenas
+            if split_added > 0:
+                prev_exact_fused = int(crawl_stats.get("exactCoordFusedDuplicates") or 0)
+                if prev_exact_fused > 0 or "exactCoordFusedDuplicates" in crawl_stats:
+                    crawl_stats["exactCoordFusedDuplicates"] = max(
+                        0, prev_exact_fused - split_added
+                    )
+                newly_populated += split_added
+                topology_changed = True
+            if self._live_stream is not None and self._pending_split_live_siblings:
+                self._live_stream.record_provisional_new_antennas(
+                    self._pending_split_live_siblings, []
+                )
+            self._pending_movistar_n78_splits = {}
+            self._pending_split_live_siblings = []
+
+        if _needs_exact_coord_fusion(antenas):
+            refused_antenas, newly_refused = fuse_same_operator_exact_coords(antenas)
+            if newly_refused > 0:
+                dataset["antenas"] = refused_antenas
+                antenas = refused_antenas
+                prev_exact_fused = int(crawl_stats.get("exactCoordFusedDuplicates") or 0)
+                crawl_stats["exactCoordFusedDuplicates"] = (
+                    prev_exact_fused + newly_refused
+                )
+                topology_changed = True
+
+        if topology_changed:
+            populated_count = _recompute_dataset_aggregates(dataset)
+            antenas = dataset["antenas"]
+            total_antenas = len(antenas)
+
         if self._live_stream is not None:
             self._live_stream.record_band_updates([], [], force_flush=True)
 
         self.last_total_antennas = total_antenas
-        self.last_scanned_antennas = already_scanned_in_cycle + newly_populated
+        self.last_scanned_antennas = min(
+            total_antenas, already_scanned_in_cycle + newly_populated
+        )
         with self._stats_lock:
             final_reqs = self.requests_count
         self.last_requests_per_second = round(
@@ -7099,7 +7434,7 @@ class BandEnricher:
         )
         crawl_stats["bandsPopulatedCount"] = populated_count
         crawl_stats["bandRequestsCount"] = final_reqs
-        if final_reqs > 0 or zero_gid_populated > 0:
+        if final_reqs > 0 or zero_gid_populated > 0 or topology_changed:
             self._save_dataset_checkpoint(
                 dataset, populated_count=populated_count, force_novedades=True
             )
@@ -7110,7 +7445,7 @@ class BandEnricher:
             self._progress_callback(
                 {
                     "phase": "frecuencias",
-                    "scannedAntennas": already_scanned_in_cycle + newly_populated,
+                    "scannedAntennas": self.last_scanned_antennas,
                     "totalAntennas": total_antenas,
                     "requestsPerSecond": self.last_requests_per_second,
                 }
@@ -7144,6 +7479,7 @@ def enrich_dataset_bands(
     rescan_since: str | None = None,
     new_antenna_ids: set[str] | None = None,
     prior_index: dict[str, Any] | None = None,
+    raw_records_by_op_gid: dict[tuple[str, str], dict[str, Any]] | None = None,
     record_novedades: bool = True,
     novedades_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
     eliminaciones_checkpoint_fn: Callable[[list[dict[str, Any]]], None] | None = None,
@@ -7167,6 +7503,7 @@ def enrich_dataset_bands(
         rescan_since=rescan_since,
         new_antenna_ids=new_antenna_ids,
         prior_index=prior_index,
+        raw_records_by_op_gid=raw_records_by_op_gid,
         record_novedades=record_novedades,
         novedades_checkpoint_fn=novedades_checkpoint_fn,
         eliminaciones_checkpoint_fn=eliminaciones_checkpoint_fn,
@@ -7180,25 +7517,101 @@ def enrich_dataset_bands(
     return enricher.enrich_dataset(dataset)
 
 
+def _recompute_dataset_aggregates(dataset: dict[str, Any]) -> int:
+    """
+    Reordena `dataset["antenas"]` por `(prov, mun, id)` y recalcula `total`,
+    `operators`, `provinces` y `bandsPopulatedCount` de forma determinista.
+    Devuelve el nuevo `bandsPopulatedCount`.
+    """
+    sorted_antenas = sorted(
+        dataset.get("antenas") or [],
+        key=lambda r: (
+            str(r.get("prov") or ""),
+            str(r.get("mun") or ""),
+            str(r.get("id") or ""),
+        ),
+    )
+    dataset["antenas"] = sorted_antenas
+    dataset["total"] = len(sorted_antenas)
+
+    op_counts: dict[str, int] = {k: 0 for k in OPERATOR_ORDER}
+    op_entities: dict[str, set[str]] = {k: set() for k in OPERATOR_ORDER}
+    prov_counts: dict[str, int] = {}
+    prov_by_op: dict[str, dict[str, int]] = {}
+
+    for rec in sorted_antenas:
+        op_key = str(rec.get("op") or "")
+        if op_key not in op_counts:
+            op_key = "otros"
+        op_counts[op_key] += 1
+        if rec.get("opRaw"):
+            op_entities[op_key].add(rec["opRaw"])
+
+        prov = str(rec.get("prov") or "")
+        prov_counts[prov] = prov_counts.get(prov, 0) + 1
+        by_op = prov_by_op.setdefault(prov, {})
+        by_op[op_key] = by_op.get(op_key, 0) + 1
+
+    operators_summary: dict[str, dict[str, Any]] = {}
+    for key in OPERATOR_ORDER:
+        operators_summary[key] = {
+            "key": key,
+            "name": OPERATOR_NAMES[key],
+            "count": op_counts[key],
+            "legalEntities": sorted(op_entities[key]),
+        }
+
+    provinces_summary: list[dict[str, Any]] = []
+    for prov, total_prov in sorted(
+        prov_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        raw_by_op = prov_by_op[prov]
+        ordered_by_op = {
+            k: raw_by_op[k] for k in OPERATOR_ORDER if raw_by_op.get(k, 0) > 0
+        }
+        provinces_summary.append(
+            {
+                "provincia": prov,
+                "count": total_prov,
+                "byOperator": ordered_by_op,
+            }
+        )
+
+    dataset["operators"] = operators_summary
+    dataset["provinces"] = provinces_summary
+    populated_count = count_bands_populated(sorted_antenas)
+    crawl_stats = dataset.setdefault("crawlStats", {})
+    crawl_stats["bandsPopulatedCount"] = populated_count
+    return populated_count
+
+
 def build_dataset(
     records_by_id: dict[str, dict[str, Any]] | list[dict[str, Any]],
     crawl_stats: dict[str, Any],
     updated_at: str | None = None,
     max_distance_m: float = DEFAULT_VODAFONE_FUSION_M,
     preserve_from: dict[str, Any] | list[dict[str, Any]] | Path | str | None = None,
+    prior_index: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Construye el objeto `AntenasDataset` tipado según `src/types/antena.ts`,
     fusionando previamente declaraciones duplicadas de Vodafone a `< max_distance_m`
     (por defecto `< 35 m`), integrando Xfera en Orange y fusionando declaraciones
     duplicadas de cualquier misma operadora en la misma coordenada exacta (incluyendo
-    Orange y Telefónica), preservando opcionalmente `bandas`/`frecuencias`/`concesiones`
-    previas y ordenando las antenas determinísticamente por `(prov, mun, id)`.
+    Orange y Telefónica, salvo cuando dos antenas de Telefónica tienen banda N78 cada una),
+    preservando opcionalmente `bandas`/`frecuencias`/`concesiones` previas y ordenando
+    las antenas determinísticamente por `(prov, mun, id)`.
     """
     raw_records = (
         list(records_by_id.values())
         if isinstance(records_by_id, dict)
         else list(records_by_id)
+    )
+    effective_prior_index = (
+        prior_index
+        if prior_index is not None
+        else (build_prior_antenna_index(preserve_from) if preserve_from is not None else None)
     )
     fused_records, fused_count = fuse_vodafone_duplicates(
         raw_records, max_distance_m=max_distance_m
@@ -7207,11 +7620,15 @@ def build_dataset(
         fused_records, max_distance_m=DEFAULT_XFERA_ORANGE_FUSION_M
     )
     fused_records, exact_coord_fused_count = fuse_same_operator_exact_coords(
-        fused_records
+        fused_records,
+        prior_index=effective_prior_index,
     )
 
     if preserve_from is not None:
-        preserve_bands_in_records(fused_records, preserve_from)
+        preserve_bands_in_records(
+            fused_records,
+            effective_prior_index if effective_prior_index is not None else preserve_from,
+        )
 
     prior_fused = int(crawl_stats.get("vodafoneFusedDuplicates") or 0)
     crawl_stats_out = dict(crawl_stats)
@@ -8198,6 +8615,7 @@ def main(argv: list[str] | None = None) -> int:
                     merged_records,
                     crawl_stats=crawl_stats_copy,
                     updated_at=dataset["updatedAt"],
+                    prior_index=prior_index,
                 )
                 detected_ant_eliminaciones, removed_antenna_ids = diff_removed_antennas(
                     dataset["antenas"],
@@ -8297,6 +8715,16 @@ def main(argv: list[str] | None = None) -> int:
     all_new_ant_ids = new_antenna_ids | seeded_new_ant_ids
 
     if args.fetch_bands:
+        raw_records_by_op_gid: dict[tuple[str, str], dict[str, Any]] = {}
+        crawler_raw = getattr(crawler, "records_by_id", None)
+        if isinstance(crawler_raw, dict):
+            for raw_rec in crawler_raw.values():
+                if not isinstance(raw_rec, dict):
+                    continue
+                r_op = _normalize_operator_key(raw_rec.get("op"), raw_rec.get("opRaw"))
+                r_gid = str(raw_rec.get("gid") or "").strip()
+                if r_op and r_gid:
+                    raw_records_by_op_gid.setdefault((r_op, r_gid), raw_rec)
         enricher = BandEnricher(
             delay_seconds=delay,
             max_band_seconds=args.max_band_seconds,
@@ -8308,6 +8736,7 @@ def main(argv: list[str] | None = None) -> int:
             rescan_since=args.rescan_since,
             new_antenna_ids=all_new_ant_ids,
             prior_index=prior_index,
+            raw_records_by_op_gid=raw_records_by_op_gid or None,
             record_novedades=not args.skip_novedades,
             novedades_checkpoint_fn=nov_writer,
             eliminaciones_checkpoint_fn=elim_writer,
