@@ -8956,8 +8956,8 @@ describe('Mapa — Selector de 3 niveles de clustering en Capas cartográficas (
   });
 });
 
-describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Híbrido (HD 4×)', () => {
-  it('registra Google Estándar ("google-standard") y Google Satélite ("google-hybrid") con constantes oficiales 4× y isDark adaptado al fondo', () => {
+describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Híbrido (HD 8×)', () => {
+  it('registra Google Estándar ("google-standard") y Google Satélite ("google-hybrid") con constantes oficiales 8× y isDark adaptado al fondo', () => {
     const standard = OPENFREEMAP_STYLES.find(
       (style) => style.id === 'google-standard',
     );
@@ -8972,22 +8972,23 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
 
     expect(standard?.label).toBe('Google Estándar');
     expect(standard?.description).toBe(
-      'Callejero estándar de Google Maps HD (teselas 4×)',
+      'Callejero estándar de Google Maps HD (teselas 8×)',
     );
     expect(standard?.isDark).toBe(false);
     expect(standard?.url).toBe(GOOGLE_MAPS_STANDARD_TILE_URL);
 
     expect(hybrid?.label).toBe('Google Satélite');
     expect(hybrid?.description).toBe(
-      'Vista aérea satélite híbrida de Google Maps HD (teselas 4×)',
+      'Vista aérea satélite híbrida de Google Maps HD (teselas 8×)',
     );
     expect(hybrid?.isDark).toBe(true);
     expect(hybrid?.url).toBe(GOOGLE_MAPS_HYBRID_TILE_URL);
 
     expect(GOOGLE_MAPS_TILE_SCALE).toBe(4);
     expect(GOOGLE_MAPS_NATIVE_TILE_PX).toBe(1024);
-    expect(GOOGLE_MAPS_TILE_SIZE).toBe(256);
-    expect(GOOGLE_MAPS_NATIVE_TILE_PX / GOOGLE_MAPS_TILE_SIZE).toBe(4);
+    expect(GOOGLE_MAPS_TILE_SIZE).toBe(128);
+    expect(GOOGLE_MAPS_NATIVE_TILE_PX / GOOGLE_MAPS_TILE_SIZE).toBe(8);
+    expect(Math.log2(512 / GOOGLE_MAPS_TILE_SIZE)).toBe(2);
     expect(GOOGLE_MAPS_MAX_NATIVE_ZOOM).toBe(21);
     expect(GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM).toBe(20);
     expect(GOOGLE_MAPS_STANDARD_TILE_URLS).toHaveLength(4);
@@ -9010,14 +9011,14 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
     expect(GOOGLE_MAPS_ATTRIBUTION).toContain('https://www.google.com/maps');
   });
 
-  it('construye especificaciones MapLibre GL v8 válidas (tileSize 256 HD 4×, scale=4 1024px, maxzoom 21 Estándar / 20 Satélite, glyphs OpenFreeMap y 4 nodos mt0-mt3)', () => {
+  it('construye especificaciones MapLibre GL v8 válidas (tileSize 128 HD 8×, scale=4 1024px, z+2, maxzoom 21 Estándar / 20 Satélite, glyphs OpenFreeMap y 4 nodos mt0-mt3)', () => {
     const stdSpecA = buildGoogleStandardStyleSpec();
     const stdSpecB = buildGoogleStandardStyleSpec();
     expect(stdSpecA).toEqual(stdSpecB);
     expect(stdSpecA).not.toBe(stdSpecB);
 
     expect(stdSpecA.version).toBe(8);
-    expect(stdSpecA.name).toBe('Google Maps Estándar (HD 4×)');
+    expect(stdSpecA.name).toBe('Google Maps Estándar (HD 8×)');
     expect(stdSpecA.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
     expect(Object.keys(stdSpecA.sources)).toEqual(['google-standard-raster']);
     expect(stdSpecA.sources['google-standard-raster']).toEqual({
@@ -9055,7 +9056,7 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
     expect(hybSpecA).not.toBe(hybSpecB);
 
     expect(hybSpecA.version).toBe(8);
-    expect(hybSpecA.name).toBe('Google Maps Satélite / Híbrido (HD 4×)');
+    expect(hybSpecA.name).toBe('Google Maps Satélite / Híbrido (HD 8×)');
     expect(hybSpecA.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
     expect(Object.keys(hybSpecA.sources)).toEqual(['google-hybrid-raster']);
     expect(hybSpecA.sources['google-hybrid-raster']).toEqual({
@@ -9066,10 +9067,27 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
       maxzoom: GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM,
       attribution: GOOGLE_MAPS_ATTRIBUTION,
     });
-    // Con scale=4 (1024px), z=20 equivale exactamente a la resolución satelital máxima z=22 (256 * 2^22 = 1024 * 2^20)
+    // Con scale=4 (1024px) en tileSize=128 (densidad 8×), MapLibre solicita z + 2 y acota Satélite en z=20 (resolución nativa z=22 sin teselas negras)
     expect(GOOGLE_MAPS_NATIVE_TILE_PX * 2 ** GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM).toBe(
       256 * 2 ** 22,
     );
+    const computeRequestedZoom = (cameraZoom: number, maxzoom: number) =>
+      Math.min(
+        Math.round(cameraZoom + Math.log2(512 / GOOGLE_MAPS_TILE_SIZE)),
+        maxzoom,
+      );
+    for (let cameraZoom = 0; cameraZoom <= 18; cameraZoom += 1) {
+      expect(computeRequestedZoom(cameraZoom, GOOGLE_MAPS_MAX_NATIVE_ZOOM)).toBe(
+        cameraZoom + 2,
+      );
+      expect(
+        computeRequestedZoom(cameraZoom, GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM),
+      ).toBe(cameraZoom + 2);
+    }
+    expect(computeRequestedZoom(19, GOOGLE_MAPS_MAX_NATIVE_ZOOM)).toBe(21);
+    expect(computeRequestedZoom(22, GOOGLE_MAPS_MAX_NATIVE_ZOOM)).toBe(21);
+    expect(computeRequestedZoom(19, GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM)).toBe(20);
+    expect(computeRequestedZoom(22, GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM)).toBe(20);
     expect(hybSpecA.layers).toEqual([
       {
         id: 'google-hybrid-background',

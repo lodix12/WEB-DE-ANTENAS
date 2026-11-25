@@ -578,7 +578,7 @@ export const GOOGLE_MAPS_TILE_SCALE = 4;
 
 export const GOOGLE_MAPS_NATIVE_TILE_PX = 256 * GOOGLE_MAPS_TILE_SCALE;
 
-export const GOOGLE_MAPS_TILE_SIZE = 256;
+export const GOOGLE_MAPS_TILE_SIZE = 128;
 
 export const GOOGLE_MAPS_MAX_NATIVE_ZOOM = 21;
 
@@ -675,19 +675,21 @@ export const buildOsmStandardStyleSpec = buildOsmRetinaStyleSpec;
 
 /**
  * Construye la especificación MapLibre GL v8 del callejero estándar de Google Maps
- * (`lyrs=m&hl=es&scale=4`, teselas HiDPI nativas de `1024×1024px` proyectadas en
- * `tileSize: 256` CSS px, densidad Retina 4× exacta).
+ * en densidad ultra Retina 8× (`lyrs=m&hl=es&scale=4`, teselas HiDPI máximas de
+ * `1024×1024px` proyectadas en `tileSize: 128` CSS px).
  *
+ * - Google limita el parámetro `scale` a un máximo de `4` (`scale=8` degrada a `256×256px`),
+ *   por lo que combinar `scale=4` (`1024×1024px`) con `tileSize: 128` obtiene densidad física
+ *   exacta `1024 / 128 = 8×` y solicita `z = round(zoom + log2(512 / 128)) = round(zoom + 2)`,
+ *   adelantando +1 nivel de zoom el detalle urbano respecto a `tileSize: 256`.
  * - Balancea peticiones en los 4 nodos `mt0`–`mt3` con `maxzoom: 21` (`GOOGLE_MAPS_MAX_NATIVE_ZOOM`)
  *   y sobreescalado suave en WebGL hasta zoom 24 para evitar teselas vacías en `z=22`.
- * - Mantiene las proporciones tipográficas nativas de Google Maps y el mismo número de
- *   peticiones HTTP que `scale=2`, aprovechando mipmaps WebGL y filtrado anisotrópico.
  * - Incluye `glyphs: OPENFREEMAP_GLYPHS_URL` para las capas simbólicas de clústeres y medición.
  */
 export function buildGoogleStandardStyleSpec(): StyleSpecification {
   return {
     version: 8,
-    name: 'Google Maps Estándar (HD 4×)',
+    name: 'Google Maps Estándar (HD 8×)',
     glyphs: OPENFREEMAP_GLYPHS_URL,
     sources: {
       'google-standard-raster': {
@@ -724,19 +726,22 @@ export function buildGoogleStandardStyleSpec(): StyleSpecification {
 
 /**
  * Construye la especificación MapLibre GL v8 de la vista satélite híbrida de Google Maps
- * (`lyrs=y&hl=es&scale=4`: ortofoto aérea de ultra alta resolución con calles, vías y topónimos en español).
+ * en densidad ultra Retina 8× (`lyrs=y&hl=es&scale=4`: ortofoto aérea de máxima resolución
+ * con calles, vías y topónimos en español).
  *
- * - Usa los 4 nodos `mt0`–`mt3` con teselas `1024×1024px` en `tileSize: 256` (densidad Retina 4× exacta).
+ * - Usa los 4 nodos `mt0`–`mt3` con teselas máximas de `1024×1024px` (`scale=4`) proyectadas en
+ *   `tileSize: 128` CSS px (densidad física exacta `1024 / 128 = 8×`, `z = round(zoom + 2)`).
  * - Fija `maxzoom: 20` (`GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM`): con `scale=4`, Google compone
  *   ortofoto del nivel `z + 2`, por lo que `z = 20` alcanza ya la resolución máxima satelital
- *   nativa `z = 22` (`1024 × 2²⁰ = 256 × 2²²`) y evita las teselas negras que devuelve el servidor
- *   al solicitar `z = 21` con `scale=4` (nivel interno `z = 23` inexistente), sobreescalando en WebGL hasta zoom 24.
+ *   nativa `z = 22` (`1024 × 2²⁰ = 256 × 2²²`, tope a partir de zoom de cámara `18`) y evita las
+ *   teselas negras que devuelve el servidor al solicitar `z = 21` con `scale=4`, sobreescalando
+ *   suavemente en WebGL hasta zoom 24.
  * - Incluye `glyphs: OPENFREEMAP_GLYPHS_URL` para las capas simbólicas de clústeres y medición.
  */
 export function buildGoogleHybridStyleSpec(): StyleSpecification {
   return {
     version: 8,
-    name: 'Google Maps Satélite / Híbrido (HD 4×)',
+    name: 'Google Maps Satélite / Híbrido (HD 8×)',
     glyphs: OPENFREEMAP_GLYPHS_URL,
     sources: {
       'google-hybrid-raster': {
@@ -820,14 +825,14 @@ export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   {
     id: 'google-standard',
     label: 'Google Estándar',
-    description: 'Callejero estándar de Google Maps HD (teselas 4×)',
+    description: 'Callejero estándar de Google Maps HD (teselas 8×)',
     url: GOOGLE_MAPS_STANDARD_TILE_URL,
     isDark: false,
   },
   {
     id: 'google-hybrid',
     label: 'Google Satélite',
-    description: 'Vista aérea satélite híbrida de Google Maps HD (teselas 4×)',
+    description: 'Vista aérea satélite híbrida de Google Maps HD (teselas 8×)',
     url: GOOGLE_MAPS_HYBRID_TILE_URL,
     isDark: true,
   },
