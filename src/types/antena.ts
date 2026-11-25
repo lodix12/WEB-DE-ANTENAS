@@ -574,28 +574,34 @@ export const OSM_RETINA_TILE_SIZE = 64;
 
 export const OSM_RETINA_MAX_NATIVE_ZOOM = 19;
 
+export const GOOGLE_MAPS_TILE_SCALE = 4;
+
+export const GOOGLE_MAPS_NATIVE_TILE_PX = 256 * GOOGLE_MAPS_TILE_SCALE;
+
 export const GOOGLE_MAPS_TILE_SIZE = 256;
 
 export const GOOGLE_MAPS_MAX_NATIVE_ZOOM = 21;
 
+export const GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM = 20;
+
 export const GOOGLE_MAPS_STANDARD_TILE_URL =
-  'https://mt0.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2';
+  'https://mt0.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=4';
 
 export const GOOGLE_MAPS_STANDARD_TILE_URLS: readonly string[] = [
-  'https://mt0.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt1.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt2.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt3.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2',
+  'https://mt0.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt1.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt2.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt3.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=4',
 ];
 
 export const GOOGLE_MAPS_HYBRID_TILE_URL =
-  'https://mt0.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2';
+  'https://mt0.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=4';
 
 export const GOOGLE_MAPS_HYBRID_TILE_URLS: readonly string[] = [
-  'https://mt0.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt1.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt2.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2',
-  'https://mt3.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2',
+  'https://mt0.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt1.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt2.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=4',
+  'https://mt3.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=4',
 ];
 
 export const GOOGLE_MAPS_ATTRIBUTION =
@@ -669,16 +675,19 @@ export const buildOsmStandardStyleSpec = buildOsmRetinaStyleSpec;
 
 /**
  * Construye la especificación MapLibre GL v8 del callejero estándar de Google Maps
- * (`lyrs=m&hl=es&scale=2`, teselas HiDPI de `512×512px` proyectadas en `tileSize: 256` CSS px).
+ * (`lyrs=m&hl=es&scale=4`, teselas HiDPI nativas de `1024×1024px` proyectadas en
+ * `tileSize: 256` CSS px, densidad Retina 4× exacta).
  *
  * - Balancea peticiones en los 4 nodos `mt0`–`mt3` con `maxzoom: 21` (`GOOGLE_MAPS_MAX_NATIVE_ZOOM`)
  *   y sobreescalado suave en WebGL hasta zoom 24 para evitar teselas vacías en `z=22`.
+ * - Mantiene las proporciones tipográficas nativas de Google Maps y el mismo número de
+ *   peticiones HTTP que `scale=2`, aprovechando mipmaps WebGL y filtrado anisotrópico.
  * - Incluye `glyphs: OPENFREEMAP_GLYPHS_URL` para las capas simbólicas de clústeres y medición.
  */
 export function buildGoogleStandardStyleSpec(): StyleSpecification {
   return {
     version: 8,
-    name: 'Google Maps Estándar (HD 2×)',
+    name: 'Google Maps Estándar (HD 4×)',
     glyphs: OPENFREEMAP_GLYPHS_URL,
     sources: {
       'google-standard-raster': {
@@ -715,16 +724,19 @@ export function buildGoogleStandardStyleSpec(): StyleSpecification {
 
 /**
  * Construye la especificación MapLibre GL v8 de la vista satélite híbrida de Google Maps
- * (`lyrs=y&hl=es&scale=2`: ortofoto aérea de alta resolución con calles, vías y topónimos en español).
+ * (`lyrs=y&hl=es&scale=4`: ortofoto aérea de ultra alta resolución con calles, vías y topónimos en español).
  *
- * - Usa los 4 nodos `mt0`–`mt3` con teselas `512×512px` en `tileSize: 256` (densidad Retina 2×)
- *   y `maxzoom: 21` (`GOOGLE_MAPS_MAX_NATIVE_ZOOM`) para impedir teselas negras en `z=22`.
+ * - Usa los 4 nodos `mt0`–`mt3` con teselas `1024×1024px` en `tileSize: 256` (densidad Retina 4× exacta).
+ * - Fija `maxzoom: 20` (`GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM`): con `scale=4`, Google compone
+ *   ortofoto del nivel `z + 2`, por lo que `z = 20` alcanza ya la resolución máxima satelital
+ *   nativa `z = 22` (`1024 × 2²⁰ = 256 × 2²²`) y evita las teselas negras que devuelve el servidor
+ *   al solicitar `z = 21` con `scale=4` (nivel interno `z = 23` inexistente), sobreescalando en WebGL hasta zoom 24.
  * - Incluye `glyphs: OPENFREEMAP_GLYPHS_URL` para las capas simbólicas de clústeres y medición.
  */
 export function buildGoogleHybridStyleSpec(): StyleSpecification {
   return {
     version: 8,
-    name: 'Google Maps Satélite / Híbrido (HD 2×)',
+    name: 'Google Maps Satélite / Híbrido (HD 4×)',
     glyphs: OPENFREEMAP_GLYPHS_URL,
     sources: {
       'google-hybrid-raster': {
@@ -732,7 +744,7 @@ export function buildGoogleHybridStyleSpec(): StyleSpecification {
         tiles: [...GOOGLE_MAPS_HYBRID_TILE_URLS],
         tileSize: GOOGLE_MAPS_TILE_SIZE,
         minzoom: 0,
-        maxzoom: GOOGLE_MAPS_MAX_NATIVE_ZOOM,
+        maxzoom: GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM,
         attribution: GOOGLE_MAPS_ATTRIBUTION,
       },
     },
@@ -808,14 +820,14 @@ export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   {
     id: 'google-standard',
     label: 'Google Estándar',
-    description: 'Callejero estándar de Google Maps en alta definición',
+    description: 'Callejero estándar de Google Maps HD (teselas 4×)',
     url: GOOGLE_MAPS_STANDARD_TILE_URL,
     isDark: false,
   },
   {
     id: 'google-hybrid',
     label: 'Google Satélite',
-    description: 'Vista aérea satélite híbrida de Google Maps con etiquetas',
+    description: 'Vista aérea satélite híbrida de Google Maps HD (teselas 4×)',
     url: GOOGLE_MAPS_HYBRID_TILE_URL,
     isDark: true,
   },
