@@ -1902,21 +1902,13 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(mapaHtml).toContain('Solo declaradas UNICO 5G');
     expect(mapaHtml).toContain('1 declarada');
 
-    // 4. Casos límite de formatUnicoDistance, EstadisticasView y matchUnicoDeclaredAntennas
+    // 4. Casos límite de formatUnicoDistance y matchUnicoDeclaredAntennas
     expect(formatUnicoDistance(0.009)).toBe('9\u00A0m');
     expect(formatUnicoDistance(0.9996)).toBe('1.000\u00A0m');
     expect(formatUnicoDistance(1.0)).toBe('1.000\u00A0m');
     expect(formatUnicoDistance(1.25)).toBe('1,25\u00A0km');
     expect(formatUnicoDistance(Number.NaN)).toBe('0\u00A0m');
     expect(formatUnicoDistance(-0.5)).toBe('0\u00A0m');
-
-    const estadisticasSource = await readDiskTextFile(
-      '../views/EstadisticasView.tsx',
-    );
-    const resetUnicoMatches = estadisticasSource.match(
-      /setOnlyUnicoDeclared\(false\);/g,
-    );
-    expect(resetUnicoMatches?.length ?? 0).toBeGreaterThanOrEqual(3);
 
     const edgeUnico: UnicoAntennaRecord[] = [
       makeUnicoAntenna({

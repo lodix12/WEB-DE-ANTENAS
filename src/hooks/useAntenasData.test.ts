@@ -3969,7 +3969,7 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     ]);
   });
 
-  it('clasifica rangos 26/27 en Novedades como 26 GHz y actualiza UI en FilterPanel, StationDetailDrawer, EstadisticasView y AntenasMap', async () => {
+  it('clasifica rangos 26/27 en Novedades como 26 GHz y actualiza UI en FilterPanel, StationDetailDrawer y AntenasMap', () => {
     expect(classifyFrequencyBandMhz('25.70 - 26.70 MHz')).toBe('26 GHz');
     expect(classifyFrequencyBandMhz('26.70 - 27.10 MHz')).toBe('26 GHz');
     expect(classifyFrequencyBandMhz('25.70 - 26.70 GHz')).toBe('26 GHz');
@@ -4094,43 +4094,6 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
     expect(drawerHtml).toContain('26.70 - 27.10 GHz');
     expect(drawerHtml).toMatch(/1\.?000 MHz/);
     expect(drawerHtml).toContain('400 MHz');
-
-    // EstadisticasView muestra "Cobertura y Desglose por Bandas", "(N28 a N258)" y el rol mmWave N258
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    queryClient.setQueryData(['antenas-dataset'], datasetWithMmw);
-    const statsRoot = createRootRoute({ component: Outlet });
-    const statsRoute = createRoute({
-      getParentRoute: () => statsRoot,
-      path: '/estadisticas',
-      component: EstadisticasView,
-    });
-    const statsRouter = createRouter({
-      routeTree: statsRoot.addChildren([statsRoute]),
-      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
-    });
-    await statsRouter.load();
-
-    const statsHtml = renderToStaticMarkup(
-      createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        createElement(
-          WorkspaceProvider,
-          null,
-          createElement(RouterProvider, { router: statsRouter }),
-        ),
-      ),
-    );
-    expect(statsHtml).toContain('Cobertura y Desglose por Bandas');
-    expect(statsHtml).not.toContain(
-      'Cobertura y Desglose por Banda de Frecuencia (MHz)',
-    );
-    expect(statsHtml).toContain('(N28 a N258)');
-    expect(statsHtml).toContain(
-      '26 GHz TDD mmWave (n258 · 26 GHz) · 5G NR milimétrico · Ultra-alta capacidad',
-    );
   });
 });
 
@@ -7456,13 +7419,8 @@ describe('Unificación total de XFERA MÓVILES, S.A.U. (Yoigo y MásMóvil) dent
       path: '/novedades',
       component: NovedadesView,
     });
-    const statsR = createRoute({
-      getParentRoute: () => root,
-      path: '/estadisticas',
-      component: EstadisticasView,
-    });
     const novRouter = createRouter({
-      routeTree: root.addChildren([novR, statsR]),
+      routeTree: root.addChildren([novR]),
       history: createMemoryHistory({ initialEntries: ['/novedades'] }),
     });
     await novRouter.load();
@@ -7477,21 +7435,6 @@ describe('Unificación total de XFERA MÓVILES, S.A.U. (Yoigo y MásMóvil) dent
     expect(novHtml).not.toContain('MásMóvil');
     expect(novHtml).toContain('id="novedades-op-chip-orange"');
     expect(novHtml).toContain('>Orange</span>');
-
-    const statsRouter = createRouter({
-      routeTree: root.addChildren([novR, statsR]),
-      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
-    });
-    await statsRouter.load();
-    const statsHtml = renderToStaticMarkup(
-      createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        createElement(RouterProvider, { router: statsRouter }),
-      ),
-    );
-    expect(statsHtml).not.toContain('Yoigo / Grupo MásMóvil');
-    expect(statsHtml).toContain('Orange (MasOrange)');
 
     // Verificación directa del dataset real public/data/antenas.json
     const fsSpecifier = 'node:fs';
@@ -7969,7 +7912,7 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
     expect(byQuery('B3')).toEqual(['BAND01', 'BAND08']);
   });
 
-  it('renderiza Bandas (y no Frecuencias) con las 11 categorías en FilterPanel y EstadisticasView', async () => {
+  it('renderiza Bandas (y no Frecuencias) con las 11 categorías en FilterPanel', () => {
     const dataset = createFull11BandsFixture();
     const derived = buildDerivedAntenasStructures(dataset);
 
@@ -8014,43 +7957,6 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
     expect(filterHtml).toContain('bands-exclusive-compact');
     expect(filterHtml).toContain('>Exclusivamente<');
     expect(filterHtml).not.toContain('Por defecto:');
-
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    queryClient.setQueryData(['antenas-dataset'], dataset);
-    const statsRoot = createRootRoute({ component: Outlet });
-    const statsRoute = createRoute({
-      getParentRoute: () => statsRoot,
-      path: '/estadisticas',
-      component: EstadisticasView,
-    });
-    const statsRouter = createRouter({
-      routeTree: statsRoot.addChildren([statsRoute]),
-      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
-    });
-    await statsRouter.load();
-
-    const statsHtml = renderToStaticMarkup(
-      createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        createElement(
-          WorkspaceProvider,
-          null,
-          createElement(RouterProvider, { router: statsRouter }),
-        ),
-      ),
-    );
-
-    expect(statsHtml).toContain('Cobertura y Desglose por Bandas');
-    expect(statsHtml).toContain('(N28 a N258)');
-    for (const code of ALL_RF_BAND_CODES) {
-      expect(statsHtml).toContain(`>${code}<`);
-      expect(statsHtml).toContain(`Reparto por operador en ${code}`);
-    }
-    expect(statsHtml).toContain('2680–2690 MHz');
-    expect(statsHtml).toContain('758–788 MHz · 30 MHz');
   });
 
   it('verifica en public/data/antenas.json real la partición exacta de N28/N28+ y B7/B7+/B38 y el mini separador en carteles del mapa', async () => {
@@ -9342,6 +9248,82 @@ describe('Mapa — FilterPanel: fila compacta "Exclusivamente" + Reset permanent
     );
   });
 });
+
+describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco', () => {
+  it('renderiza únicamente una página en blanco sin el contenido anterior y mantiene el botón Secciones en RootLayout', async () => {
+    const viewHtml = renderToStaticMarkup(createElement(EstadisticasView));
+    expect(viewHtml).toBe(
+      '<main id="estadisticas-blank-page" class="estadisticas-blank-page" aria-label="Datos y Estadísticas"></main>',
+    );
+    expect(viewHtml).not.toContain('Radiografía de Infraestructura RF');
+    expect(viewHtml).not.toContain('Estadísticas de Despliegue Móvil en España');
+    expect(viewHtml).not.toContain('Distribución Nacional por Operador');
+    expect(viewHtml).not.toContain('Cobertura y Desglose por Bandas');
+    expect(viewHtml).not.toContain('Despliegue Territorial por Provincia');
+    expect(viewHtml).not.toContain('Estado del Pipeline');
+    expect(viewHtml).not.toContain('metrics-strip');
+    expect(viewHtml).not.toContain('section-block');
+    expect(viewHtml).not.toContain('spinner-ring');
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], createSampleCustomDataset());
+    queryClient.setQueryData(['novedades-dataset'], {
+      updatedAt: '2026-11-16T06:00:00Z',
+      scanId: 'scan-2026-11-16',
+      previousScanAt: '2026-11-15T06:00:00Z',
+      total: 0,
+      antenasNuevas: 0,
+      frecuenciasNuevas: 0,
+      novedades: [],
+    });
+    queryClient.setQueryData(['scan-status'], null);
+
+    const root = createRootRoute({ component: RootLayout });
+    const statsRoute = createRoute({
+      getParentRoute: () => root,
+      path: '/estadisticas',
+      component: EstadisticasView,
+    });
+    const statsRouter = createRouter({
+      routeTree: root.addChildren([statsRoute]),
+      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    });
+    await statsRouter.load();
+
+    const fullHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: statsRouter }),
+        ),
+      ),
+    );
+
+    expect(fullHtml).toContain('id="page-open-sections-btn"');
+    expect(fullHtml).toContain('id="sections-drawer"');
+    expect(fullHtml).toContain(
+      '<main id="estadisticas-blank-page" class="estadisticas-blank-page" aria-label="Datos y Estadísticas"></main>',
+    );
+
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.estadisticas-blank-page\s*\{[^}]*min-height:\s*100dvh;/s,
+    );
+  });
+});
+
 
 
 
