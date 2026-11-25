@@ -19,6 +19,13 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
+  GOOGLE_MAPS_ATTRIBUTION,
+  GOOGLE_MAPS_HYBRID_TILE_URL,
+  GOOGLE_MAPS_HYBRID_TILE_URLS,
+  GOOGLE_MAPS_MAX_NATIVE_ZOOM,
+  GOOGLE_MAPS_STANDARD_TILE_URL,
+  GOOGLE_MAPS_STANDARD_TILE_URLS,
+  GOOGLE_MAPS_TILE_SIZE,
   OPENFREEMAP_GLYPHS_URL,
   OPENFREEMAP_STYLES,
   OPERATOR_META,
@@ -29,6 +36,8 @@ import {
   OSM_RETINA_TILE_URL,
   OSM_STANDARD_ATTRIBUTION,
   OSM_STANDARD_TILE_URL,
+  buildGoogleHybridStyleSpec,
+  buildGoogleStandardStyleSpec,
   buildOsmRetinaStyleSpec,
   buildOsmStandardStyleSpec,
   computeHighQualityMapPixelRatio,
@@ -8170,12 +8179,14 @@ describe('Mapa — Capa cartográfica de teselas OpenStreetMap en modo Retina (4
     const ids = OPENFREEMAP_STYLES.map((style) => style.id);
     expect(new Set(ids).size).toBe(OPENFREEMAP_STYLES.length);
     expect(ids).toContain('osm');
+    expect(ids).toContain('google-standard');
+    expect(ids).toContain('google-hybrid');
     expect(ids).toContain('liberty');
     expect(ids).toContain('positron');
     expect(ids).toContain('bright');
     expect(ids).toContain('dark');
     expect(ids).toContain('fiord');
-    expect(OPENFREEMAP_STYLES).toHaveLength(6);
+    expect(OPENFREEMAP_STYLES).toHaveLength(8);
 
     const osmStyle = OPENFREEMAP_STYLES.find((style) => style.id === 'osm');
     expect(osmStyle).toBeDefined();
@@ -8813,5 +8824,198 @@ describe('Mapa — Selector de 3 niveles de clustering en Capas cartográficas (
     expect(mapCssSource).toContain('.map-clustering-segment.is-selected');
   });
 });
+
+describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Híbrido (HD 2×)', () => {
+  it('registra Google Estándar ("google-standard") y Google Satélite ("google-hybrid") con constantes oficiales y isDark adaptado al fondo', () => {
+    const standard = OPENFREEMAP_STYLES.find(
+      (style) => style.id === 'google-standard',
+    );
+    const hybrid = OPENFREEMAP_STYLES.find(
+      (style) => style.id === 'google-hybrid',
+    );
+
+    expect(standard).toBeDefined();
+    expect(hybrid).toBeDefined();
+    expect(OPENFREEMAP_STYLES[1]).toEqual(standard);
+    expect(OPENFREEMAP_STYLES[2]).toEqual(hybrid);
+
+    expect(standard?.label).toBe('Google Estándar');
+    expect(standard?.isDark).toBe(false);
+    expect(standard?.url).toBe(GOOGLE_MAPS_STANDARD_TILE_URL);
+
+    expect(hybrid?.label).toBe('Google Satélite');
+    expect(hybrid?.isDark).toBe(true);
+    expect(hybrid?.url).toBe(GOOGLE_MAPS_HYBRID_TILE_URL);
+
+    expect(GOOGLE_MAPS_TILE_SIZE).toBe(256);
+    expect(GOOGLE_MAPS_MAX_NATIVE_ZOOM).toBe(21);
+    expect(GOOGLE_MAPS_STANDARD_TILE_URLS).toHaveLength(4);
+    expect(GOOGLE_MAPS_HYBRID_TILE_URLS).toHaveLength(4);
+    expect(GOOGLE_MAPS_STANDARD_TILE_URLS[0]).toBe(
+      GOOGLE_MAPS_STANDARD_TILE_URL,
+    );
+    expect(GOOGLE_MAPS_HYBRID_TILE_URLS[0]).toBe(GOOGLE_MAPS_HYBRID_TILE_URL);
+
+    for (let i = 0; i < 4; i += 1) {
+      expect(GOOGLE_MAPS_STANDARD_TILE_URLS[i]).toBe(
+        `https://mt${i}.google.com/vt/lyrs=m&hl=es&x={x}&y={y}&z={z}&scale=2`,
+      );
+      expect(GOOGLE_MAPS_HYBRID_TILE_URLS[i]).toBe(
+        `https://mt${i}.google.com/vt/lyrs=y&hl=es&x={x}&y={y}&z={z}&scale=2`,
+      );
+    }
+
+    expect(GOOGLE_MAPS_ATTRIBUTION).toContain('Google Maps');
+    expect(GOOGLE_MAPS_ATTRIBUTION).toContain('https://www.google.com/maps');
+  });
+
+  it('construye especificaciones MapLibre GL v8 válidas (tileSize 256 HD 2×, maxzoom 21, glyphs OpenFreeMap y 4 nodos mt0-mt3)', () => {
+    const stdSpecA = buildGoogleStandardStyleSpec();
+    const stdSpecB = buildGoogleStandardStyleSpec();
+    expect(stdSpecA).toEqual(stdSpecB);
+    expect(stdSpecA).not.toBe(stdSpecB);
+
+    expect(stdSpecA.version).toBe(8);
+    expect(stdSpecA.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
+    expect(Object.keys(stdSpecA.sources)).toEqual(['google-standard-raster']);
+    expect(stdSpecA.sources['google-standard-raster']).toEqual({
+      type: 'raster',
+      tiles: [...GOOGLE_MAPS_STANDARD_TILE_URLS],
+      tileSize: GOOGLE_MAPS_TILE_SIZE,
+      minzoom: 0,
+      maxzoom: GOOGLE_MAPS_MAX_NATIVE_ZOOM,
+      attribution: GOOGLE_MAPS_ATTRIBUTION,
+    });
+    expect(stdSpecA.layers).toEqual([
+      {
+        id: 'google-standard-background',
+        type: 'background',
+        paint: {
+          'background-color': '#e5e3df',
+        },
+      },
+      {
+        id: 'google-standard-layer',
+        type: 'raster',
+        source: 'google-standard-raster',
+        minzoom: 0,
+        maxzoom: 24,
+        paint: {
+          resampling: 'linear',
+          'raster-fade-duration': 150,
+        },
+      },
+    ]);
+
+    const hybSpecA = buildGoogleHybridStyleSpec();
+    const hybSpecB = buildGoogleHybridStyleSpec();
+    expect(hybSpecA).toEqual(hybSpecB);
+    expect(hybSpecA).not.toBe(hybSpecB);
+
+    expect(hybSpecA.version).toBe(8);
+    expect(hybSpecA.glyphs).toBe(OPENFREEMAP_GLYPHS_URL);
+    expect(Object.keys(hybSpecA.sources)).toEqual(['google-hybrid-raster']);
+    expect(hybSpecA.sources['google-hybrid-raster']).toEqual({
+      type: 'raster',
+      tiles: [...GOOGLE_MAPS_HYBRID_TILE_URLS],
+      tileSize: GOOGLE_MAPS_TILE_SIZE,
+      minzoom: 0,
+      maxzoom: GOOGLE_MAPS_MAX_NATIVE_ZOOM,
+      attribution: GOOGLE_MAPS_ATTRIBUTION,
+    });
+    expect(hybSpecA.layers).toEqual([
+      {
+        id: 'google-hybrid-background',
+        type: 'background',
+        paint: {
+          'background-color': '#0b1120',
+        },
+      },
+      {
+        id: 'google-hybrid-layer',
+        type: 'raster',
+        source: 'google-hybrid-raster',
+        minzoom: 0,
+        maxzoom: 24,
+        paint: {
+          resampling: 'linear',
+          'raster-fade-duration': 150,
+        },
+      },
+    ]);
+  });
+
+  it('supera la validación estricta de @maplibre/maplibre-gl-style-spec (validateStyleMin) en ambos estilos de Google Maps', async () => {
+    const styleSpecModuleId = '@maplibre/maplibre-gl-style-spec';
+    const { validateStyleMin } = (await import(
+      /* @vite-ignore */ styleSpecModuleId
+    )) as {
+      validateStyleMin: (style: unknown) => Array<{ message: string }>;
+    };
+
+    expect(validateStyleMin(buildGoogleStandardStyleSpec())).toEqual([]);
+    expect(validateStyleMin(buildGoogleHybridStyleSpec())).toEqual([]);
+  });
+
+  it('resuelve ambos estilos mediante resolveMapStyleInput devolviendo instancias nuevas', () => {
+    const stdOpt = OPENFREEMAP_STYLES.find(
+      (opt) => opt.id === 'google-standard',
+    );
+    const hybOpt = OPENFREEMAP_STYLES.find((opt) => opt.id === 'google-hybrid');
+    if (!stdOpt || !hybOpt) {
+      throw new Error('Faltan las capas de Google Maps en OPENFREEMAP_STYLES');
+    }
+
+    const stdA = resolveMapStyleInput(stdOpt);
+    const stdB = resolveMapStyleInput(stdOpt);
+    expect(typeof stdA).toBe('object');
+    expect(stdA).not.toBe(stdB);
+    expect(stdA).toEqual(buildGoogleStandardStyleSpec());
+
+    const hybA = resolveMapStyleInput(hybOpt);
+    const hybB = resolveMapStyleInput(hybOpt);
+    expect(typeof hybA).toBe('object');
+    expect(hybA).not.toBe(hybB);
+    expect(hybA).toEqual(buildGoogleHybridStyleSpec());
+  });
+
+  it('renderiza "Google Estándar" y "Google Satélite" en MapOverlays (SSR) y define sus muestras cromáticas en map.css', async () => {
+    const stdHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'google-standard',
+        onStyleChange: () => {},
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(stdHtml).toContain('id="map-style-switcher-btn"');
+    expect(stdHtml).toContain('>Google Estándar<');
+
+    const hybHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'google-hybrid',
+        onStyleChange: () => {},
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(hybHtml).toContain('id="map-style-switcher-btn"');
+    expect(hybHtml).toContain('>Google Satélite<');
+
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapCssSource = readFileSync(
+      new URL('../styles/map.css', import.meta.url),
+      'utf-8',
+    );
+    expect(mapCssSource).toContain(
+      ".map-style-swatch[data-style='google-standard']",
+    );
+    expect(mapCssSource).toContain(
+      ".map-style-swatch[data-style='google-hybrid']",
+    );
+  });
+});
+
 
 

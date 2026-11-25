@@ -8,7 +8,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 
 - **Mapa Vectorial de Alto Rendimiento (MapLibre GL JS + OpenFreeMap)**:
   - Renderizado WebGL fluido de decenas de miles de emplazamientos en Península, Islas Baleares, Islas Canarias, Ceuta y Melilla con agrupación dinámica (*clustering*), codificación cromática por operador, **fusión de declaraciones duplicadas de una misma operadora en la misma coordenada exacta** (incluyendo Orange y Telefónica) y **agrupación visual multi-operador (`< 15 m`)** en un icono multicolor compartido cuando distintas redes comparten mástil o azotea (sin fusionar estaciones de Telefónica en coordenadas distintas).
-  - Seis estilos cartográficos sin claves ni límites de cuota: **OSM Retina** (teselas oficiales de OpenStreetMap en modo Retina 4× con `tileSize: 64`) junto a los estilos vectoriales de OpenFreeMap **Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**, sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
+  - Ocho estilos cartográficos sin claves ni límites de cuota: **OSM Retina** (teselas oficiales de OpenStreetMap en modo Retina 4× con `tileSize: 64`), **Google Estándar** (callejero HD 2×) y **Google Satélite** (vista aérea híbrida con calles y etiquetas HD 2×) junto a los estilos vectoriales de OpenFreeMap **Liberty**, **Positron**, **Bright**, **Dark Matter** y **Fiord**, sincronizados con el selector de **Modo Claro / Modo Oscuro**, bloqueo de vista 3D/vertical activado por defecto y *zoom out* completo (`minZoom: 0`).
 - **Medición de Distancia en Mapa**:
   - Permite seleccionar múltiples puntos sobre la cartografía mostrando los segmentos geodésicos y la distancia exacta.
 - **Ficha Técnica de Estación y Bandas RF**:
@@ -28,7 +28,7 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
 | **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades`, `#/eliminaciones`, `#/estadisticas` y `#/unico-5g` sin errores 404 en GitHub Pages |
 | **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `public/data/antenas.json`, `novedades.json`, `eliminaciones.json` y `unico-5g.json` (validación estricta anti-GeoJSON), caché en memoria e índices `O(1)` |
-| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina | 6 estilos cartográficos libres con renderizado WebGL en GPU |
+| **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina + Google Maps | 8 estilos cartográficos (vectoriales, OSM Retina y Google Estándar / Satélite Híbrido) con renderizado WebGL en GPU |
 | **Escaneo y Procesamiento** | Python 3.12 (`scripts/fetch_antenas.py` + `scripts/build_unico_5g.py`) | Recolección bajo demanda desde MINETUR y generación determinista del censo UNICO 5G Fase 1 y Fase 2 |
 | **CI/CD y Hosting** | GitHub Actions (`.github/workflows/update-and-deploy.yml`) + GitHub Pages | Escaneo forzado manual (`workflow_dispatch`) y despliegue estático en cada `push` a `main` |
 

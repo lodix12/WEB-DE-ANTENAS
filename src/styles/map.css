@@ -199,7 +199,7 @@
 }
 
 .map-style-switcher-btn .map-tool-btn-label {
-  max-width: 74px;
+  max-width: 112px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -294,6 +294,34 @@
     #f9b29c 68%,
     #aad3df 100%
   );
+}
+
+.map-style-swatch[data-style='google-standard'] {
+  background: linear-gradient(
+    135deg,
+    #f8f9fa 0%,
+    #c8e6c9 35%,
+    #fdd663 66%,
+    #aadaff 100%
+  );
+}
+
+.map-style-swatch[data-style='google-hybrid'] {
+  background:
+    linear-gradient(
+      -35deg,
+      transparent 44%,
+      rgba(255, 255, 255, 0.72) 48%,
+      rgba(255, 255, 255, 0.72) 52%,
+      transparent 56%
+    ),
+    linear-gradient(
+      135deg,
+      #163024 0%,
+      #2c4c34 42%,
+      #5c533c 72%,
+      #1b365d 100%
+    );
 }
 
 .map-style-swatch[data-style='liberty'] {
