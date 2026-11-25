@@ -3217,6 +3217,10 @@ def _norm_freq_str(value: str) -> str:
     return cleaned.upper()
 
 
+def _norm_ref_str(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().upper()
+
+
 _MMWAVE_26GHZ_LABEL_RE = re.compile(r"^(?:26|27)\s*(?:MHz|GHz)$", re.IGNORECASE)
 _BAND_SORT_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*(GHz|MHz)$", re.IGNORECASE)
 
@@ -4400,6 +4404,9 @@ def _diff_record_new_frequencies(
     - Si `rec` es una antena existente, detecta únicamente concesiones/frecuencias nuevas cuando
       YA contaba con un escaneo previo (`concesiones` o `frecuencias` no nulos), sin emitir jamás
       falsos positivos para antenas antiguas aún sin escanear ni fusiones Vodafone conocidas.
+    - Si una concesión conserva un código de banda (`ref`/`codigoBanda` no vacío) que ya existía
+      en esa antena escaneada previamente y únicamente cambia su rango de frecuencia asociado,
+      no cuenta como novedad.
     """
     rec_id = str(rec.get("id") or "").strip()
     if not rec_id or not matched_entries:
@@ -4528,18 +4535,23 @@ def _diff_record_new_frequencies(
 
     if isinstance(prior_conc, list):
         prior_pairs: set[tuple[str, str]] = set()
+        prior_refs: set[str] = set()
         prior_freq_only: set[str] = set(extra_prior_freq_norms)
         for c in prior_conc:
             if not isinstance(c, dict):
                 continue
             c_ref = " ".join(str(c.get("ref") or "").split()).strip()
+            c_ref_norm = _norm_ref_str(c_ref)
             c_freq_norm = _norm_freq_str(str(c.get("freq") or ""))
             if c_freq_norm:
-                prior_pairs.add((c_ref, c_freq_norm))
+                prior_pairs.add((c_ref_norm, c_freq_norm))
                 prior_freq_only.add(c_freq_norm)
+                if c_ref_norm:
+                    prior_refs.add(c_ref_norm)
 
         for entry in matched_entries:
             ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+            ref_norm = _norm_ref_str(ref)
             banda_raw = " ".join(
                 str(
                     entry.get("frecuenciaDeclarada")
@@ -4552,9 +4564,11 @@ def _diff_record_new_frequencies(
             )
             if not banda_raw or not freq_clean:
                 continue
-            if (ref, freq_clean) in prior_pairs:
+            if (ref_norm, freq_clean) in prior_pairs:
                 continue
-            if ref == "" and freq_clean in prior_freq_only:
+            if ref_norm and ref_norm in prior_refs:
+                continue
+            if ref_norm == "" and freq_clean in prior_freq_only:
                 continue
             if freq_clean in extra_prior_freq_norms:
                 continue
@@ -4644,6 +4658,8 @@ def _diff_record_removed_frequencies(
     Detecta concesiones/frecuencias que existían previamente en `rec` (o en `prior_index`)
     y han desaparecido en el re-escaneo verificado (`matched_entries`).
     Nunca emite bajas para antenas nuevas ni para antenas que aún no tenían un escaneo previo.
+    Si una concesión mantiene el mismo código de banda (`ref`/`codigoBanda` no vacío) y solo
+    cambia el rango de frecuencia asociado, no cuenta como eliminación.
     """
     rec_id = str(rec.get("id") or "").strip()
     if not rec_id:
@@ -4708,10 +4724,12 @@ def _diff_record_removed_frequencies(
         return []
 
     current_pairs: set[tuple[str, str]] = set()
+    current_refs: set[str] = set()
     current_freq_only: set[str] = set()
     current_blank_ref_freqs: set[str] = set()
     for entry in matched_entries:
         ref = " ".join(str(entry.get("referencia") or "").split()).strip()
+        ref_norm = _norm_ref_str(ref)
         banda_raw = " ".join(
             str(
                 entry.get("frecuenciaDeclarada")
@@ -4721,9 +4739,11 @@ def _diff_record_removed_frequencies(
         ).strip()
         freq_clean = _norm_freq_str(str(entry.get("frecuencia") or banda_raw))
         if freq_clean:
-            current_pairs.add((ref, freq_clean))
+            current_pairs.add((ref_norm, freq_clean))
             current_freq_only.add(freq_clean)
-            if ref == "":
+            if ref_norm:
+                current_refs.add(ref_norm)
+            else:
                 current_blank_ref_freqs.add(freq_clean)
 
     scan_iso: str | None = None
@@ -4753,13 +4773,16 @@ def _diff_record_removed_frequencies(
             if not isinstance(c, dict):
                 continue
             c_ref = " ".join(str(c.get("ref") or "").split()).strip()
+            c_ref_norm = _norm_ref_str(c_ref)
             c_freq_raw = " ".join(str(c.get("freq") or "").split()).strip()
             c_freq_norm = _norm_freq_str(c_freq_raw)
             if not c_freq_raw or not c_freq_norm:
                 continue
-            if (c_ref, c_freq_norm) in current_pairs:
+            if (c_ref_norm, c_freq_norm) in current_pairs:
                 continue
-            if c_ref == "" and c_freq_norm in current_freq_only:
+            if c_ref_norm and c_ref_norm in current_refs:
+                continue
+            if c_ref_norm == "" and c_freq_norm in current_freq_only:
                 continue
             if c_freq_norm in current_blank_ref_freqs:
                 continue

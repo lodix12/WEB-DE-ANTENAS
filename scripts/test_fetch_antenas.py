@@ -6798,6 +6798,357 @@ class FetchAntenasUnitTests(unittest.TestCase):
                 self.assertTrue(fa._record_has_n78_band(real_mov_by_gid[g1]))
                 self.assertTrue(fa._record_has_n78_band(real_mov_by_gid[g2]))
 
+    def test_same_band_code_frequency_range_change_does_not_emit_novedad_or_eliminacion(
+        self,
+    ) -> None:
+        # 1) Caso real exacto: M M -2301061 (3600.00 - 3710.00 -> 3600.00 - 3700.00) y
+        #    M M -1400056 (1859.90 - 1879.90 -> 1855.10 - 1879.90) en antena ya escaneada
+        rec = {
+            "id": "ORANGE ESPAGNE, S.A.U. - MADR3851Ñ",
+            "gid": "MADR3851Ñ",
+            "op": "orange",
+            "opRaw": "ORANGE ESPAGNE, S.A.U.",
+            "lat": 40.429833,
+            "lon": -3.555469,
+            "dir": "AV INDUSTRIA, 10",
+            "mun": "COSLADA",
+            "prov": "MADRID",
+            "bandas": ["900 MHz", "1800 MHz", "2100 MHz", "3500 MHz"],
+            "frecuencias": [
+                "925.10 - 935.10",
+                "1859.90 - 1879.90",
+                "2125.00 - 2140.00",
+                "3600.00 - 3710.00",
+            ],
+            "concesiones": [
+                {"ref": "M M -1300375", "freq": "925.10 - 935.10"},
+                {"ref": "M M -1400056", "freq": "1859.90 - 1879.90"},
+                {"ref": "M M -0700688", "freq": "2125.00 - 2140.00"},
+                {"ref": "M M -2301061", "freq": "3600.00 - 3710.00"},
+            ],
+            "bandsScannedAt": "2026-11-24T10:00:00Z",
+        }
+        matched_same_codes_changed_ranges = [
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -1300375",
+                "frecuenciaDeclarada": "925.10 - 935.10",
+                "frecuencia": "925.10 - 935.10",
+                "minMhz": 925.1,
+                "maxMhz": 935.1,
+                "banda": "900 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -1400056",
+                "frecuenciaDeclarada": "1855.10 - 1879.90",
+                "frecuencia": "1855.10 - 1879.90",
+                "minMhz": 1855.1,
+                "maxMhz": 1879.9,
+                "banda": "1800 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -0700688",
+                "frecuenciaDeclarada": "2125.00 - 2140.00",
+                "frecuencia": "2125.00 - 2140.00",
+                "minMhz": 2125.0,
+                "maxMhz": 2140.0,
+                "banda": "2100 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "  m   m  -2301061 ",
+                "frecuenciaDeclarada": "3600.00 - 3700.00",
+                "frecuencia": "3600.00 - 3700.00",
+                "minMhz": 3600.0,
+                "maxMhz": 3700.0,
+                "banda": "3500 MHz",
+            },
+        ]
+        self.assertEqual(
+            fa._diff_record_new_frequencies(
+                rec,
+                matched_same_codes_changed_ranges,
+                fetched_iso="2026-11-25T12:00:00Z",
+            ),
+            [],
+        )
+        self.assertEqual(
+            fa._diff_record_removed_frequencies(
+                rec,
+                matched_same_codes_changed_ranges,
+                fetched_iso="2026-11-25T12:00:00Z",
+            ),
+            [],
+        )
+
+        # 2) Cambios mixtos en la misma antena:
+        #    - M M -2301061 cambia de rango -> NO novedad ni eliminación
+        #    - M M -0700688 desaparece -> SÍ eliminación
+        #    - M M -2609999 es nuevo código -> SÍ novedad
+        matched_mixed = [
+            matched_same_codes_changed_ranges[0],
+            matched_same_codes_changed_ranges[1],
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -2301061",
+                "frecuenciaDeclarada": "3600.00 - 3700.00",
+                "frecuencia": "3600.00 - 3700.00",
+                "minMhz": 3600.0,
+                "maxMhz": 3700.0,
+                "banda": "3500 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -2609999",
+                "frecuenciaDeclarada": "758.00 - 768.00",
+                "frecuencia": "758.00 - 768.00",
+                "minMhz": 758.0,
+                "maxMhz": 768.0,
+                "banda": "700 MHz",
+            },
+        ]
+        novs_mixed = fa._diff_record_new_frequencies(
+            rec, matched_mixed, fetched_iso="2026-11-25T12:00:00Z"
+        )
+        elims_mixed = fa._diff_record_removed_frequencies(
+            rec, matched_mixed, fetched_iso="2026-11-25T12:00:00Z"
+        )
+        self.assertEqual([n["codigoBanda"] for n in novs_mixed], ["M M -2609999"])
+        self.assertEqual([e["codigoBanda"] for e in elims_mixed], ["M M -0700688"])
+
+        # 3) Sustitución por otro código de banda distinto (incluso con igual rango): SÍ emite alta y baja
+        replaced_entries = [
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -1300375",
+                "frecuenciaDeclarada": "925.10 - 935.10",
+                "frecuencia": "925.10 - 935.10",
+                "minMhz": 925.1,
+                "maxMhz": 935.1,
+                "banda": "900 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -1400056",
+                "frecuenciaDeclarada": "1859.90 - 1879.90",
+                "frecuencia": "1859.90 - 1879.90",
+                "minMhz": 1859.9,
+                "maxMhz": 1879.9,
+                "banda": "1800 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -0700688",
+                "frecuenciaDeclarada": "2125.00 - 2140.00",
+                "frecuencia": "2125.00 - 2140.00",
+                "minMhz": 2125.0,
+                "maxMhz": 2140.0,
+                "banda": "2100 MHz",
+            },
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "M M -2608888",
+                "frecuenciaDeclarada": "3600.00 - 3710.00",
+                "frecuencia": "3600.00 - 3710.00",
+                "minMhz": 3600.0,
+                "maxMhz": 3710.0,
+                "banda": "3500 MHz",
+            },
+        ]
+        self.assertEqual(
+            [
+                n["codigoBanda"]
+                for n in fa._diff_record_new_frequencies(
+                    rec, replaced_entries, fetched_iso="2026-11-25T12:00:00Z"
+                )
+            ],
+            ["M M -2608888"],
+        )
+        self.assertEqual(
+            [
+                e["codigoBanda"]
+                for e in fa._diff_record_removed_frequencies(
+                    rec, replaced_entries, fetched_iso="2026-11-25T12:00:00Z"
+                )
+            ],
+            ["M M -2301061"],
+        )
+
+        # 4) Código de banda vacío ("") nunca debe suprimir cambios reales de frecuencia
+        blank_ref_rec = {
+            **rec,
+            "concesiones": [{"ref": "", "freq": "3600.00 - 3710.00"}],
+            "frecuencias": ["3600.00 - 3710.00"],
+            "bandas": ["3500 MHz"],
+        }
+        blank_ref_entries = [
+            {
+                "operador": "ORANGE ESPAGNE, S.A.U.",
+                "op": "orange",
+                "referencia": "",
+                "frecuenciaDeclarada": "3600.00 - 3700.00",
+                "frecuencia": "3600.00 - 3700.00",
+                "minMhz": 3600.0,
+                "maxMhz": 3700.0,
+                "banda": "3500 MHz",
+            }
+        ]
+        self.assertEqual(
+            len(
+                fa._diff_record_new_frequencies(
+                    blank_ref_rec,
+                    blank_ref_entries,
+                    fetched_iso="2026-11-25T12:00:00Z",
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            len(
+                fa._diff_record_removed_frequencies(
+                    blank_ref_rec,
+                    blank_ref_entries,
+                    fetched_iso="2026-11-25T12:00:00Z",
+                )
+            ),
+            1,
+        )
+
+        # 5) Resolución mediante prior_index (antena recién fusionada sin concesiones copiadas aún)
+        prior_idx = fa.build_prior_antenna_index(
+            {"updatedAt": "2026-11-24T10:00:00Z", "antenas": [rec]}
+        )
+        merged_without_copied_bands = {
+            k: v
+            for k, v in rec.items()
+            if k not in ("bandas", "frecuencias", "concesiones", "bandsScannedAt")
+        }
+        merged_without_copied_bands["mergedGids"] = ["MADR3851Ñ", "MADR3851X"]
+        self.assertEqual(
+            fa._diff_record_new_frequencies(
+                merged_without_copied_bands,
+                matched_same_codes_changed_ranges,
+                fetched_iso="2026-11-25T12:00:00Z",
+                prior_index=prior_idx,
+            ),
+            [],
+        )
+        self.assertEqual(
+            fa._diff_record_removed_frequencies(
+                merged_without_copied_bands,
+                matched_same_codes_changed_ranges,
+                fetched_iso="2026-11-25T12:00:00Z",
+                prior_index=prior_idx,
+            ),
+            [],
+        )
+
+        # 6) Integración completa BandEnricher + LiveDeltaStreamWriter + novedades/eliminaciones:
+        #    solo cambia el rango de M M -2301061 -> 0 novedades, 0 eliminaciones, pero el dataset
+        #    y live-tail.json sí actualizan el rango a 3600.00 - 3700.00
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            ant_path = tmp / "antenas.json"
+            nov_path = tmp / "novedades.json"
+            elim_path = tmp / "eliminaciones.json"
+            live_dir = tmp / "live"
+
+            ds = fa.build_dataset(
+                [dict(rec)],
+                crawl_stats={
+                    "requestsCount": 1,
+                    "durationSeconds": 1.0,
+                    "gridBoxesVisited": 1,
+                    "subdividedBoxes": 0,
+                    "zoomParam": 7,
+                    "delaySeconds": 0.0,
+                },
+                updated_at="2026-11-24T10:00:00Z",
+            )
+            html_updated = {
+                "MADR3851Ñ": """<html><body><h2>CARACTERISTICAS TÉCNICAS</h2><table>
+                    <tr><td>Operador</td><td>Referencia</td><td>Banda Asignada (MHz)</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -1300375</td><td>925.10 - 935.10</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -1400056</td><td>1855.10 - 1879.90</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -0700688</td><td>2125.00 - 2140.00</td></tr>
+                    <tr><td>ORANGE ESPAGNE, S.A.U.</td><td>M M -2301061</td><td>3600.00 - 3700.00</td></tr>
+                </table></body></html>"""
+            }
+            nov_writer, _ = fa._prepare_novedades_writer(
+                novedades_output=nov_path,
+                novedades_mode="replace",
+                skip_novedades=False,
+                scan_id="scan-refarm-1",
+                previous_scan_at="2026-11-24T10:00:00Z",
+            )
+            elim_writer = fa._prepare_eliminaciones_writer(
+                eliminaciones_output=elim_path,
+                eliminaciones_mode="replace",
+                skip_novedades=False,
+                scan_id="scan-refarm-1",
+                previous_scan_at="2026-11-24T10:00:00Z",
+            )
+            live_stream = fa.LiveDeltaStreamWriter(
+                live_dir=live_dir,
+                scan_id="scan-refarm-1",
+                previous_scan_at="2026-11-24T10:00:00Z",
+                record_novedades=True,
+                mode="reset",
+            )
+            enricher = fa.BandEnricher(
+                delay_seconds=0.0,
+                workers=1,
+                checkpoint_path=ant_path,
+                rescan_since="2026-11-25T00:00:00Z",
+                record_novedades=True,
+                novedades_checkpoint_fn=nov_writer,
+                eliminaciones_checkpoint_fn=elim_writer,
+                live_stream=live_stream,
+                fetch_fn=lambda g: html_updated[g],
+                sleep_fn=lambda _: None,
+                now_utc_fn=lambda: datetime(2026, 11, 25, 12, 0, 0, tzinfo=timezone.utc),
+            )
+            enricher.enrich_dataset(ds)
+            live_stream.flush_final()
+
+            self.assertEqual(enricher.discovered_novedades, [])
+            self.assertEqual(enricher.discovered_eliminaciones, [])
+
+            updated_ant = ds["antenas"][0]
+            self.assertIn(
+                {"ref": "M M -2301061", "freq": "3600.00 - 3700.00"},
+                updated_ant["concesiones"],
+            )
+            self.assertIn(
+                {"ref": "M M -1400056", "freq": "1855.10 - 1879.90"},
+                updated_ant["concesiones"],
+            )
+            self.assertIn("3600.00 - 3700.00", updated_ant["frecuencias"])
+            self.assertNotIn("3600.00 - 3710.00", updated_ant["frecuencias"])
+
+            nov_doc = json.loads(nov_path.read_text(encoding="utf-8"))
+            elim_doc = json.loads(elim_path.read_text(encoding="utf-8"))
+            tail_doc = json.loads((live_dir / "live-tail.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(nov_doc["novedades"], [])
+            self.assertEqual(elim_doc["eliminaciones"], [])
+            self.assertEqual(tail_doc["novedades"], [])
+            self.assertEqual(tail_doc.get("eliminaciones", []), [])
+            self.assertEqual(len(tail_doc["bandPatches"]), 1)
+            self.assertIn("3600.00 - 3700.00", tail_doc["bandPatches"][0]["frecuencias"])
+
 
 if __name__ == "__main__":
     unittest.main()
