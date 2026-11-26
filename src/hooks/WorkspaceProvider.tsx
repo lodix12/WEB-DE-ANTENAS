@@ -6,8 +6,9 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  OPENFREEMAP_STYLES,
+  DEFAULT_MAP_STYLE_ID,
   OPERATOR_ORDER,
+  resolveInitialMapStyleId,
   type AntennaRecord,
   type OpenFreeMapStyleOption,
   type OperatorKey,
@@ -41,26 +42,18 @@ function getInitialTheme(): ThemeMode {
     : 'light';
 }
 
-function getInitialStyleId(theme: ThemeMode): OpenFreeMapStyleOption['id'] {
+function getInitialStyleId(): OpenFreeMapStyleOption['id'] {
   if (typeof window !== 'undefined') {
     const saved = window.localStorage.getItem(MAP_STYLE_STORAGE_KEY);
-    if (saved && OPENFREEMAP_STYLES.some((s) => s.id === saved)) {
-      return saved as OpenFreeMapStyleOption['id'];
-    }
+    return resolveInitialMapStyleId(saved);
   }
-  return theme === 'dark' ? 'dark' : 'liberty';
+  return DEFAULT_MAP_STYLE_ID;
 }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
-  const [styleId, setStyleIdState] = useState<OpenFreeMapStyleOption['id']>(() =>
-    getInitialStyleId(getInitialTheme()),
-  );
-  const [userPickedCustomStyle, setUserPickedCustomStyle] = useState<boolean>(
-    () =>
-      typeof window !== 'undefined' &&
-      Boolean(window.localStorage.getItem(MAP_STYLE_STORAGE_KEY)),
-  );
+  const [styleId, setStyleIdState] =
+    useState<OpenFreeMapStyleOption['id']>(getInitialStyleId);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedComunidad, setSelectedComunidadState] = useState('');
@@ -109,22 +102,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const toggleTheme = useCallback(() => {
     setTheme((prev) => {
       const next: ThemeMode = prev === 'dark' ? 'light' : 'dark';
-      if (!userPickedCustomStyle) {
-        setStyleIdState(next === 'dark' ? 'dark' : 'liberty');
-      } else {
-        setStyleIdState((currStyle) => {
-          if (next === 'dark' && currStyle === 'liberty') return 'dark';
-          if (next === 'light' && currStyle === 'dark') return 'liberty';
-          return currStyle;
-        });
-      }
+      setStyleIdState((currStyle) => {
+        if (next === 'dark' && currStyle === 'liberty') return 'dark';
+        if (next === 'light' && currStyle === 'dark') return 'liberty';
+        return currStyle;
+      });
       return next;
     });
-  }, [userPickedCustomStyle]);
+  }, []);
 
   const setStyleId = useCallback((id: OpenFreeMapStyleOption['id']) => {
     setStyleIdState(id);
-    setUserPickedCustomStyle(true);
     window.localStorage.setItem(MAP_STYLE_STORAGE_KEY, id);
   }, []);
 

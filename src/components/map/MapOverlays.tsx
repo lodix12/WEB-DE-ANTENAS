@@ -16,6 +16,7 @@ import {
 import { formatUnicoInt } from '../../hooks/useUnico5gData';
 import {
   OPENFREEMAP_STYLES,
+  getMapStyleOption,
   type OpenFreeMapStyleOption,
 } from '../../types/antena';
 import {
@@ -92,12 +93,7 @@ export function MapOverlays({
   const hasActiveMeasurement =
     Boolean(isMeasureActive) || measurePoints.length > 0;
 
-  const currentStyle = useMemo(
-    () =>
-      OPENFREEMAP_STYLES.find((option) => option.id === styleId) ??
-      OPENFREEMAP_STYLES[0],
-    [styleId],
-  );
+  const currentStyle = useMemo(() => getMapStyleOption(styleId), [styleId]);
 
   const currentClusteringOption = useMemo(
     () => getClusteringLevelConfig(clusteringLevel),

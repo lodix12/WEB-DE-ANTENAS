@@ -873,6 +873,31 @@ export const OPENFREEMAP_STYLES: OpenFreeMapStyleOption[] = [
   },
 ];
 
+export const DEFAULT_MAP_STYLE_ID: OpenFreeMapStyleOption['id'] =
+  'google-standard';
+
+export function getMapStyleOption(
+  styleId?: OpenFreeMapStyleOption['id'] | string | null,
+): OpenFreeMapStyleOption {
+  return (
+    OPENFREEMAP_STYLES.find((option) => option.id === styleId) ??
+    OPENFREEMAP_STYLES.find((option) => option.id === DEFAULT_MAP_STYLE_ID) ??
+    OPENFREEMAP_STYLES[0]
+  );
+}
+
+export function resolveInitialMapStyleId(
+  savedStyleId?: string | null,
+): OpenFreeMapStyleOption['id'] {
+  if (
+    savedStyleId &&
+    OPENFREEMAP_STYLES.some((style) => style.id === savedStyleId)
+  ) {
+    return savedStyleId as OpenFreeMapStyleOption['id'];
+  }
+  return DEFAULT_MAP_STYLE_ID;
+}
+
 export function getDetalleEstacionUrl(
   antena: Pick<AntennaRecord, 'gid'>,
 ): string {

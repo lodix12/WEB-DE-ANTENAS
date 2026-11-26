@@ -9,9 +9,9 @@ import type {
   Point,
 } from 'geojson';
 import {
-  OPENFREEMAP_STYLES,
   OPERATOR_META,
   computeHighQualityMapPixelRatio,
+  getMapStyleOption,
   resolveMapStyleInput,
   type AntennaRecord,
   type OperatorKey,
@@ -1184,9 +1184,7 @@ export function AntenasMap(props: AntenasMapProps) {
   }, [onToggleMeasureMode, effectiveMeasureModeActive, onMeasurePointsChange]);
 
   const currentStyleOption = useMemo(
-    () =>
-      OPENFREEMAP_STYLES.find((opt) => opt.id === styleId) ??
-      OPENFREEMAP_STYLES[0],
+    () => getMapStyleOption(styleId),
     [styleId],
   );
 
@@ -2017,9 +2015,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     const peninsulaPreset = SPAIN_REGION_PRESETS[0];
-    const initialStyle =
-      OPENFREEMAP_STYLES.find((opt) => opt.id === appliedStyleIdRef.current) ??
-      OPENFREEMAP_STYLES[0];
+    const initialStyle = getMapStyleOption(appliedStyleIdRef.current);
 
     // Si ya existe un objetivo de cámara al montar (ej. enlace profundo `#/?gid=GALR0453B` o salto desde tabla),
     // arrancamos directamente sobre esas coordenadas para que el centro inicial de Península nunca lo pise.

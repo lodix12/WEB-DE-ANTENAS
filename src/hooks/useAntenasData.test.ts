@@ -19,6 +19,7 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { NotFoundView, RootLayout } from '../components/ui/RootLayout';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import {
+  DEFAULT_MAP_STYLE_ID,
   GOOGLE_MAPS_ATTRIBUTION,
   GOOGLE_MAPS_HYBRID_MAX_NATIVE_ZOOM,
   GOOGLE_MAPS_HYBRID_TILE_URL,
@@ -45,6 +46,8 @@ import {
   buildOsmRetinaStyleSpec,
   buildOsmStandardStyleSpec,
   computeHighQualityMapPixelRatio,
+  getMapStyleOption,
+  resolveInitialMapStyleId,
   resolveMapStyleInput,
   shouldSkipExactCoordSameOperatorFusion,
   type AntennaRecord,
@@ -82,6 +85,7 @@ import { EstadisticasView } from '../views/EstadisticasView';
 import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
 import { WorkspaceProvider } from './WorkspaceProvider';
+import { useWorkspace } from './useWorkspace';
 import {
   ALL_RF_BAND_CODES,
   bandCodeToDomId,
@@ -9205,6 +9209,150 @@ describe('Mapa — Capas cartográficas de Google Maps Estándar y Satélite/Hí
     expect(mapCssSource).toContain(
       ".map-style-swatch[data-style='google-hybrid']",
     );
+  });
+
+  it('carga por defecto la capa Google Estándar ("google-standard") en WorkspaceProvider, MapaView, AntenasMap y MapOverlays con independencia del tema claro/oscuro', async () => {
+    expect(DEFAULT_MAP_STYLE_ID).toBe('google-standard');
+
+    // getMapStyleOption resuelve cualquier estilo válido y recae siempre en google-standard ante valores ausentes o desconocidos
+    expect(getMapStyleOption(undefined).id).toBe('google-standard');
+    expect(getMapStyleOption(null).id).toBe('google-standard');
+    expect(getMapStyleOption('').id).toBe('google-standard');
+    expect(getMapStyleOption('estilo-inexistente').id).toBe('google-standard');
+    for (const option of OPENFREEMAP_STYLES) {
+      expect(getMapStyleOption(option.id)).toEqual(option);
+    }
+
+    // resolveInitialMapStyleId devuelve google-standard sin preferencia guardada o inválida, y respeta elecciones válidas previas
+    expect(resolveInitialMapStyleId(null)).toBe('google-standard');
+    expect(resolveInitialMapStyleId(undefined)).toBe('google-standard');
+    expect(resolveInitialMapStyleId('')).toBe('google-standard');
+    expect(resolveInitialMapStyleId('desconocido')).toBe('google-standard');
+    expect(resolveInitialMapStyleId('google-hybrid')).toBe('google-hybrid');
+    expect(resolveInitialMapStyleId('osm')).toBe('osm');
+    expect(resolveInitialMapStyleId('dark')).toBe('dark');
+    expect(resolveInitialMapStyleId('liberty')).toBe('liberty');
+
+    // WorkspaceProvider (SSR sin window) expone google-standard por defecto
+    function StyleProbe() {
+      const { styleId, theme } = useWorkspace();
+      return createElement('div', {
+        'data-probe-style': styleId,
+        'data-probe-theme': theme,
+      });
+    }
+
+    const ssrProbeHtml = renderToStaticMarkup(
+      createElement(WorkspaceProvider, null, createElement(StyleProbe)),
+    );
+    expect(ssrProbeHtml).toContain('data-probe-style="google-standard"');
+    expect(ssrProbeHtml).toContain('data-probe-theme="dark"');
+
+    // Simulación con window + localStorage en modo claro, modo oscuro y con capa guardada por el usuario
+    const originalWindow = globalThis.window;
+    const createMockWindow = (
+      storageEntries: Record<string, string>,
+      prefersDark: boolean,
+    ) => {
+      const store = new Map<string, string>(Object.entries(storageEntries));
+      return {
+        localStorage: {
+          getItem: (key: string) => store.get(key) ?? null,
+          setItem: (key: string, value: string) => {
+            store.set(key, value);
+          },
+          removeItem: (key: string) => {
+            store.delete(key);
+          },
+        },
+        matchMedia: () => ({ matches: prefersDark }),
+      };
+    };
+
+    try {
+      vi.stubGlobal('window', createMockWindow({}, true));
+      const darkDefaultHtml = renderToStaticMarkup(
+        createElement(WorkspaceProvider, null, createElement(StyleProbe)),
+      );
+      expect(darkDefaultHtml).toContain('data-probe-style="google-standard"');
+      expect(darkDefaultHtml).toContain('data-probe-theme="dark"');
+
+      vi.stubGlobal('window', createMockWindow({}, false));
+      const lightDefaultHtml = renderToStaticMarkup(
+        createElement(WorkspaceProvider, null, createElement(StyleProbe)),
+      );
+      expect(lightDefaultHtml).toContain('data-probe-style="google-standard"');
+      expect(lightDefaultHtml).toContain('data-probe-theme="light"');
+
+      vi.stubGlobal(
+        'window',
+        createMockWindow({ 'radiomapa-map-style': 'google-hybrid' }, true),
+      );
+      const savedChoiceHtml = renderToStaticMarkup(
+        createElement(WorkspaceProvider, null, createElement(StyleProbe)),
+      );
+      expect(savedChoiceHtml).toContain('data-probe-style="google-hybrid"');
+    } finally {
+      if (originalWindow === undefined) {
+        vi.unstubAllGlobals();
+      } else {
+        vi.stubGlobal('window', originalWindow);
+      }
+    }
+
+    // MapaView completo montado con WorkspaceProvider carga el botón con "Google Estándar" y data-map-dark="false"
+    const sample = createSampleCustomDataset();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(['antenas-dataset'], sample);
+    queryClient.setQueryData(['scan-status'], null);
+
+    const testRoot = createRootRoute();
+    const testMap = createRoute({
+      getParentRoute: () => testRoot,
+      path: '/',
+      validateSearch: (s: Record<string, unknown>) => ({
+        gid: typeof s.gid === 'string' ? s.gid : undefined,
+        id: typeof s.id === 'string' ? s.id : undefined,
+      }),
+      component: MapaView,
+    });
+    const testRouter = createRouter({
+      routeTree: testRoot.addChildren([testMap]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    });
+    await testRouter.load();
+
+    const mapaViewHtml = renderToStaticMarkup(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          WorkspaceProvider,
+          null,
+          createElement(RouterProvider, { router: testRouter }),
+        ),
+      ),
+    );
+    expect(mapaViewHtml).toContain('data-map-dark="false"');
+    expect(mapaViewHtml).toContain('id="map-style-switcher-btn"');
+    expect(mapaViewHtml).toContain('>Google Estándar<');
+
+    // Verificación en código fuente: WorkspaceProvider no sobreescribe google-standard al cambiar tema y AntenasMap/MapOverlays usan getMapStyleOption
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const workspaceProviderSource = readFileSync(
+      new URL('./WorkspaceProvider.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(workspaceProviderSource).toContain('DEFAULT_MAP_STYLE_ID');
+    expect(workspaceProviderSource).toContain('resolveInitialMapStyleId');
+    expect(workspaceProviderSource).not.toContain('userPickedCustomStyle');
+    expect(antenasMapRawSource).toContain('getMapStyleOption(');
+    expect(mapOverlaysRawSource).toContain('getMapStyleOption(');
   });
 });
 
