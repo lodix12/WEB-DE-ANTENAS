@@ -213,20 +213,6 @@ export function FilterPanel({
       aria-label="Panel de filtros cartográficos"
     >
       <div className="sidebar-header filter-sidebar-header">
-        <div className="filter-header-kicker-row">
-          <span className="filter-header-kicker">
-            <RadioTower size={12.5} strokeWidth={2.2} aria-hidden="true" />
-            <span className="filter-header-title">Control Cartográfico</span>
-          </span>
-          {(isEmptyResult || hasActiveFilters) && (
-            <span
-              className={`filter-header-status${isEmptyResult ? ' is-empty' : ''}`}
-            >
-              {isEmptyResult ? 'Sin resultados' : 'Filtro activo'}
-            </span>
-          )}
-        </div>
-
         <div
           id="map-filter-antennas-summary"
           className={`filter-count-showcase${
@@ -241,7 +227,15 @@ export function FilterPanel({
           aria-atomic="true"
         >
           <div className="filter-count-top">
-            <span className="filter-count-prefix">Mostrando</span>
+            <span className="filter-count-prefix">
+              <RadioTower
+                size={16}
+                strokeWidth={2.15}
+                className="filter-count-prefix-icon"
+                aria-hidden="true"
+              />
+              <span>Mostrando</span>
+            </span>
             <span
               className="filter-count-share mono"
               title={
@@ -261,7 +255,9 @@ export function FilterPanel({
             <span className="filter-count-context">
               <span className="filter-count-unit">{unitLabel}</span>{' '}
               <span className="filter-count-of">de</span>{' '}
-              <span className="filter-count-total mono">{totalFormatted}</span>
+              <strong className="filter-count-total mono">
+                {totalFormatted}
+              </strong>
             </span>
           </div>
 

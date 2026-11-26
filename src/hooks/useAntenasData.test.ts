@@ -9535,8 +9535,8 @@ describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco',
   });
 });
 
-describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo protagonismo para "Mostrando X antenas de Y"', () => {
-  it('elimina la opción de exportar datos de la cabecera y destaca el contador de antenas con proporción y barra visual en todos sus estados', async () => {
+describe('Mapa — FilterPanel: cabecera rediseñada (Opción A) sin Exportar ni "Control Cartográfico" con tarjeta protagonista ampliada', () => {
+  it('elimina Exportar y "Control Cartográfico", agranda la tarjeta casi hasta los bordes y aplica número filtrado morado, totales en negrita y barra verde', async () => {
     const sample = createSampleCustomDataset();
     const derived = buildDerivedAntenasStructures(sample);
     const totalCount = derived.dataset.total;
@@ -9576,7 +9576,7 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
         }),
       );
 
-    // 1. Estado completo sin filtros: sin botón Exportar, muestra "Mostrando" + total + "antenas de total" + 100%
+    // 1. Estado completo sin filtros: sin Exportar ni "Control Cartográfico", tarjeta protagonista con totales en <strong>
     const fullHtml = renderHeaderPanel({
       derivedArg: derived,
       filteredAntenas: derived.dataset.antenas,
@@ -9587,23 +9587,26 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
     expect(fullHtml).not.toContain('Exportar');
     expect(fullHtml).not.toContain('map-sidebar-export');
     expect(fullHtml).not.toContain('export-menu-wrap');
+    expect(fullHtml).not.toContain('Control Cartográfico');
 
     expect(fullHeader).toContain('sidebar-header filter-sidebar-header');
-    expect(fullHeader).toContain('Control Cartográfico');
     expect(fullHeader).toContain('id="map-filter-antennas-summary"');
     expect(fullHeader).toContain('role="status"');
     expect(fullHeader).toContain('Mostrando');
-    expect(fullHeader).toContain(`>${totalFormatted}</strong>`);
+    expect(fullHeader).toContain(
+      `class="filter-count-current mono">${totalFormatted}</strong>`,
+    );
     expect(fullHeader).toContain('>antenas</span>');
     expect(fullHeader).toContain('>de</span>');
-    expect(fullHeader).toContain(`class="filter-count-total mono">${totalFormatted}</span>`);
+    expect(fullHeader).toContain(
+      `class="filter-count-total mono">${totalFormatted}</strong>`,
+    );
     expect(fullHeader).toContain('>100%</span>');
     expect(fullHeader).toContain('width:100%');
     expect(fullHeader).not.toContain('is-filtered');
     expect(fullHeader).not.toContain('is-empty');
-    expect(fullHeader).not.toContain('Filtro activo');
 
-    // 2. Estado filtrado con 1 antena: singular "antena", clase is-filtered, "Filtro activo" y porcentaje exacto
+    // 2. Estado filtrado con 1 antena: singular "antena", clase is-filtered y porcentaje exacto
     const singleHtml = renderHeaderPanel({
       derivedArg: derived,
       filteredAntenas: derived.dataset.antenas.slice(0, 1),
@@ -9612,13 +9615,16 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
     const singleHeader = singleHtml.split('<div class="sidebar-scroll">')[0] ?? '';
 
     expect(singleHeader).toContain('filter-count-showcase is-filtered');
-    expect(singleHeader).toContain('Filtro activo');
-    expect(singleHeader).toContain('>1</strong>');
+    expect(singleHeader).toContain('class="filter-count-current mono">1</strong>');
     expect(singleHeader).toContain('>antena</span>');
+    expect(singleHeader).toContain(
+      `class="filter-count-total mono">${totalFormatted}</strong>`,
+    );
     expect(singleHeader).not.toContain('100%');
     expect(singleHeader).not.toContain('Exportar');
+    expect(singleHeader).not.toContain('Control Cartográfico');
 
-    // 3. Estado sin resultados (0 antenas): clase is-empty, "Sin resultados", "0%", barra al 0%
+    // 3. Estado sin resultados (0 antenas): clase is-empty, "0%", barra al 0%
     const emptyHtml = renderHeaderPanel({
       derivedArg: derived,
       filteredAntenas: [],
@@ -9627,9 +9633,7 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
     const emptyHeader = emptyHtml.split('<div class="sidebar-scroll">')[0] ?? '';
 
     expect(emptyHeader).toContain('filter-count-showcase is-empty');
-    expect(emptyHeader).toContain('filter-header-status is-empty');
-    expect(emptyHeader).toContain('Sin resultados');
-    expect(emptyHeader).toContain('>0</strong>');
+    expect(emptyHeader).toContain('class="filter-count-current mono">0</strong>');
     expect(emptyHeader).toContain('>antenas</span>');
     expect(emptyHeader).toContain('>0%</span>');
     expect(emptyHeader).toContain('width:0%');
@@ -9662,9 +9666,11 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
       }).split('<div class="sidebar-scroll">')[0] ?? '';
     expect(tinySubsetHeader).toContain('&lt; 0,1%');
     expect(tinySubsetHeader).toContain('width:2%');
-    expect(tinySubsetHeader).toContain('61.370');
+    expect(tinySubsetHeader).toContain(
+      'class="filter-count-total mono">61.370</strong>',
+    );
 
-    // 6. Verificación de archivos fuente y CSS: sin ExportMenu y con estilos dedicados sin afectar .sections-drawer
+    // 6. Verificación de archivos fuente y CSS: sin ExportMenu ni Control Cartográfico, tarjeta casi a bordes, morado, negrita y barra verde
     const fsSpecifier = 'node:fs';
     const { existsSync, readFileSync } = (await import(
       /* @vite-ignore */ fsSpecifier
@@ -9682,24 +9688,31 @@ describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo prot
     );
     expect(filterPanelSource).not.toContain('ExportMenu');
     expect(filterPanelSource).not.toContain('map-sidebar-export');
+    expect(filterPanelSource).not.toContain('Control Cartográfico');
 
     const indexCssSource = readFileSync(
       new URL('../styles/index.css', import.meta.url),
       'utf-8',
     );
-    expect(indexCssSource).toContain('.sidebar-header.filter-sidebar-header');
-    expect(indexCssSource).toContain('.filter-count-showcase');
-    expect(indexCssSource).toContain('.filter-count-showcase.is-filtered');
-    expect(indexCssSource).toContain('.filter-count-showcase.is-empty');
     expect(indexCssSource).toMatch(
-      /\.filter-count-current\s*\{[^}]*font-size:\s*27px;/s,
+      /\.sidebar-header\.filter-sidebar-header\s*\{[^}]*padding:\s*6px\s+6px\s+8px;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-count-showcase\s*\{[^}]*padding:\s*14px\s+15px\s+15px;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-count-current\s*\{[^}]*font-size:\s*34px;[^}]*color:\s*#7c3aed;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\[data-theme='dark'\]\s+\.filter-count-current\s*\{[^}]*color:\s*#c084fc;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-count-total\s*\{[^}]*font-size:\s*16px;[^}]*font-weight:\s*700;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-count-meter-fill\s*\{[^}]*#16a34a[^}]*#22c55e/s,
     );
     expect(indexCssSource).not.toContain('.export-menu-wrap');
     expect(indexCssSource).toContain('.sections-drawer .sidebar-header');
   });
 });
-
-
-
-
-
