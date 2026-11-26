@@ -38,6 +38,7 @@ export const UNICO_MAX_MATCH_DISTANCE_KM = 1.2;
 export const UNICO_BIT_N28 = 1 << 0;
 export const UNICO_BIT_N28_PLUS = 1 << 1;
 export const UNICO_BIT_N78 = 1 << 9;
+export const UNICO_PREFERRED_BAND_MASK = UNICO_BIT_N28_PLUS | UNICO_BIT_N78;
 export const UNICO_DECLARED_ANY_MASK =
   UNICO_BIT_N28 | UNICO_BIT_N28_PLUS | UNICO_BIT_N78;
 
@@ -453,9 +454,11 @@ interface IndexedRealStation {
   lat: number;
   lon: number;
   declaredBits: number;
+  priorityTier: 0 | 1;
 }
 
 interface UnicoCandidateStation {
+  priorityTier: 0 | 1;
   distKm: number;
   stationIdx: number;
   antennaId: string;
@@ -463,6 +466,7 @@ interface UnicoCandidateStation {
 }
 
 interface UnicoMatchHeapNode {
+  priorityTier: 0 | 1;
   distKm: number;
   unicoIdx: number;
   candPos: number;
@@ -472,6 +476,7 @@ function isUnicoHeapNodeLess(
   a: UnicoMatchHeapNode,
   b: UnicoMatchHeapNode,
 ): boolean {
+  if (a.priorityTier !== b.priorityTier) return a.priorityTier < b.priorityTier;
   if (a.distKm !== b.distKm) return a.distKm < b.distKm;
   if (a.unicoIdx !== b.unicoIdx) return a.unicoIdx < b.unicoIdx;
   return a.candPos < b.candPos;
@@ -590,10 +595,13 @@ export function formatUnicoFasesLabel(fases: readonly UnicoFase[]): string {
  * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales:
  * - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real válida (con bandas requeridas
  *   `N28`, `N28+` o `N78`) de su misma operadora en <= 1.200 m.
- * - Las asignaciones se resuelven de más cercano a lejano (distancia mínima global creciente).
+ * - Prioridad de banda: toda antena con `N78` o `N28+` (nivel 0) tiene preferencia frente a una
+ *   antena que tenga solo `N28` (nivel 1), aunque la de `N78`/`N28+` esté más lejos dentro de <= 1.200 m.
+ * - Dentro de cada nivel de prioridad, las asignaciones se resuelven de más cercano a lejano
+ *   (distancia mínima global creciente).
  * - Si la antena real más próxima no es válida (carece de N28/N28+/N78) o ya ha sido elegida como
  *   declarada por otro proyecto del mismo operador, se permiten los saltos necesarios para buscar
- *   la siguiente antena real válida disponible más cercana dentro de <= 1.200 m.
+ *   la siguiente antena real válida disponible dentro de <= 1.200 m.
  * - Dos proyectos UNICO de operadoras distintas que coinciden en un emplazamiento real compartido
  *   se resuelven de forma independiente por operadora y ambos pueden quedar declarados.
  *
@@ -642,6 +650,8 @@ export function matchUnicoDeclaredAntennas(
     const declaredBits = rawMask & UNICO_DECLARED_ANY_MASK;
     if (declaredBits === 0) continue;
 
+    const priorityTier: 0 | 1 =
+      (declaredBits & UNICO_PREFERRED_BAND_MASK) !== 0 ? 0 : 1;
     const gx = Math.floor(ant.lat / GRID_CELL_DEG);
     const gy = Math.floor(ant.lon / GRID_CELL_DEG);
     // Empaquetado entero determinista de celda (gx, gy)
@@ -658,6 +668,7 @@ export function matchUnicoDeclaredAntennas(
       lat: ant.lat,
       lon: ant.lon,
       declaredBits,
+      priorityTier,
     });
   }
 
@@ -686,6 +697,7 @@ export function matchUnicoDeclaredAntennas(
           const distKm = haversineDistanceKm(u.lat, u.lon, cand.lat, cand.lon);
           if (distKm <= UNICO_MAX_MATCH_DISTANCE_KM) {
             cands.push({
+              priorityTier: cand.priorityTier,
               distKm,
               stationIdx: cand.stationIdx,
               antennaId: cand.antennaId,
@@ -699,11 +711,15 @@ export function matchUnicoDeclaredAntennas(
     if (cands.length > 0) {
       if (cands.length > 1) {
         cands.sort(
-          (a, b) => a.distKm - b.distKm || a.stationIdx - b.stationIdx,
+          (a, b) =>
+            a.priorityTier - b.priorityTier ||
+            a.distKm - b.distKm ||
+            a.stationIdx - b.stationIdx,
         );
       }
       candidatesByUnico[i] = cands;
       pushUnicoMatchHeap(heap, {
+        priorityTier: cands[0].priorityTier,
         distKm: cands[0].distKm,
         unicoIdx: i,
         candPos: 0,
@@ -746,8 +762,10 @@ export function matchUnicoDeclaredAntennas(
     ) {
       const nextPos = candPos + 1;
       if (nextPos < cands.length) {
+        const nextCand = cands[nextPos];
         pushUnicoMatchHeap(heap, {
-          distKm: cands[nextPos].distKm,
+          priorityTier: nextCand.priorityTier,
+          distKm: nextCand.distKm,
           unicoIdx,
           candPos: nextPos,
         });
@@ -799,9 +817,8 @@ export function matchUnicoDeclaredAntennas(
 
 /**
  * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales
- * en un radio máximo de 1.200 metros (1,2 km), buscando de más cercano a lejano y dando los
- * saltos necesarios sobre antenas no válidas (sin N28/N28+/N78) o ya ocupadas por otro proyecto
- * del mismo operador.
+ * en un radio máximo de 1.200 metros (1,2 km), priorizando antenas con N78 o N28+ antes que
+ * solo N28 (aunque estén más lejos dentro del radio) y buscando de más cercano a lejano en cada nivel.
  * Devuelve un `Uint16Array` con las bandas 5G (`N28`, `N28+`, `N78`) de la antena asignada
  * (o `0` si no hay ninguna antena válida disponible en <= 1.200 m).
  */

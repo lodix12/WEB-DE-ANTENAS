@@ -222,7 +222,8 @@ class TestBuildUnico5g(unittest.TestCase):
             # 1: Movistar station is > 1.2 km away (~1.279 km) -> 0
             {"id": "u-1", "op": "movistar", "lat": 40.2, "lon": -3.0},
             # 2: nearest same-op stations (~111 m 4G-only, ~334 m B7+N258, ~445 m sin bandas) are invalid;
-            #    jumps over all of them and picks nearest valid 5G (~556 m N28) over farther valid (~1.000 m N78)
+            #    ~556 m has solo N28, ~1.000 m has N78, ~1.145 m has N28+:
+            #    MUST prefer N78 (~1.000 m) over closer solo N28 (~556 m) and over farther N28+ (~1.145 m)
             {"id": "u-2", "op": "vodafone", "lat": 40.4, "lon": -3.0},
             # 3: crosses GRID_CELL_DEG=0.02 cell boundary (40.0199 vs 40.0201) + legacy masmovil -> orange
             {"id": "u-3", "op": "orange", "lat": 40.0199, "lon": -3.5},
@@ -273,19 +274,26 @@ class TestBuildUnico5g(unittest.TestCase):
                 "lon": -3.0,
                 "frecuencias": [],
             },
-            # Vodafone valid #1: nearest valid 5G (~556 m) with N28 -> MUST win (de más cercano a lejano)
+            # Vodafone solo N28 closer (~556 m) -> secondary tier when N78/N28+ exists <= 1.2 km
             {
                 "op": "vodafone",
                 "lat": 40.405,
                 "lon": -3.0,
                 "frecuencias": ["758.00 - 768.00"],
             },
-            # Vodafone valid #2: farther valid 5G (~1.000 m) with N78 -> must NOT win over closer valid N28
+            # Vodafone preferred #1: N78 (~1.000 m) -> MUST win over closer solo N28 (~556 m)
             {
                 "op": "vodafone",
                 "lat": 40.409,
                 "lon": -3.0,
                 "frecuencias": ["3600.00 - 3700.00"],
+            },
+            # Vodafone preferred #2: N28+ farther (~1.145 m) -> loses by distance against N78 (~1.000 m)
+            {
+                "op": "vodafone",
+                "lat": 40.4103,
+                "lon": -3.0,
+                "frecuencias": ["758.00 - 788.00"],
             },
             # Legacy masmovil across 0.02 grid boundary from u-3 with N28+
             {
@@ -305,7 +313,7 @@ class TestBuildUnico5g(unittest.TestCase):
         ]
 
         masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
-        self.assertEqual(masks, [BIT_N78, 0, BIT_N28, BIT_N28_PLUS, BIT_N28 | BIT_N78])
+        self.assertEqual(masks, [BIT_N78, 0, BIT_N78, BIT_N28_PLUS, BIT_N28 | BIT_N78])
 
     def test_one_to_one_per_operator_and_shared_multiop_tower(self) -> None:
         # 1) Dos proyectos Movistar apuntan a MV-1 (40.0, -3.5):
@@ -349,23 +357,49 @@ class TestBuildUnico5g(unittest.TestCase):
         masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
         self.assertEqual(masks, [BIT_N28, BIT_N78, 0, BIT_N28_PLUS])
 
-        # Caso cascada con 3 estaciones válidas libres del mismo operador (A -> B -> C)
+        # Caso cascada con preferencia N78/N28+ sobre solo N28 (A [N78], B [solo N28], C [N28+]):
+        # Distancias:
+        # - Nivel 0 (N78 / N28+):
+        #   * u-c1 -> OR-1 (~11 m, N78) gana OR-1 (N78)
+        #   * u-c3 -> OR-3 (~389 m, N28+) está más cerca de OR-3 que u-c2 (~556 m) -> u-c3 gana OR-3 (N28+)
+        #     pese a tener OR-2 (solo N28) a ~55 m
+        # - Nivel 1 (solo N28):
+        #   * u-c2 sin N78/N28+ libres cae en respaldo a OR-2 (~222 m, solo N28)
         cascade_unico = [
-            {"id": "u-c1", "op": "orange", "lat": 41.0001, "lon": -2.0},  # ~11 m de OR-1
-            {"id": "u-c2", "op": "orange", "lat": 41.0010, "lon": -2.0},  # ~111 m de OR-1, ~222 m de OR-2
-            {"id": "u-c3", "op": "orange", "lat": 41.0025, "lon": -2.0},  # ~55 m de OR-2, ~389 m de OR-3
+            {"id": "u-c1", "op": "orange", "lat": 41.0001, "lon": -2.0},
+            {"id": "u-c2", "op": "orange", "lat": 41.0010, "lon": -2.0},
+            {"id": "u-c3", "op": "orange", "lat": 41.0025, "lon": -2.0},
         ]
         cascade_real = [
             {"id": "OR-1", "op": "orange", "lat": 41.0000, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
             {"id": "OR-2", "op": "orange", "lat": 41.0030, "lon": -2.0, "frecuencias": ["758.00 - 768.00"]},
             {"id": "OR-3", "op": "orange", "lat": 41.0060, "lon": -2.0, "frecuencias": ["758.00 - 788.00"]},
         ]
-        # Distancias:
-        # u-c1 -> OR-1 (~11 m) gana OR-1 (N78)
-        # u-c3 -> OR-2 (~55 m) gana OR-2 (N28)
-        # u-c2 intenta OR-1 (111 m, ocupada) -> intenta OR-2 (222 m, ocupada) -> gana OR-3 (~556 m, N28+)
         cascade_masks = match_unico_declared_antennas_masks(cascade_unico, cascade_real)
-        self.assertEqual(cascade_masks, [BIT_N78, BIT_N28_PLUS, BIT_N28])
+        self.assertEqual(cascade_masks, [BIT_N78, BIT_N28, BIT_N28_PLUS])
+
+        # Preferencia N28+ sobre solo N28 más cercana, y orden por cercanía cuando N78 y N28+ compiten:
+        # - u-pref-1 (42.0): solo N28 a ~50 m, N28+ a ~1.145 m -> elige N28+
+        # - u-pref-2 (42.2): solo N28 a ~50 m, N28+ a ~400 m, N78 a ~900 m -> elige N28+ (más cercana del nivel 0)
+        # - u-pref-3 (42.4): solo N28 a ~50 m, N78 a ~1.279 m (> 1.2 km) -> cae en respaldo a solo N28
+        pref_unico = [
+            {"id": "u-pref-1", "op": "movistar", "lat": 42.0, "lon": -2.5},
+            {"id": "u-pref-2", "op": "orange", "lat": 42.2, "lon": -2.5},
+            {"id": "u-pref-3", "op": "vodafone", "lat": 42.4, "lon": -2.5},
+        ]
+        pref_real = [
+            {"id": "MV-P1-N28", "op": "movistar", "lat": 42.00045, "lon": -2.5, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "MV-P1-N28P", "op": "movistar", "lat": 42.0103, "lon": -2.5, "frecuencias": ["758.00 - 788.00"]},
+            {"id": "OR-P2-N28", "op": "orange", "lat": 42.20045, "lon": -2.5, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "OR-P2-N28P", "op": "orange", "lat": 42.2036, "lon": -2.5, "frecuencias": ["758.00 - 788.00"]},
+            {"id": "OR-P2-N78", "op": "orange", "lat": 42.2081, "lon": -2.5, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "VF-P3-N28", "op": "vodafone", "lat": 42.40045, "lon": -2.5, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "VF-P3-N78-OUT", "op": "vodafone", "lat": 42.4115, "lon": -2.5, "frecuencias": ["3600.00 - 3700.00"]},
+        ]
+        self.assertEqual(
+            match_unico_declared_antennas_masks(pref_unico, pref_real),
+            [BIT_N28_PLUS, BIT_N28_PLUS, BIT_N28],
+        )
 
         # Empate exacto de distancia: menor unicoIdx gana; entre estaciones equidistantes, menor stationIdx gana
         tie_unico = [

@@ -49,6 +49,7 @@ import {
   UNICO_COMUNIDAD_LIST,
   UNICO_DECLARED_ANY_MASK,
   UNICO_MAX_MATCH_DISTANCE_KM,
+  UNICO_PREFERRED_BAND_MASK,
   UNICO_PROVINCE_LABELS,
   bandFilterToMask,
   computeUnicoSimpleSummary,
@@ -339,6 +340,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
 
   it('cruza la antena real válida más cercana de la misma operadora <= 1.200 m con bandas N28 / N28+ / N78 (saltando no válidas de más cercano a lejano) y filtra por banda, fase, provincia y comunidad', () => {
     expect(UNICO_MAX_MATCH_DISTANCE_KM).toBe(1.2);
+    expect(UNICO_PREFERRED_BAND_MASK).toBe(UNICO_BIT_N78 | UNICO_BIT_N28_PLUS);
     expect(bandFilterToMask('all')).toBe(UNICO_DECLARED_ANY_MASK);
     expect(bandFilterToMask('N78')).toBe(UNICO_BIT_N78);
     expect(bandFilterToMask('N28')).toBe(UNICO_BIT_N28);
@@ -1886,6 +1888,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(drawerMovistarHtml).toContain('Declaración UNICO 5G');
     expect(drawerMovistarHtml).toContain('UNICO 5G · Fase 1');
     expect(drawerMovistarHtml).toContain('1.200');
+    expect(drawerMovistarHtml).toContain('prioridad N78/N28+ frente a solo N28');
     expect(drawerMovistarHtml).toContain('Buitrago del Lozoya');
     expect(drawerMovistarHtml).toContain('integrated-op-unico-tag');
     expect(drawerMovistarHtml).toContain(
@@ -2215,6 +2218,202 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
       fourGRes.declaredRealAntennasById.get('OR-5G-FOURTH')?.entries[0]
         ?.unicoId,
     ).toBe('u-fb-jumps-4g');
+
+    // Preferencia N78 / N28+ frente a solo N28 más cercana (<= 1.200 m):
+    // - u-pref-n78 (43.0): solo N28 a ~50 m, N78 a ~1.145 m -> elige N78
+    // - u-pref-n28p (43.2): solo N28 a ~50 m, N28+ a ~1.000 m -> elige N28+
+    // - u-pref-closer-tier0 (43.4): solo N28 a ~50 m, N28+ a ~400 m, N78 a ~900 m -> elige N28+ (más cercana del nivel 0)
+    // - u-pref-fallback-n28 (43.6): solo N28 a ~50 m, N78 a ~1.279 m (> 1.200 m) -> respaldo a solo N28
+    // - u-pref-compete-a (43.80005) y u-pref-compete-b (43.8015): ambos tienen solo N28 muy cerca (~5 m para a),
+    //   y una N78 lejana en 43.8105 (~1.162 m para a, ~1.001 m para b): b está más cerca de la N78 y se la queda;
+    //   a cae en respaldo a solo N28 (~5 m) sin perder su declaración.
+    const prefUnico: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-pref-n78',
+        fase: 1,
+        op: 'movistar',
+        lat: 43.0,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-pref-n28p',
+        fase: 1,
+        op: 'orange',
+        empresa: 'ORANGE ESPAGNE S.A.',
+        lat: 43.2,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-pref-closer-tier0',
+        fase: 2,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 43.4,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-pref-fallback-n28',
+        fase: 2,
+        op: 'movistar',
+        lat: 43.6,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-pref-compete-a',
+        fase: 1,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 43.80005,
+        lon: -2.5,
+      }),
+      makeUnicoAntenna({
+        id: 'u-pref-compete-b',
+        fase: 2,
+        op: 'vodafone',
+        empresa: 'VODAFONE ESPAÑA S.A.',
+        lat: 43.8015,
+        lon: -2.5,
+      }),
+    ];
+    const prefReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'MV-PREF-1-N28',
+        gid: '995001',
+        op: 'movistar',
+        lat: 43.00045,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-PREF-1-N78',
+        gid: '995002',
+        op: 'movistar',
+        lat: 43.0103,
+        lon: -2.5,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-PREF-2-N28',
+        gid: '995003',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 43.20045,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-PREF-2-N28P',
+        gid: '995004',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 43.209,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 788.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-PREF-3-N28',
+        gid: '995005',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 43.40045,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-PREF-3-N28P',
+        gid: '995006',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 43.4036,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 788.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-PREF-3-N78',
+        gid: '995007',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 43.4081,
+        lon: -2.5,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-PREF-4-N28',
+        gid: '995008',
+        op: 'movistar',
+        lat: 43.60045,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'MV-PREF-4-N78-OUT',
+        gid: '995009',
+        op: 'movistar',
+        lat: 43.6115,
+        lon: -2.5,
+        bandas: ['3500 MHz'],
+        frecuencias: ['3600.00 - 3700.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-COMP-N28',
+        gid: '995010',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 43.8,
+        lon: -2.5,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 768.00'],
+      }),
+      makeRealAntenna({
+        id: 'VF-COMP-N78',
+        gid: '995011',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 43.8105,
+        lon: -2.5,
+        bandas: ['700 MHz', '3500 MHz'],
+        frecuencias: ['758.00 - 768.00', '3600.00 - 3700.00'],
+      }),
+    ];
+    const prefRes = matchUnicoDeclaredAntennas(prefUnico, prefReals);
+    expect(Array.from(prefRes.declaredMasks)).toEqual([
+      UNICO_BIT_N78,
+      UNICO_BIT_N28_PLUS,
+      UNICO_BIT_N28_PLUS,
+      UNICO_BIT_N28,
+      UNICO_BIT_N28,
+      UNICO_BIT_N78 | UNICO_BIT_N28,
+    ]);
+    expect(
+      prefRes.declaredRealAntennasById.get('MV-PREF-1-N78')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-pref-n78');
+    expect(
+      prefRes.declaredRealAntennasById.get('OR-PREF-2-N28P')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-pref-n28p');
+    expect(
+      prefRes.declaredRealAntennasById.get('VF-PREF-3-N28P')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-pref-closer-tier0');
+    expect(
+      prefRes.declaredRealAntennasById.get('MV-PREF-4-N28')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-pref-fallback-n28');
+    expect(
+      prefRes.declaredRealAntennasById.get('VF-COMP-N78')?.entries[0]?.unicoId,
+    ).toBe('u-pref-compete-b');
+    expect(
+      prefRes.declaredRealAntennasById.get('VF-COMP-N28')?.entries[0]?.unicoId,
+    ).toBe('u-pref-compete-a');
 
     // Protección ante ID duplicado en dataset sintético: conserva el match más cercano y nunca duplica
     const dupIdUnico: UnicoAntennaRecord[] = [
