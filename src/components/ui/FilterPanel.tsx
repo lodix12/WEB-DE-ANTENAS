@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import {
   MapPin,
+  RadioTower,
   RotateCcw,
   Search,
   X,
@@ -17,7 +18,6 @@ import {
   type OperatorKey,
 } from '../../types/antena';
 import { parseCoordinateInput } from '../../utils/export';
-import { ExportMenu } from './ExportMenu';
 
 export interface FilterPanelProps {
   derived: DerivedAntenasStructures | null;
@@ -98,6 +98,47 @@ export function FilterPanel({
   }, [derived, selectedComunidad]);
 
   const totalStations = derived?.dataset.total ?? 0;
+  const visibleCount = filteredAntenas.length;
+  const isLoaded = derived !== null;
+  const isSubset = isLoaded && totalStations > 0 && visibleCount < totalStations;
+  const isEmptyResult = isLoaded && totalStations > 0 && visibleCount === 0;
+  const isFilteredHighlight =
+    !isEmptyResult &&
+    (isSubset || (hasActiveFilters && isLoaded && totalStations > 0));
+
+  const visibleFormatted = visibleCount.toLocaleString('es-ES');
+  const totalFormatted = totalStations.toLocaleString('es-ES');
+  const unitLabel = visibleCount === 1 ? 'antena' : 'antenas';
+
+  let shareLabel = '—';
+  let meterWidthPercent = 0;
+  if (isLoaded && totalStations > 0) {
+    if (visibleCount <= 0) {
+      shareLabel = '0%';
+      meterWidthPercent = 0;
+    } else if (visibleCount >= totalStations) {
+      shareLabel = '100%';
+      meterWidthPercent = 100;
+    } else {
+      const pct = (visibleCount / totalStations) * 100;
+      meterWidthPercent = Math.max(2, Math.min(100, pct));
+      if (pct < 0.1) {
+        shareLabel = '< 0,1%';
+      } else if (pct >= 99.95) {
+        shareLabel = '> 99,9%';
+      } else if (pct < 10) {
+        shareLabel = `${pct.toLocaleString('es-ES', {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 1,
+        })}%`;
+      } else {
+        shareLabel = `${pct.toLocaleString('es-ES', {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 1,
+        })}%`;
+      }
+    }
+  }
 
   function handleClosePanel() {
     if (
@@ -171,29 +212,65 @@ export function FilterPanel({
       }`}
       aria-label="Panel de filtros cartográficos"
     >
-      <div className="sidebar-header">
-        <div className="sidebar-header-stats">
-          <span className="sidebar-header-title">Control Cartográfico</span>
-          <span className="sidebar-header-sub">
-            Mostrando{' '}
-            <strong className="mono" style={{ color: 'var(--text-primary)' }}>
-              {filteredAntenas.length.toLocaleString('es-ES')}
-            </strong>{' '}
-            de{' '}
-            <span className="mono">
-              {totalStations.toLocaleString('es-ES')}
-            </span>{' '}
-            estaciones
+      <div className="sidebar-header filter-sidebar-header">
+        <div className="filter-header-kicker-row">
+          <span className="filter-header-kicker">
+            <RadioTower size={12.5} strokeWidth={2.2} aria-hidden="true" />
+            <span className="filter-header-title">Control Cartográfico</span>
           </span>
+          {(isEmptyResult || hasActiveFilters) && (
+            <span
+              className={`filter-header-status${isEmptyResult ? ' is-empty' : ''}`}
+            >
+              {isEmptyResult ? 'Sin resultados' : 'Filtro activo'}
+            </span>
+          )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <ExportMenu
-            antenas={filteredAntenas}
-            radarPoint={null}
-            align="right"
-            idPrefix="map-sidebar-export"
-          />
+        <div
+          id="map-filter-antennas-summary"
+          className={`filter-count-showcase${
+            isEmptyResult
+              ? ' is-empty'
+              : isFilteredHighlight
+                ? ' is-filtered'
+                : ''
+          }`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <div className="filter-count-top">
+            <span className="filter-count-prefix">Mostrando</span>
+            <span
+              className="filter-count-share mono"
+              title={
+                isLoaded && totalStations > 0
+                  ? `${shareLabel} del censo total (${totalFormatted} antenas)`
+                  : 'Cargando censo de antenas'
+              }
+            >
+              {shareLabel}
+            </span>
+          </div>
+
+          <div className="filter-count-figure">
+            <strong className="filter-count-current mono">
+              {visibleFormatted}
+            </strong>
+            <span className="filter-count-context">
+              <span className="filter-count-unit">{unitLabel}</span>{' '}
+              <span className="filter-count-of">de</span>{' '}
+              <span className="filter-count-total mono">{totalFormatted}</span>
+            </span>
+          </div>
+
+          <div className="filter-count-meter" aria-hidden="true">
+            <div
+              className="filter-count-meter-fill"
+              style={{ width: `${meterWidthPercent}%` }}
+            />
+          </div>
         </div>
       </div>
 

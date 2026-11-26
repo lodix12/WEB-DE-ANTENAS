@@ -9535,6 +9535,170 @@ describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco',
   });
 });
 
+describe('Mapa — FilterPanel: cabecera rediseñada sin Exportar y máximo protagonismo para "Mostrando X antenas de Y"', () => {
+  it('elimina la opción de exportar datos de la cabecera y destaca el contador de antenas con proporción y barra visual en todos sus estados', async () => {
+    const sample = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures(sample);
+    const totalCount = derived.dataset.total;
+    const totalFormatted = totalCount.toLocaleString('es-ES');
+
+    const renderHeaderPanel = (opts: {
+      derivedArg: ReturnType<typeof buildDerivedAntenasStructures> | null;
+      filteredAntenas: typeof derived.dataset.antenas;
+      hasActiveFilters: boolean;
+    }) =>
+      renderToStaticMarkup(
+        createElement(FilterPanel, {
+          derived: opts.derivedArg,
+          filteredAntenas: opts.filteredAntenas,
+          collapsed: false,
+          mobileOpen: false,
+          onCollapseDesktop: () => {},
+          onCloseMobile: () => {},
+          searchQuery: '',
+          onSearchChange: () => {},
+          selectedComunidad: '',
+          onComunidadChange: () => {},
+          selectedProvince: '',
+          onProvinceChange: () => {},
+          selectedBands: [],
+          onToggleBand: () => {},
+          onClearBands: () => {},
+          exclusiveBands: false,
+          onExclusiveBandsChange: () => {},
+          activeOperators: [...OPERATOR_ORDER],
+          onToggleOperator: () => {},
+          onSelectAllOperators: () => {},
+          onClearAllOperators: () => {},
+          hasActiveFilters: opts.hasActiveFilters,
+          onResetFilters: () => {},
+          onFlyTo: () => {},
+        }),
+      );
+
+    // 1. Estado completo sin filtros: sin botón Exportar, muestra "Mostrando" + total + "antenas de total" + 100%
+    const fullHtml = renderHeaderPanel({
+      derivedArg: derived,
+      filteredAntenas: derived.dataset.antenas,
+      hasActiveFilters: false,
+    });
+    const fullHeader = fullHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+
+    expect(fullHtml).not.toContain('Exportar');
+    expect(fullHtml).not.toContain('map-sidebar-export');
+    expect(fullHtml).not.toContain('export-menu-wrap');
+
+    expect(fullHeader).toContain('sidebar-header filter-sidebar-header');
+    expect(fullHeader).toContain('Control Cartográfico');
+    expect(fullHeader).toContain('id="map-filter-antennas-summary"');
+    expect(fullHeader).toContain('role="status"');
+    expect(fullHeader).toContain('Mostrando');
+    expect(fullHeader).toContain(`>${totalFormatted}</strong>`);
+    expect(fullHeader).toContain('>antenas</span>');
+    expect(fullHeader).toContain('>de</span>');
+    expect(fullHeader).toContain(`class="filter-count-total mono">${totalFormatted}</span>`);
+    expect(fullHeader).toContain('>100%</span>');
+    expect(fullHeader).toContain('width:100%');
+    expect(fullHeader).not.toContain('is-filtered');
+    expect(fullHeader).not.toContain('is-empty');
+    expect(fullHeader).not.toContain('Filtro activo');
+
+    // 2. Estado filtrado con 1 antena: singular "antena", clase is-filtered, "Filtro activo" y porcentaje exacto
+    const singleHtml = renderHeaderPanel({
+      derivedArg: derived,
+      filteredAntenas: derived.dataset.antenas.slice(0, 1),
+      hasActiveFilters: true,
+    });
+    const singleHeader = singleHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+
+    expect(singleHeader).toContain('filter-count-showcase is-filtered');
+    expect(singleHeader).toContain('Filtro activo');
+    expect(singleHeader).toContain('>1</strong>');
+    expect(singleHeader).toContain('>antena</span>');
+    expect(singleHeader).not.toContain('100%');
+    expect(singleHeader).not.toContain('Exportar');
+
+    // 3. Estado sin resultados (0 antenas): clase is-empty, "Sin resultados", "0%", barra al 0%
+    const emptyHtml = renderHeaderPanel({
+      derivedArg: derived,
+      filteredAntenas: [],
+      hasActiveFilters: true,
+    });
+    const emptyHeader = emptyHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+
+    expect(emptyHeader).toContain('filter-count-showcase is-empty');
+    expect(emptyHeader).toContain('filter-header-status is-empty');
+    expect(emptyHeader).toContain('Sin resultados');
+    expect(emptyHeader).toContain('>0</strong>');
+    expect(emptyHeader).toContain('>antenas</span>');
+    expect(emptyHeader).toContain('>0%</span>');
+    expect(emptyHeader).toContain('width:0%');
+
+    // 4. Estado de carga inicial (derived === null): guion "—" sin NaN y barra en 0%
+    const loadingHtml = renderHeaderPanel({
+      derivedArg: null,
+      filteredAntenas: [],
+      hasActiveFilters: false,
+    });
+    const loadingHeader = loadingHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+
+    expect(loadingHeader).toContain('>—</span>');
+    expect(loadingHeader).not.toContain('NaN');
+    expect(loadingHeader).toContain('width:0%');
+
+    // 5. Subconjunto ínfimo (< 0,1%) sobre un total sintético grande
+    const largeDerived = {
+      ...derived,
+      dataset: {
+        ...derived.dataset,
+        total: 61370,
+      },
+    };
+    const tinySubsetHeader =
+      renderHeaderPanel({
+        derivedArg: largeDerived,
+        filteredAntenas: derived.dataset.antenas.slice(0, 1),
+        hasActiveFilters: true,
+      }).split('<div class="sidebar-scroll">')[0] ?? '';
+    expect(tinySubsetHeader).toContain('&lt; 0,1%');
+    expect(tinySubsetHeader).toContain('width:2%');
+    expect(tinySubsetHeader).toContain('61.370');
+
+    // 6. Verificación de archivos fuente y CSS: sin ExportMenu y con estilos dedicados sin afectar .sections-drawer
+    const fsSpecifier = 'node:fs';
+    const { existsSync, readFileSync } = (await import(
+      /* @vite-ignore */ fsSpecifier
+    )) as {
+      existsSync: (path: URL) => boolean;
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    expect(
+      existsSync(new URL('../components/ui/ExportMenu.tsx', import.meta.url)),
+    ).toBe(false);
+
+    const filterPanelSource = readFileSync(
+      new URL('../components/ui/FilterPanel.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(filterPanelSource).not.toContain('ExportMenu');
+    expect(filterPanelSource).not.toContain('map-sidebar-export');
+
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toContain('.sidebar-header.filter-sidebar-header');
+    expect(indexCssSource).toContain('.filter-count-showcase');
+    expect(indexCssSource).toContain('.filter-count-showcase.is-filtered');
+    expect(indexCssSource).toContain('.filter-count-showcase.is-empty');
+    expect(indexCssSource).toMatch(
+      /\.filter-count-current\s*\{[^}]*font-size:\s*27px;/s,
+    );
+    expect(indexCssSource).not.toContain('.export-menu-wrap');
+    expect(indexCssSource).toContain('.sections-drawer .sidebar-header');
+  });
+});
+
 
 
 
