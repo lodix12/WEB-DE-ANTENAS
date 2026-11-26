@@ -88,6 +88,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
   const [highlightUnicoDeclared, setHighlightUnicoDeclared] =
     useState<boolean>(true);
+  const [showUnicoProjects, setShowUnicoProjects] = useState<boolean>(false);
   const [sectionsMenuOpen, setSectionsMenuOpen] = useState<boolean>(false);
 
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
@@ -265,6 +266,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setHighlightUnicoDeclared((prev) => !prev);
   }, []);
 
+  const toggleShowUnicoProjects = useCallback(() => {
+    setShowUnicoProjects((prev) => !prev);
+  }, []);
+
   const toggleSectionsMenu = useCallback(() => {
     setSectionsMenuOpen((prev) => !prev);
   }, []);
@@ -392,6 +397,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       highlightUnicoDeclared,
       setHighlightUnicoDeclared,
       toggleHighlightUnicoDeclared,
+      showUnicoProjects,
+      setShowUnicoProjects,
+      toggleShowUnicoProjects,
       sectionsMenuOpen,
       setSectionsMenuOpen,
       toggleSectionsMenu,
@@ -443,6 +451,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       highlightUnicoDeclared,
       setHighlightUnicoDeclared,
       toggleHighlightUnicoDeclared,
+      showUnicoProjects,
+      setShowUnicoProjects,
+      toggleShowUnicoProjects,
       sectionsMenuOpen,
       setSectionsMenuOpen,
       toggleSectionsMenu,

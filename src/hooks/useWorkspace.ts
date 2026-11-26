@@ -75,6 +75,11 @@ export interface WorkspaceContextValue {
   setHighlightUnicoDeclared: (highlight: boolean) => void;
   toggleHighlightUnicoDeclared: () => void;
 
+  /* Capa de coordenadas oficiales exactas de proyectos UNICO 5G (9.291 ubicaciones) */
+  showUnicoProjects: boolean;
+  setShowUnicoProjects: (show: boolean) => void;
+  toggleShowUnicoProjects: () => void;
+
   /* Menú deslizable de secciones y apariencia */
   sectionsMenuOpen: boolean;
   setSectionsMenuOpen: (open: boolean) => void;

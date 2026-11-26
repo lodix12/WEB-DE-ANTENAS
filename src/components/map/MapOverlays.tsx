@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Check,
+  Crosshair,
   Group,
   Layers,
   Loader2,
@@ -12,6 +13,7 @@ import {
   Ruler,
   Ungroup,
 } from 'lucide-react';
+import { formatUnicoInt } from '../../hooks/useUnico5gData';
 import {
   OPENFREEMAP_STYLES,
   type OpenFreeMapStyleOption,
@@ -43,6 +45,9 @@ export interface MapOverlaysProps {
   onClusteringLevelChange?: (level: ClusteringLevel) => void;
   highlightUnicoDeclared?: boolean;
   onToggleHighlightUnicoDeclared?: () => void;
+  showUnicoProjects?: boolean;
+  onToggleShowUnicoProjects?: () => void;
+  unicoProjectsCount?: number;
   onFlyToRegion: (
     lon: number,
     lat: number,
@@ -68,6 +73,9 @@ export function MapOverlays({
   onClusteringLevelChange,
   highlightUnicoDeclared = true,
   onToggleHighlightUnicoDeclared,
+  showUnicoProjects = false,
+  onToggleShowUnicoProjects,
+  unicoProjectsCount = 0,
   onFlyToRegion,
 }: MapOverlaysProps) {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
@@ -113,6 +121,7 @@ export function MapOverlays({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
         setStyleMenuOpen(false);
       }
     };
@@ -418,6 +427,43 @@ export function MapOverlays({
                       </span>
                       <span
                         className={`map-lock-3d-switch map-switch-pill${highlightUnicoDeclared ? ' is-on is-unico-on' : ''}`}
+                        aria-hidden="true"
+                      >
+                        <span className="map-lock-3d-switch-thumb" />
+                      </span>
+                    </button>
+                  </>
+                )}
+
+                {onToggleShowUnicoProjects && (
+                  <>
+                    <div
+                      className="map-style-popover-divider"
+                      role="separator"
+                    />
+                    <button
+                      id="map-unico-projects-option"
+                      type="button"
+                      role="switch"
+                      aria-checked={showUnicoProjects}
+                      className={`map-lock-3d-option${showUnicoProjects ? ' is-unico-coords-active' : ''}`}
+                      onClick={() => onToggleShowUnicoProjects()}
+                    >
+                      <span className="map-lock-3d-icon" aria-hidden="true">
+                        <Crosshair size={15} aria-hidden="true" />
+                      </span>
+                      <span className="map-style-option-body">
+                        <span className="map-style-option-title map-style-option-name">
+                          Coordenadas UNICO 5G
+                        </span>
+                        <span className="map-style-option-desc">
+                          {unicoProjectsCount > 0
+                            ? `Puntos oficiales exactos (${formatUnicoInt(unicoProjectsCount)} ubicaciones)`
+                            : 'Puntos oficiales exactos de proyectos UNICO'}
+                        </span>
+                      </span>
+                      <span
+                        className={`map-lock-3d-switch map-switch-pill${showUnicoProjects ? ' is-on is-unico-coords-on' : ''}`}
                         aria-hidden="true"
                       >
                         <span className="map-lock-3d-switch-thumb" />

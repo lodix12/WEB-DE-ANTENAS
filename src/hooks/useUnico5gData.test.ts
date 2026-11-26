@@ -15,6 +15,10 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import { MapOverlays } from '../components/map/MapOverlays';
 import {
+  buildUnicoProjectsGeoJson,
+  buildUnicoProjectsPopupHtml,
+} from '../utils/unicoProjectsMap';
+import {
   OPERATOR_ORDER,
   type AntenasDataset,
   type AntennaRecord,
@@ -2219,5 +2223,265 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(dualDrawerVfHtml).toContain('id="station-unico-card"');
     expect(dualDrawerVfHtml).toContain('UNICO 5G · Fase 2');
     expect(dualDrawerVfHtml).toContain('N28+');
+  });
+
+  it('construye el GeoJSON puntual con las 9.291 coordenadas oficiales exactas de proyectos UNICO 5G y formatea popups individuales, compartidos e interactivos', async () => {
+    // 1. Casos sintéticos (declarada, sin declarar, coordenada inválida filtrada y XSS escapado)
+    const synthProjects: UnicoAntennaRecord[] = [
+      makeUnicoAntenna({
+        id: 'u-coord-1',
+        fase: 1,
+        op: 'movistar',
+        empresa: 'TELEFÓNICA MÓVILES ESPAÑA, S.A.',
+        ccaa: 'Comunidad de Madrid',
+        prov: 'MADRID',
+        mun: 'Buitrago del Lozoya',
+        lat: 40.992012,
+        lon: -3.635045,
+      }),
+      makeUnicoAntenna({
+        id: 'u-coord-2',
+        fase: 2,
+        op: 'orange',
+        empresa: 'AVATEL <TELECOM> & "S.A."',
+        ccaa: 'Andalucía',
+        prov: 'ALMERÍA',
+        mun: 'Abrucena',
+        lat: 37.141906,
+        lon: -2.781546,
+      }),
+      makeUnicoAntenna({
+        id: 'u-coord-invalid',
+        fase: 1,
+        op: 'vodafone',
+        lat: Number.NaN,
+        lon: -3.5,
+      }),
+    ];
+    const synthReals: AntennaRecord[] = [
+      makeRealAntenna({
+        id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890001',
+        gid: '2890001',
+        op: 'movistar',
+        lat: 40.9921,
+        lon: -3.635045,
+        bandas: ['700 MHz', '3500 MHz'],
+        frecuencias: ['758.00 - 768.00', '3600.00 - 3700.00'],
+      }),
+    ];
+    const synthMatch = matchUnicoDeclaredAntennas(synthProjects, synthReals);
+    const synthGeo = buildUnicoProjectsGeoJson(
+      synthProjects,
+      synthMatch.declaredMasks,
+      synthMatch.declaredRealAntennasById,
+    );
+
+    expect(synthGeo.type).toBe('FeatureCollection');
+    expect(synthGeo.features).toHaveLength(2);
+    expect(synthGeo.features[0].geometry.coordinates).toEqual([
+      -3.635045,
+      40.992012,
+    ]);
+    expect(synthGeo.features[0].properties.iconKey).toBe('unico-coord:movistar');
+    expect(synthGeo.features[0].properties.isDeclared).toBe(true);
+    expect(synthGeo.features[0].properties.declaredBits).toBe(
+      UNICO_BIT_N78 | UNICO_BIT_N28,
+    );
+    expect(synthGeo.features[0].properties.matchedAntennaId).toBe(
+      'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2890001',
+    );
+    expect(synthGeo.features[0].properties.matchedDistanceKm).toBeGreaterThan(0);
+
+    expect(synthGeo.features[1].geometry.coordinates).toEqual([
+      -2.781546,
+      37.141906,
+    ]);
+    expect(synthGeo.features[1].properties.iconKey).toBe('unico-coord:orange');
+    expect(synthGeo.features[1].properties.isDeclared).toBe(false);
+    expect(synthGeo.features[1].properties.matchedAntennaId).toBe('');
+    expect(synthGeo.features[1].properties.matchedDistanceKm).toBe(-1);
+
+    // Popups hover e interactivo (declarada, pendiente con escapado HTML y múltiples proyectos en misma coordenada)
+    const declaredHoverHtml = buildUnicoProjectsPopupHtml(
+      [synthGeo.features[0].properties],
+      { interactive: false, hasMatchedAntenna: true },
+    );
+    expect(declaredHoverHtml).toContain('Coordenada oficial UNICO 5G');
+    expect(declaredHoverHtml).toContain('Fase 1');
+    expect(declaredHoverHtml).toContain('Declarada · N78/N28');
+    expect(declaredHoverHtml).toContain('40.992012, -3.635045');
+    expect(declaredHoverHtml).toContain('ver antena declarada');
+
+    const declaredPinnedHtml = buildUnicoProjectsPopupHtml(
+      [synthGeo.features[0].properties],
+      { interactive: true, hasMatchedAntenna: true },
+    );
+    expect(declaredPinnedHtml).toContain('data-unico-action="copy"');
+    expect(declaredPinnedHtml).toContain('data-unico-action="focus-matched"');
+    expect(declaredPinnedHtml).toContain('Ver antena declarada');
+
+    const pendingPinnedHtml = buildUnicoProjectsPopupHtml(
+      [synthGeo.features[1].properties],
+      {
+        interactive: true,
+        hasMatchedAntenna: false,
+        fallbackStationLabel: 'Movistar #2890001',
+      },
+    );
+    expect(pendingPinnedHtml).toContain('Sin declarar');
+    expect(pendingPinnedHtml).toContain('AVATEL &lt;TELECOM&gt; &amp; &quot;S.A.&quot;');
+    expect(pendingPinnedHtml).toContain('data-unico-action="focus-fallback"');
+    expect(pendingPinnedHtml).toContain('Ver Movistar #2890001');
+
+    const multiCoordHtml = buildUnicoProjectsPopupHtml(
+      [synthGeo.features[0].properties, synthGeo.features[1].properties],
+      { interactive: true, hasMatchedAntenna: true },
+    );
+    expect(multiCoordHtml).toContain('2 proy.');
+    expect(multiCoordHtml).toContain('Buitrago del Lozoya');
+    expect(multiCoordHtml).toContain('Abrucena');
+    expect(multiCoordHtml).toContain('map-popup-unico-multi-list');
+
+    // 2. Dataset real completo en disco: exactamente 9.291 puntos en sus coordenadas oficiales exactas
+    const [unicoDataset, rawAntenasDataset] = await Promise.all([
+      loadRealUnicoDatasetFromDisk(),
+      loadRealAntenasDatasetFromDisk(),
+    ]);
+    const derived = buildDerivedAntenasStructures(rawAntenasDataset);
+    const realMatch = matchUnicoDeclaredAntennas(
+      unicoDataset.antenas,
+      derived.dataset.antenas,
+      derived.bandCodeMasks,
+    );
+
+    const realGeo = buildUnicoProjectsGeoJson(
+      unicoDataset.antenas,
+      realMatch.declaredMasks,
+      realMatch.declaredRealAntennasById,
+    );
+    expect(realGeo.features).toHaveLength(9291);
+
+    let movistarCount = 0;
+    let orangeCount = 0;
+    let vodafoneCount = 0;
+    let fase1Count = 0;
+    let fase2Count = 0;
+    let declaredCount = 0;
+    let sameCoordSegoviaCount = 0;
+
+    for (let i = 0; i < realGeo.features.length; i++) {
+      const feature = realGeo.features[i];
+      const src = unicoDataset.antenas[i];
+      expect(feature.geometry.coordinates[0]).toBe(src.lon);
+      expect(feature.geometry.coordinates[1]).toBe(src.lat);
+      expect(feature.properties.id).toBe(src.id);
+      expect(feature.properties.iconKey).toBe(`unico-coord:${src.op}`);
+
+      if (src.op === 'movistar') movistarCount++;
+      else if (src.op === 'orange') orangeCount++;
+      else if (src.op === 'vodafone') vodafoneCount++;
+
+      if (src.fase === 1) fase1Count++;
+      else fase2Count++;
+
+      if (feature.properties.isDeclared) {
+        declaredCount++;
+        expect(feature.properties.matchedAntennaId).not.toBe('');
+      }
+      if (src.lat === 41.402994 && src.lon === -4.325894) {
+        sameCoordSegoviaCount++;
+      }
+    }
+
+    expect(movistarCount).toBe(5239);
+    expect(orangeCount).toBe(2832);
+    expect(vodafoneCount).toBe(1220);
+    expect(fase1Count).toBe(7330);
+    expect(fase2Count).toBe(1961);
+    expect(declaredCount).toBe(realMatch.declaredRealAntennasById.size);
+    // Ambas ubicaciones oficiales en la misma coordenada exacta (Cuéllar y Espirdo) se conservan intactas
+    expect(sameCoordSegoviaCount).toBe(2);
+  }, 15_000);
+
+  it('expone la opción Coordenadas UNICO 5G (9.291 ubicaciones) en el menú de capas cartográficas y conecta la capa WebGL en AntenasMap, WorkspaceProvider y MapaView', async () => {
+    const [
+      antenasMapSource,
+      mapOverlaysSource,
+      workspaceProviderSource,
+      useWorkspaceSource,
+      mapaViewSource,
+      mapCssSource,
+    ] = await Promise.all([
+      readDiskTextFile('../components/map/AntenasMap.tsx'),
+      readDiskTextFile('../components/map/MapOverlays.tsx'),
+      readDiskTextFile('./WorkspaceProvider.tsx'),
+      readDiskTextFile('./useWorkspace.ts'),
+      readDiskTextFile('../views/MapaView.tsx'),
+      readDiskTextFile('../styles/map.css'),
+    ]);
+
+    // 1. MapOverlays: interruptor #map-unico-projects-option dentro del menú de Capas cartográficas
+    expect(mapOverlaysSource).toContain('id="map-unico-projects-option"');
+    expect(mapOverlaysSource).toContain('Coordenadas UNICO 5G');
+    expect(mapOverlaysSource).toContain('ubicaciones');
+    expect(mapOverlaysSource).toContain('is-unico-coords-active');
+    expect(mapOverlaysSource).toContain('is-unico-coords-on');
+    expect(
+      mapOverlaysSource.indexOf('id="map-highlight-unico-option"'),
+    ).toBeLessThan(mapOverlaysSource.indexOf('id="map-unico-projects-option"'));
+    expect(
+      mapOverlaysSource.indexOf('id="map-unico-projects-option"'),
+    ).toBeLessThan(mapOverlaysSource.indexOf('id="map-lock-3d-option"'));
+
+    const overlaysHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'osm',
+        onStyleChange: () => {},
+        showUnicoProjects: true,
+        onToggleShowUnicoProjects: () => {},
+        unicoProjectsCount: 9291,
+        onFlyToRegion: () => {},
+      }),
+    );
+    expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
+
+    // 2. WorkspaceProvider + useWorkspace + MapaView: estado por defecto false y paso de las 9.291 ubicaciones
+    expect(useWorkspaceSource).toContain('showUnicoProjects: boolean;');
+    expect(useWorkspaceSource).toContain('toggleShowUnicoProjects: () => void;');
+    expect(workspaceProviderSource).toContain(
+      'const [showUnicoProjects, setShowUnicoProjects] = useState<boolean>(false);',
+    );
+    expect(mapaViewSource).toContain('unicoProjects={unicoDataset?.antenas}');
+    expect(mapaViewSource).toContain('unicoDeclaredMasks={unicoDeclaredMasks}');
+    expect(mapaViewSource).toContain('showUnicoProjects={showUnicoProjects}');
+    expect(mapaViewSource).toContain(
+      'onToggleShowUnicoProjects={toggleShowUnicoProjects}',
+    );
+
+    // 3. AntenasMap: fuente sin clustering, capa WebGL sobre antenas y bajo selección, recarga de estilo y ajuste en medición
+    expect(antenasMapSource).toContain(
+      "const UNICO_PROJECTS_SOURCE_ID = 'unico-projects-source';",
+    );
+    expect(antenasMapSource).toContain(
+      "const LAYER_UNICO_PROJECTS = 'unico-projects-points';",
+    );
+    expect(antenasMapSource).toContain(
+      'const [internalShowUnicoProjects, setInternalShowUnicoProjects] =\n    useState<boolean>(false);',
+    );
+    expect(
+      antenasMapSource.indexOf('id: LAYER_UNCLUSTERED_MULTI,'),
+    ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_UNICO_PROJECTS,'));
+    expect(
+      antenasMapSource.indexOf('id: LAYER_UNICO_PROJECTS,'),
+    ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_SELECTED_HALO,'));
+    expect(antenasMapSource).toContain('registerAllUnicoProjectSprites(map)');
+    expect(antenasMapSource).toContain('antenas-map-popup-interactive');
+    expect(antenasMapSource).toContain('unicoProjectsCount={unicoProjects.length}');
+
+    // 4. CSS: estilos del conmutador ámbar y del popup interactivo de coordenadas oficiales
+    expect(mapCssSource).toContain('.map-lock-3d-option.is-unico-coords-active');
+    expect(mapCssSource).toContain('.map-switch-pill.is-unico-coords-on');
+    expect(mapCssSource).toContain('.antenas-map-popup-interactive.maplibregl-popup');
+    expect(mapCssSource).toContain('.map-popup-unico-coord-badge');
   });
 });

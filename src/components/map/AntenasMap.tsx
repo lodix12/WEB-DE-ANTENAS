@@ -21,6 +21,7 @@ import {
   formatUnicoDeclaredBitsList,
   formatUnicoDistance,
   formatUnicoFasesLabel,
+  isUnicoOperatorKey,
 } from '../../hooks/useUnico5gData';
 import {
   DEFAULT_CLUSTERING_LEVEL,
@@ -30,7 +31,13 @@ import {
   type ClusteringLevel,
   type MeasurePoint,
 } from '../../types/map';
-import type { UnicoDeclaredRealAntennaMatch } from '../../types/unico5g';
+import {
+  UNICO_OPERATOR_ORDER,
+  type UnicoAntennaRecord,
+  type UnicoDeclaredRealAntennaMatch,
+  type UnicoFase,
+  type UnicoOperatorKey,
+} from '../../types/unico5g';
 import {
   BAND_CARD_KEY_PREFIX,
   BAND_CARD_PIXEL_RATIO,
@@ -45,6 +52,15 @@ import {
   haversineDistanceKm,
   type MapSiteEntry,
 } from '../../utils/geo';
+import {
+  UNICO_COORD_ICON_PREFIX,
+  UNICO_PROJECT_ICON_STOPS,
+  UNICO_PROJECT_SPRITE_PIXEL_RATIO,
+  buildUnicoProjectsGeoJson,
+  buildUnicoProjectsPopupHtml,
+  getOrCreateUnicoProjectSprite,
+  type UnicoProjectFeatureProperties,
+} from '../../utils/unicoProjectsMap';
 import { MapOverlays } from './MapOverlays';
 import '../../styles/map.css';
 
@@ -60,6 +76,7 @@ if (typeof window !== 'undefined') {
 }
 
 const ANTENAS_SOURCE_ID = 'antenas-source';
+const UNICO_PROJECTS_SOURCE_ID = 'unico-projects-source';
 const MEASURE_SOURCE_ID = 'measure-source';
 
 const LAYER_MEASURE_CASING = 'measure-line-casing';
@@ -76,6 +93,7 @@ const LAYER_UNICO_DECLARED_HALO = 'antenas-unico-declared-halo';
 const LAYER_UNICO_DECLARED_RING = 'antenas-unico-declared-ring';
 const LAYER_UNCLUSTERED = 'antenas-unclustered';
 const LAYER_UNCLUSTERED_MULTI = 'antenas-unclustered-multi';
+const LAYER_UNICO_PROJECTS = 'unico-projects-points';
 const LAYER_SELECTED_HALO = 'antenas-selected-halo';
 const LAYER_SELECTED_RING = 'antenas-selected-ring';
 const LAYER_UNCLUSTERED_BANDS = 'antenas-unclustered-bands';
@@ -287,6 +305,33 @@ function registerBandCardSprite(map: maplibregl.Map, key: string): void {
   }
 }
 
+function registerUnicoProjectSprite(
+  map: maplibregl.Map,
+  iconKey: string,
+): void {
+  if (!iconKey.startsWith(UNICO_COORD_ICON_PREFIX) || map.hasImage(iconKey)) {
+    return;
+  }
+  const imageData = getOrCreateUnicoProjectSprite(iconKey);
+  if (!imageData) {
+    return;
+  }
+  if (!map.hasImage(iconKey)) {
+    map.addImage(iconKey, imageData, {
+      pixelRatio: UNICO_PROJECT_SPRITE_PIXEL_RATIO,
+    });
+  }
+}
+
+function registerAllUnicoProjectSprites(map: maplibregl.Map): void {
+  for (let i = 0; i < UNICO_OPERATOR_ORDER.length; i++) {
+    registerUnicoProjectSprite(
+      map,
+      `${UNICO_COORD_ICON_PREFIX}${UNICO_OPERATOR_ORDER[i]}`,
+    );
+  }
+}
+
 function buildSelectedFilter(
   selectedId: string | null | undefined,
 ): maplibregl.FilterSpecification {
@@ -464,6 +509,97 @@ export function buildMeasureGeoJson(
   };
 }
 /* oxlint-enable react/only-export-components */
+
+function buildUnicoProjectsIconSizeExpr(): maplibregl.ExpressionSpecification {
+  const expr: unknown[] = ['interpolate', ['linear'], ['zoom']];
+  for (let i = 0; i < UNICO_PROJECT_ICON_STOPS.length; i++) {
+    expr.push(UNICO_PROJECT_ICON_STOPS[i][0], UNICO_PROJECT_ICON_STOPS[i][1]);
+  }
+  return expr as maplibregl.ExpressionSpecification;
+}
+
+function parseUnicoProjectFeature(
+  feature: maplibregl.MapGeoJSONFeature,
+): UnicoProjectFeatureProperties | null {
+  if (feature.geometry.type !== 'Point') {
+    return null;
+  }
+  const raw = feature.properties as Record<string, unknown> | undefined;
+  if (!raw) {
+    return null;
+  }
+  const [geomLon, geomLat] = feature.geometry.coordinates;
+  const lat = Number(raw.lat ?? geomLat);
+  const lon = Number(raw.lon ?? geomLon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+  const rawFase = Number(raw.fase);
+  const fase: UnicoFase = rawFase === 2 ? 2 : 1;
+  const op: UnicoOperatorKey = isUnicoOperatorKey(raw.op) ? raw.op : 'orange';
+  const declaredBits = Number(raw.declaredBits ?? 0);
+  const matchedDistanceKm = Number(raw.matchedDistanceKm ?? -1);
+
+  return {
+    idx: Number(raw.idx ?? 0),
+    id: String(raw.id ?? ''),
+    fase,
+    op,
+    empresa: String(raw.empresa ?? ''),
+    ccaa: String(raw.ccaa ?? ''),
+    prov: String(raw.prov ?? ''),
+    mun: String(raw.mun ?? ''),
+    lat,
+    lon,
+    iconKey: String(raw.iconKey ?? `${UNICO_COORD_ICON_PREFIX}${op}`),
+    declaredBits: Number.isFinite(declaredBits) ? declaredBits : 0,
+    isDeclared:
+      raw.isDeclared === true ||
+      raw.isDeclared === 'true' ||
+      (Number.isFinite(declaredBits) && declaredBits !== 0),
+    matchedAntennaId: String(raw.matchedAntennaId ?? ''),
+    matchedDistanceKm: Number.isFinite(matchedDistanceKm)
+      ? matchedDistanceKm
+      : -1,
+  };
+}
+
+function collectUnicoProjectsAtSameCoord(
+  hits: readonly maplibregl.MapGeoJSONFeature[],
+): UnicoProjectFeatureProperties[] {
+  const result: UnicoProjectFeatureProperties[] = [];
+  const seenIds = new Set<string>();
+  let anchorLat: number | null = null;
+  let anchorLon: number | null = null;
+
+  for (let i = 0; i < hits.length; i++) {
+    const hit = hits[i];
+    if (hit.layer.id !== LAYER_UNICO_PROJECTS) {
+      continue;
+    }
+    const parsed = parseUnicoProjectFeature(hit);
+    if (!parsed || (parsed.id && seenIds.has(parsed.id))) {
+      continue;
+    }
+    if (anchorLat === null || anchorLon === null) {
+      anchorLat = parsed.lat;
+      anchorLon = parsed.lon;
+    } else if (
+      Math.abs(parsed.lat - anchorLat) > 1e-6 ||
+      Math.abs(parsed.lon - anchorLon) > 1e-6
+    ) {
+      continue;
+    }
+    if (parsed.id) {
+      seenIds.add(parsed.id);
+    }
+    result.push(parsed);
+  }
+  if (result.length > 1) {
+    result.sort((a, b) => a.idx - b.idx || a.id.localeCompare(b.id));
+  }
+  return result;
+}
 
 function buildUnclusteredCircleRadiusExpr(
   disableClustering: boolean,
@@ -848,6 +984,14 @@ function buildPopupHtml(
 }
 
 const EMPTY_MEASURE_POINTS: MeasurePoint[] = [];
+const EMPTY_UNICO_PROJECTS: readonly UnicoAntennaRecord[] = [];
+const EMPTY_UNICO_PROJECTS_GEOJSON: FeatureCollection<
+  Point,
+  UnicoProjectFeatureProperties
+> = {
+  type: 'FeatureCollection',
+  features: [],
+};
 
 export function AntenasMap(props: AntenasMapProps) {
   const {
@@ -870,11 +1014,18 @@ export function AntenasMap(props: AntenasMapProps) {
     unicoDeclaredById,
     highlightUnicoDeclared,
     onToggleHighlightUnicoDeclared,
+    unicoProjects = EMPTY_UNICO_PROJECTS,
+    unicoDeclaredMasks,
+    showUnicoProjects,
+    onToggleShowUnicoProjects,
+    onFocusUnicoMatchedAntenna,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
+  const pinnedUnicoPopupRef = useRef<maplibregl.Popup | null>(null);
+  const pinnedUnicoCoordKeyRef = useRef<string | null>(null);
   const hoveredIdRef = useRef<string | null>(null);
   const appliedStyleIdRef = useRef<AntenasMapProps['styleId']>(styleId);
   const lastFlyTokenRef = useRef<number | string | null>(null);
@@ -883,6 +1034,18 @@ export function AntenasMap(props: AntenasMapProps) {
     Point,
     AntennaFeatureProperties
   > | null>(null);
+  const lastAppliedUnicoGeoJsonRef = useRef<FeatureCollection<
+    Point,
+    UnicoProjectFeatureProperties
+  > | null>(null);
+
+  const clearPinnedUnicoPopup = useCallback(() => {
+    if (pinnedUnicoPopupRef.current) {
+      pinnedUnicoPopupRef.current.remove();
+      pinnedUnicoPopupRef.current = null;
+    }
+    pinnedUnicoCoordKeyRef.current = null;
+  }, []);
 
   // Bloqueo 3D / vertical activado SIEMPRE por defecto al cargar la web (nunca se lee de localStorage)
   const [internalLock3dPitch, setInternalLock3dPitch] = useState<boolean>(true);
@@ -949,6 +1112,21 @@ export function AntenasMap(props: AntenasMapProps) {
       setInternalHighlightUnicoDeclared((prev) => !prev);
     }
   }, [onToggleHighlightUnicoDeclared]);
+
+  // Capa de puntos con coordenadas oficiales exactas de los proyectos UNICO 5G (desactivada por defecto)
+  const [internalShowUnicoProjects, setInternalShowUnicoProjects] =
+    useState<boolean>(false);
+  const effectiveShowUnicoProjects =
+    showUnicoProjects ?? internalShowUnicoProjects;
+  const showUnicoProjectsRef = useRef<boolean>(effectiveShowUnicoProjects);
+
+  const handleToggleShowUnicoProjects = useCallback(() => {
+    if (onToggleShowUnicoProjects) {
+      onToggleShowUnicoProjects();
+    } else {
+      setInternalShowUnicoProjects((prev) => !prev);
+    }
+  }, [onToggleShowUnicoProjects]);
 
   // Soporte híbrido controlado o autónomo para la regla de distancia multi-punto (0..10 puntos, "Medir en mapa")
   const [internalMeasurePoints, setInternalMeasurePoints] = useState<
@@ -1106,6 +1284,25 @@ export function AntenasMap(props: AntenasMapProps) {
     };
   }, [groupedSites, siteBandCardKeys, unicoDeclaredById]);
 
+  // Construcción perezosa del GeoJSON puntual con las 9.291 coordenadas oficiales exactas de proyectos UNICO 5G
+  const unicoProjectsGeoJson = useMemo<
+    FeatureCollection<Point, UnicoProjectFeatureProperties>
+  >(() => {
+    if (!effectiveShowUnicoProjects || unicoProjects.length === 0) {
+      return EMPTY_UNICO_PROJECTS_GEOJSON;
+    }
+    return buildUnicoProjectsGeoJson(
+      unicoProjects,
+      unicoDeclaredMasks,
+      unicoDeclaredById,
+    );
+  }, [
+    effectiveShowUnicoProjects,
+    unicoProjects,
+    unicoDeclaredMasks,
+    unicoDeclaredById,
+  ]);
+
   // Construcción memorizada de la polilínea de medición (hasta 10 puntos, tramos intermedios y total acumulado)
   const measureGeoJson = useMemo<
     FeatureCollection<Point | LineString, MeasureFeatureProperties>
@@ -1116,6 +1313,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
   // Referencias vivas sincronizadas en efectos para acceso estable desde listeners imperativos de MapLibre
   const antenasGeoJsonRef = useRef(antenasGeoJson);
+  const unicoProjectsGeoJsonRef = useRef(unicoProjectsGeoJson);
   const antenasByIdRef = useRef(antenasById);
   const sitesByIdRef = useRef(sitesById);
   const multiIconKeysRef = useRef(multiIconKeys);
@@ -1123,6 +1321,7 @@ export function AntenasMap(props: AntenasMapProps) {
   const measureGeoJsonRef = useRef(measureGeoJson);
   const selectedAntennaRef = useRef(selectedAntenna);
   const onSelectAntennaRef = useRef(onSelectAntenna);
+  const onFocusUnicoMatchedAntennaRef = useRef(onFocusUnicoMatchedAntenna);
   const measureModeActiveRef = useRef(effectiveMeasureModeActive);
   const measurePointsRef = useRef(effectiveMeasurePoints);
   const onMeasurePointsChangeRef = useRef(handleMeasurePointsChange);
@@ -1137,6 +1336,10 @@ export function AntenasMap(props: AntenasMapProps) {
   }, [antenasGeoJson, antenasById, sitesById, multiIconKeys]);
 
   useEffect(() => {
+    unicoProjectsGeoJsonRef.current = unicoProjectsGeoJson;
+  }, [unicoProjectsGeoJson]);
+
+  useEffect(() => {
     unicoDeclaredByIdRef.current = unicoDeclaredById;
     hoveredIdRef.current = null;
   }, [unicoDeclaredById]);
@@ -1148,16 +1351,21 @@ export function AntenasMap(props: AntenasMapProps) {
   useEffect(() => {
     selectedAntennaRef.current = selectedAntenna;
     onSelectAntennaRef.current = onSelectAntenna;
-  }, [selectedAntenna, onSelectAntenna]);
+    onFocusUnicoMatchedAntennaRef.current = onFocusUnicoMatchedAntenna;
+  }, [selectedAntenna, onSelectAntenna, onFocusUnicoMatchedAntenna]);
 
   useEffect(() => {
     measureModeActiveRef.current = effectiveMeasureModeActive;
     measurePointsRef.current = effectiveMeasurePoints;
     onMeasurePointsChangeRef.current = handleMeasurePointsChange;
+    if (effectiveMeasureModeActive) {
+      clearPinnedUnicoPopup();
+    }
   }, [
     effectiveMeasureModeActive,
     effectiveMeasurePoints,
     handleMeasurePointsChange,
+    clearPinnedUnicoPopup,
   ]);
 
   useEffect(() => {
@@ -1221,6 +1429,52 @@ export function AntenasMap(props: AntenasMapProps) {
       );
     }
   }, [effectiveHighlightUnicoDeclared]);
+
+  // Sincronización inmediata en GPU de la capa de puntos con coordenadas oficiales exactas UNICO 5G
+  useEffect(() => {
+    showUnicoProjectsRef.current = effectiveShowUnicoProjects;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    if (effectiveShowUnicoProjects && map.getStyle()) {
+      registerAllUnicoProjectSprites(map);
+    }
+    if (map.getLayer(LAYER_UNICO_PROJECTS)) {
+      map.setLayoutProperty(
+        LAYER_UNICO_PROJECTS,
+        'visibility',
+        effectiveShowUnicoProjects ? 'visible' : 'none',
+      );
+    }
+    if (!effectiveShowUnicoProjects) {
+      clearPinnedUnicoPopup();
+      if (hoveredIdRef.current?.startsWith(UNICO_COORD_ICON_PREFIX)) {
+        hoveredIdRef.current = null;
+        popupRef.current?.remove();
+      }
+    }
+  }, [effectiveShowUnicoProjects, clearPinnedUnicoPopup]);
+
+  // Permitir cerrar un popup fijado de coordenada UNICO 5G pulsando la tecla Escape
+  useEffect(() => {
+    if (!effectiveShowUnicoProjects) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.key === 'Escape' &&
+        !event.defaultPrevented &&
+        pinnedUnicoPopupRef.current
+      ) {
+        clearPinnedUnicoPopup();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [effectiveShowUnicoProjects, clearPinnedUnicoPopup]);
 
   // Sincronización inmediata en GPU al cambiar el nivel de agrupación en clústeres ('none' | 'normal' | 'high' | 'max')
   useEffect(() => {
@@ -1286,12 +1540,14 @@ export function AntenasMap(props: AntenasMapProps) {
     );
     const disableClusteringActive = !clusterOptions.cluster;
     const highlightUnicoActive = highlightUnicoDeclaredRef.current;
+    const showUnicoProjectsActive = showUnicoProjectsRef.current;
 
     // Registrar todos los sprites multicolor activos en el atlas WebGL del estilo actual
     const activeIconKeys = multiIconKeysRef.current;
     for (let i = 0; i < activeIconKeys.length; i++) {
       registerMultiOperatorSprite(map, activeIconKeys[i]);
     }
+    registerAllUnicoProjectSprites(map);
 
     // 1. Fuente principal clusterizada con suma exacta de estaciones integradas (`stationSum`)
     if (!map.getSource(ANTENAS_SOURCE_ID)) {
@@ -1306,57 +1562,6 @@ export function AntenasMap(props: AntenasMapProps) {
         },
       });
       lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
-    }
-
-    const clusterCountExpr = buildClusterExactCountExpr();
-
-    if (!map.getLayer(LAYER_CLUSTERS)) {
-      map.addLayer({
-        id: LAYER_CLUSTERS,
-        type: 'circle',
-        source: ANTENAS_SOURCE_ID,
-        filter: ['has', 'point_count'],
-        layout: {
-          visibility: disableClusteringActive ? 'none' : 'visible',
-        },
-        paint: {
-          'circle-color': [
-            'step',
-            clusterCountExpr,
-            '#0284C7',
-            50,
-            '#0369A1',
-            250,
-            '#0F4C81',
-            1000,
-            '#1E293B',
-            5000,
-            '#0F172A',
-          ],
-          'circle-radius': buildClusterCircleRadiusExpr(),
-          'circle-stroke-width': 0,
-        },
-      });
-    }
-
-    if (!map.getLayer(LAYER_CLUSTER_COUNT)) {
-      map.addLayer({
-        id: LAYER_CLUSTER_COUNT,
-        type: 'symbol',
-        source: ANTENAS_SOURCE_ID,
-        filter: ['has', 'point_count'],
-        layout: {
-          visibility: disableClusteringActive ? 'none' : 'visible',
-          'text-field': buildClusterCountTextFieldExpr(),
-          'text-font': ['Noto Sans Regular'],
-          'text-size': buildClusterCountTextSizeExpr(),
-          'text-allow-overlap': true,
-          'text-ignore-placement': true,
-        },
-        paint: {
-          'text-color': '#FFFFFF',
-        },
-      });
     }
 
     // Resaltado concéntrico esmeralda (halo + collar de contraste y aro verde) bajo el marcador
@@ -1456,6 +1661,84 @@ export function AntenasMap(props: AntenasMapProps) {
           'icon-size': buildUnclusteredMultiIconSizeExpr(
             disableClusteringActive,
           ),
+        },
+      });
+    }
+
+    // Capa independiente con las 9.291 coordenadas oficiales exactas de los proyectos UNICO 5G
+    // (sin clustering, sobre los marcadores de antenas para garantizar visibilidad incluso cuando coinciden a <= 10 m)
+    if (!map.getSource(UNICO_PROJECTS_SOURCE_ID)) {
+      map.addSource(UNICO_PROJECTS_SOURCE_ID, {
+        type: 'geojson',
+        data: unicoProjectsGeoJsonRef.current,
+        cluster: false,
+      });
+      lastAppliedUnicoGeoJsonRef.current = unicoProjectsGeoJsonRef.current;
+    }
+
+    if (!map.getLayer(LAYER_UNICO_PROJECTS)) {
+      map.addLayer({
+        id: LAYER_UNICO_PROJECTS,
+        type: 'symbol',
+        source: UNICO_PROJECTS_SOURCE_ID,
+        layout: {
+          visibility: showUnicoProjectsActive ? 'visible' : 'none',
+          'icon-image': ['get', 'iconKey'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-size': buildUnicoProjectsIconSizeExpr(),
+        },
+      });
+    }
+
+    // Clústeres de antenas por encima de los puntos sin agrupar para mantener 100% legibles sus contadores al alejar
+    const clusterCountExpr = buildClusterExactCountExpr();
+
+    if (!map.getLayer(LAYER_CLUSTERS)) {
+      map.addLayer({
+        id: LAYER_CLUSTERS,
+        type: 'circle',
+        source: ANTENAS_SOURCE_ID,
+        filter: ['has', 'point_count'],
+        layout: {
+          visibility: disableClusteringActive ? 'none' : 'visible',
+        },
+        paint: {
+          'circle-color': [
+            'step',
+            clusterCountExpr,
+            '#0284C7',
+            50,
+            '#0369A1',
+            250,
+            '#0F4C81',
+            1000,
+            '#1E293B',
+            5000,
+            '#0F172A',
+          ],
+          'circle-radius': buildClusterCircleRadiusExpr(),
+          'circle-stroke-width': 0,
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_CLUSTER_COUNT)) {
+      map.addLayer({
+        id: LAYER_CLUSTER_COUNT,
+        type: 'symbol',
+        source: ANTENAS_SOURCE_ID,
+        filter: ['has', 'point_count'],
+        layout: {
+          visibility: disableClusteringActive ? 'none' : 'visible',
+          'text-field': buildClusterCountTextFieldExpr(),
+          'text-font': ['Noto Sans Regular'],
+          'text-size': buildClusterCountTextSizeExpr(),
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,
+        },
+        paint: {
+          'text-color': '#FFFFFF',
         },
       });
     }
@@ -1796,6 +2079,8 @@ export function AntenasMap(props: AntenasMapProps) {
         registerMultiOperatorSprite(map, id);
       } else if (id.startsWith(BAND_CARD_KEY_PREFIX)) {
         registerBandCardSprite(map, id);
+      } else if (id.startsWith(UNICO_COORD_ICON_PREFIX)) {
+        registerUnicoProjectSprite(map, id);
       }
     };
 
@@ -1833,6 +2118,23 @@ export function AntenasMap(props: AntenasMapProps) {
           'visibility',
           unicoVisibility,
         );
+      }
+      if (map.getLayer(LAYER_UNICO_PROJECTS)) {
+        map.setLayoutProperty(
+          LAYER_UNICO_PROJECTS,
+          'visibility',
+          showUnicoProjectsRef.current ? 'visible' : 'none',
+        );
+      }
+      const unicoSource = map.getSource(UNICO_PROJECTS_SOURCE_ID) as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      if (
+        unicoSource &&
+        lastAppliedUnicoGeoJsonRef.current !== unicoProjectsGeoJsonRef.current
+      ) {
+        unicoSource.setData(unicoProjectsGeoJsonRef.current);
+        lastAppliedUnicoGeoJsonRef.current = unicoProjectsGeoJsonRef.current;
       }
       const antSource = map.getSource(ANTENAS_SOURCE_ID) as
         | maplibregl.GeoJSONSource
@@ -1903,13 +2205,248 @@ export function AntenasMap(props: AntenasMapProps) {
       return layers;
     };
 
+    const resolveStationFromFeature = (
+      feature: maplibregl.MapGeoJSONFeature,
+      fallbackLngLat: maplibregl.LngLat,
+    ): AntennaRecord | null => {
+      const rawProps = feature.properties as Record<string, unknown>;
+      const featureId = String(rawProps.id ?? '');
+      const matchedSite = sitesByIdRef.current.get(featureId);
+      if (matchedSite) {
+        return matchedSite.primary;
+      }
+      const primaryId = String(rawProps.primaryId ?? featureId);
+      const matchedRecord = antenasByIdRef.current.get(primaryId);
+      if (matchedRecord) {
+        return matchedRecord;
+      }
+      if (!primaryId) {
+        return null;
+      }
+      const fallbackGeometry =
+        feature.geometry.type === 'Point'
+          ? feature.geometry.coordinates
+          : [fallbackLngLat.lng, fallbackLngLat.lat];
+      return {
+        id: primaryId,
+        gid: String(rawProps.gid ?? ''),
+        op: isValidOperatorKey(rawProps.op) ? rawProps.op : 'otros',
+        opRaw: String(rawProps.opRaw ?? ''),
+        lat: Number(rawProps.lat ?? fallbackGeometry[1]),
+        lon: Number(rawProps.lon ?? fallbackGeometry[0]),
+        dir: String(rawProps.dir ?? ''),
+        mun: String(rawProps.mun ?? ''),
+        prov: String(rawProps.prov ?? ''),
+      };
+    };
+
+    const queryFeaturesWithTouchFallback = (
+      point: maplibregl.Point,
+      layers: string[],
+    ): maplibregl.MapGeoJSONFeature[] => {
+      const exact = map.queryRenderedFeatures(point, { layers });
+      if (exact.length > 0) {
+        return exact;
+      }
+      if (
+        typeof window !== 'undefined' &&
+        window.matchMedia?.('(pointer: coarse)').matches
+      ) {
+        const pad = 10;
+        return map.queryRenderedFeatures(
+          [
+            [point.x - pad, point.y - pad],
+            [point.x + pad, point.y + pad],
+          ],
+          { layers },
+        );
+      }
+      return exact;
+    };
+
+    const findPriorityUnicoHit = (
+      hits: readonly maplibregl.MapGeoJSONFeature[],
+    ): maplibregl.MapGeoJSONFeature | null => {
+      for (let i = 0; i < hits.length; i++) {
+        const layerId = hits[i].layer.id;
+        if (layerId === LAYER_CLUSTERS) {
+          return null;
+        }
+        if (layerId === LAYER_UNICO_PROJECTS) {
+          return hits[i];
+        }
+      }
+      return null;
+    };
+
+    const openPinnedUnicoPopup = (
+      projects: UnicoProjectFeatureProperties[],
+      fallbackStation: AntennaRecord | null,
+    ) => {
+      if (projects.length === 0) {
+        return;
+      }
+      const first = projects[0];
+      const coordKey = `${UNICO_COORD_ICON_PREFIX}${projects
+        .map((item) => item.id)
+        .join('|')}`;
+
+      if (pinnedUnicoCoordKeyRef.current === coordKey) {
+        clearPinnedUnicoPopup();
+        return;
+      }
+
+      let matchedAntennaId: string | null = null;
+      let matchedAntenna: AntennaRecord | null = null;
+      for (let i = 0; i < projects.length; i++) {
+        const candidateId = projects[i].matchedAntennaId;
+        if (candidateId) {
+          const foundInVisible = antenasByIdRef.current.get(candidateId);
+          if (foundInVisible) {
+            matchedAntennaId = candidateId;
+            matchedAntenna = foundInVisible;
+            break;
+          }
+          if (!matchedAntennaId && onFocusUnicoMatchedAntennaRef.current) {
+            matchedAntennaId = candidateId;
+          }
+        }
+      }
+
+      const canFocusMatched = Boolean(
+        matchedAntenna ||
+          (matchedAntennaId && onFocusUnicoMatchedAntennaRef.current),
+      );
+      const fallbackLabel =
+        !canFocusMatched && fallbackStation
+          ? `${OPERATOR_META[fallbackStation.op]?.shortName ?? 'Estación'} #${fallbackStation.gid}`
+          : null;
+
+      hoveredIdRef.current = null;
+      popup.remove();
+      clearPinnedUnicoPopup();
+
+      const pinned = new maplibregl.Popup({
+        closeButton: true,
+        closeOnClick: false,
+        offset: 12,
+        maxWidth: 'min(330px, calc(100vw - 24px))',
+        className: 'antenas-map-popup antenas-map-popup-interactive',
+      })
+        .setLngLat([first.lon, first.lat])
+        .setHTML(
+          buildUnicoProjectsPopupHtml(projects, {
+            interactive: true,
+            hasMatchedAntenna: canFocusMatched,
+            fallbackStationLabel: fallbackLabel,
+          }),
+        )
+        .addTo(map);
+
+      pinnedUnicoPopupRef.current = pinned;
+      pinnedUnicoCoordKeyRef.current = coordKey;
+
+      let copyResetTimer: number | null = null;
+      const clearCopyTimer = () => {
+        if (copyResetTimer !== null) {
+          window.clearTimeout(copyResetTimer);
+          copyResetTimer = null;
+        }
+      };
+
+      pinned.on('close', () => {
+        clearCopyTimer();
+        if (pinnedUnicoPopupRef.current === pinned) {
+          pinnedUnicoPopupRef.current = null;
+          pinnedUnicoCoordKeyRef.current = null;
+        }
+      });
+
+      const popupEl = pinned.getElement();
+      if (popupEl) {
+        const closeBtn = popupEl.querySelector<HTMLButtonElement>(
+          '.maplibregl-popup-close-button',
+        );
+        if (closeBtn) {
+          closeBtn.setAttribute('aria-label', 'Cerrar ventana de coordenadas');
+          closeBtn.setAttribute('title', 'Cerrar');
+        }
+
+        const coordsText = `${first.lat.toFixed(6)}, ${first.lon.toFixed(6)}`;
+        const copyBtn = popupEl.querySelector<HTMLButtonElement>(
+          '[data-unico-action="copy"]',
+        );
+        copyBtn?.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          void (async () => {
+            try {
+              if (!navigator.clipboard?.writeText) {
+                return;
+              }
+              await navigator.clipboard.writeText(coordsText);
+              if (!copyBtn.isConnected) {
+                return;
+              }
+              clearCopyTimer();
+              copyBtn.textContent = '¡Copiado!';
+              copyBtn.classList.add('is-copied');
+              copyResetTimer = window.setTimeout(() => {
+                copyResetTimer = null;
+                if (copyBtn.isConnected) {
+                  copyBtn.textContent = 'Copiar coords';
+                  copyBtn.classList.remove('is-copied');
+                }
+              }, 1800);
+            } catch {
+              // Ignorar si el portapapeles está restringido
+            }
+          })();
+        });
+
+        const focusMatchedBtn = popupEl.querySelector<HTMLButtonElement>(
+          '[data-unico-action="focus-matched"]',
+        );
+        if (focusMatchedBtn && canFocusMatched) {
+          const targetId = matchedAntennaId;
+          const targetAnt = matchedAntenna;
+          focusMatchedBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            clearPinnedUnicoPopup();
+            if (targetId && onFocusUnicoMatchedAntennaRef.current) {
+              onFocusUnicoMatchedAntennaRef.current(targetId);
+            } else if (targetAnt) {
+              onSelectAntennaRef.current(targetAnt);
+            }
+          });
+        }
+
+        const focusFallbackBtn = popupEl.querySelector<HTMLButtonElement>(
+          '[data-unico-action="focus-fallback"]',
+        );
+        if (focusFallbackBtn && fallbackStation) {
+          const targetAnt = fallbackStation;
+          focusFallbackBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            clearPinnedUnicoPopup();
+            onSelectAntennaRef.current(targetAnt);
+          });
+        }
+      }
+    };
+
     const handleMapClick = (event: maplibregl.MapMouseEvent) => {
       const unclusteredLayers = getActiveUnclusteredLayers();
+      const hasUnicoProjectsLayer =
+        showUnicoProjectsRef.current &&
+        Boolean(map.getLayer(LAYER_UNICO_PROJECTS));
+      const clickablePointLayers = hasUnicoProjectsLayer
+        ? [...unclusteredLayers, LAYER_UNICO_PROJECTS]
+        : unclusteredLayers;
       const hasClusterLayer =
         clusteringLevelRef.current !== 'none' &&
         Boolean(map.getLayer(LAYER_CLUSTERS));
 
-      // 0. Modo "Medir en mapa" (hasta 10 puntos: persiste al llegar al límite hasta desactivar la opción)
+      // 0. Modo "Medir en mapa" (hasta 10 puntos: ajusta exactamente a coordenadas UNICO 5G o antenas reales)
       if (measureModeActiveRef.current) {
         const currentPts = measurePointsRef.current;
         if (currentPts.length >= MAX_MEASURE_POINTS) {
@@ -1920,26 +2457,37 @@ export function AntenasMap(props: AntenasMapProps) {
         let targetLon = Number(event.lngLat.lng.toFixed(6));
         let targetLabel: string | undefined;
 
-        if (unclusteredLayers.length > 0) {
-          const snappedFeatures = map.queryRenderedFeatures(event.point, {
-            layers: unclusteredLayers,
-          });
+        if (clickablePointLayers.length > 0) {
+          const snappedFeatures = queryFeaturesWithTouchFallback(
+            event.point,
+            clickablePointLayers,
+          );
           if (snappedFeatures.length > 0) {
-            const topSnap = snappedFeatures[0];
-            const snapRaw = topSnap.properties as Record<string, unknown>;
-            const snapSiteId = String(snapRaw.id ?? '');
-            const snapSite = sitesByIdRef.current.get(snapSiteId);
-            if (snapSite) {
-              targetLat = Number(snapSite.lat.toFixed(6));
-              targetLon = Number(snapSite.lon.toFixed(6));
-              const opShort =
-                OPERATOR_META[snapSite.primary.op]?.shortName ?? 'Estación';
-              targetLabel = snapSite.isMultiOperator
-                ? `Mástil compartido (${snapSite.operators.length} oper.)`
-                : `${opShort} #${snapSite.primary.gid}`;
-            } else if (topSnap.geometry.type === 'Point') {
-              targetLon = Number(topSnap.geometry.coordinates[0].toFixed(6));
-              targetLat = Number(topSnap.geometry.coordinates[1].toFixed(6));
+            const unicoSnap = findPriorityUnicoHit(snappedFeatures);
+            if (unicoSnap) {
+              const parsedUnico = parseUnicoProjectFeature(unicoSnap);
+              if (parsedUnico) {
+                targetLat = Number(parsedUnico.lat.toFixed(6));
+                targetLon = Number(parsedUnico.lon.toFixed(6));
+                targetLabel = `UNICO F${parsedUnico.fase} · ${parsedUnico.mun}`;
+              }
+            } else {
+              const topSnap = snappedFeatures[0];
+              const snapRaw = topSnap.properties as Record<string, unknown>;
+              const snapSiteId = String(snapRaw.id ?? '');
+              const snapSite = sitesByIdRef.current.get(snapSiteId);
+              if (snapSite) {
+                targetLat = Number(snapSite.lat.toFixed(6));
+                targetLon = Number(snapSite.lon.toFixed(6));
+                const opShort =
+                  OPERATOR_META[snapSite.primary.op]?.shortName ?? 'Estación';
+                targetLabel = snapSite.isMultiOperator
+                  ? `Mástil compartido (${snapSite.operators.length} oper.)`
+                  : `${opShort} #${snapSite.primary.gid}`;
+              } else if (topSnap.geometry.type === 'Point') {
+                targetLon = Number(topSnap.geometry.coordinates[0].toFixed(6));
+                targetLat = Number(topSnap.geometry.coordinates[1].toFixed(6));
+              }
             }
           }
         }
@@ -1960,95 +2508,88 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      // 1. Priorizar clic directo sobre una estación desagrupada (icono multicolor < 15 m o círculo individual)
-      if (unclusteredLayers.length > 0) {
-        const stationFeatures = map.queryRenderedFeatures(event.point, {
-          layers: unclusteredLayers,
-        });
-        if (stationFeatures.length > 0) {
-          const topFeature = stationFeatures[0];
-          const rawProps = topFeature.properties as Record<string, unknown>;
-          const featureId = String(rawProps.id ?? '');
-          const matchedSite = sitesByIdRef.current.get(featureId);
+      // 1. Orden de interacción al clic: clústeres visibles -> coordenadas UNICO 5G -> antenas reales
+      const allClickableLayers = hasClusterLayer
+        ? [...clickablePointLayers, LAYER_CLUSTERS]
+        : clickablePointLayers;
+      if (allClickableLayers.length > 0) {
+        const hitFeatures = queryFeaturesWithTouchFallback(
+          event.point,
+          allClickableLayers,
+        );
+        if (hitFeatures.length > 0) {
+          const topFeature = hitFeatures[0];
+          if (topFeature.layer.id === LAYER_CLUSTERS) {
+            clearPinnedUnicoPopup();
+            const clusterId = Number(topFeature.properties?.cluster_id);
+            const source = map.getSource(ANTENAS_SOURCE_ID) as
+              | maplibregl.GeoJSONSource
+              | undefined;
 
-          if (matchedSite) {
-            onSelectAntennaRef.current(matchedSite.primary);
-            return;
-          }
-
-          const primaryId = String(rawProps.primaryId ?? featureId);
-          const matchedRecord = antenasByIdRef.current.get(primaryId);
-          if (matchedRecord) {
-            onSelectAntennaRef.current(matchedRecord);
-            return;
-          }
-
-          if (primaryId) {
-            const fallbackGeometry =
+            if (
+              source &&
+              Number.isFinite(clusterId) &&
               topFeature.geometry.type === 'Point'
-                ? topFeature.geometry.coordinates
-                : [event.lngLat.lng, event.lngLat.lat];
-
-            const reconstructed: AntennaRecord = {
-              id: primaryId,
-              gid: String(rawProps.gid ?? ''),
-              op: isValidOperatorKey(rawProps.op) ? rawProps.op : 'otros',
-              opRaw: String(rawProps.opRaw ?? ''),
-              lat: Number(rawProps.lat ?? fallbackGeometry[1]),
-              lon: Number(rawProps.lon ?? fallbackGeometry[0]),
-              dir: String(rawProps.dir ?? ''),
-              mun: String(rawProps.mun ?? ''),
-              prov: String(rawProps.prov ?? ''),
-            };
-            onSelectAntennaRef.current(reconstructed);
-            return;
-          }
-        }
-      }
-
-      // 2. Expansión suave al hacer clic en un clúster de antenas
-      if (hasClusterLayer) {
-        const clusterFeatures = map.queryRenderedFeatures(event.point, {
-          layers: [LAYER_CLUSTERS],
-        });
-        if (clusterFeatures.length > 0) {
-          const clusterFeature = clusterFeatures[0];
-          const clusterId = Number(clusterFeature.properties?.cluster_id);
-          const source = map.getSource(ANTENAS_SOURCE_ID) as
-            | maplibregl.GeoJSONSource
-            | undefined;
-
-          if (
-            source &&
-            Number.isFinite(clusterId) &&
-            clusterFeature.geometry.type === 'Point'
-          ) {
-            const [lon, lat] = clusterFeature.geometry.coordinates;
-            void source
-              .getClusterExpansionZoom(clusterId)
-              .then((expansionZoom) => {
-                if (
-                  clusteringLevelRef.current === 'none' ||
-                  typeof expansionZoom !== 'number' ||
-                  !Number.isFinite(expansionZoom)
-                ) {
-                  return;
-                }
-                map.easeTo({
-                  center: [lon, lat],
-                  zoom: Math.min(expansionZoom, 17),
-                  duration: 480,
+            ) {
+              const [lon, lat] = topFeature.geometry.coordinates;
+              void source
+                .getClusterExpansionZoom(clusterId)
+                .then((expansionZoom) => {
+                  if (
+                    clusteringLevelRef.current === 'none' ||
+                    typeof expansionZoom !== 'number' ||
+                    !Number.isFinite(expansionZoom)
+                  ) {
+                    return;
+                  }
+                  map.easeTo({
+                    center: [lon, lat],
+                    zoom: Math.min(expansionZoom, 17),
+                    duration: 480,
+                  });
+                })
+                .catch(() => {
+                  // Ignorar si el estilo o la fuente cambiaron durante la transición
                 });
-              })
-              .catch(() => {
-                // Ignorar si el estilo o la fuente cambiaron durante la transición
-              });
+            }
+            return;
+          }
+
+          const unicoHit = findPriorityUnicoHit(hitFeatures);
+          if (unicoHit) {
+            const projectsAtCoord = collectUnicoProjectsAtSameCoord(hitFeatures);
+            if (projectsAtCoord.length > 0) {
+              const underlyingStationFeature = hitFeatures.find(
+                (f) =>
+                  f.layer.id !== LAYER_UNICO_PROJECTS &&
+                  f.layer.id !== LAYER_CLUSTERS,
+              );
+              const fallbackStation = underlyingStationFeature
+                ? resolveStationFromFeature(
+                    underlyingStationFeature,
+                    event.lngLat,
+                  )
+                : null;
+              openPinnedUnicoPopup(projectsAtCoord, fallbackStation);
+              return;
+            }
+          }
+
+          clearPinnedUnicoPopup();
+          const resolvedStation = resolveStationFromFeature(
+            topFeature,
+            event.lngLat,
+          );
+          if (resolvedStation) {
+            onSelectAntennaRef.current(resolvedStation);
             return;
           }
         }
       }
 
-      // 3. Clic en el fondo del mapa: limpiar selección activa
+      clearPinnedUnicoPopup();
+
+      // 2. Clic en el fondo del mapa: limpiar selección activa
       if (selectedAntennaRef.current) {
         onSelectAntennaRef.current(null);
       }
@@ -2059,6 +2600,12 @@ export function AntenasMap(props: AntenasMapProps) {
         measureModeActiveRef.current &&
         measurePointsRef.current.length < MAX_MEASURE_POINTS;
       const interactiveLayers = getActiveUnclusteredLayers();
+      if (
+        showUnicoProjectsRef.current &&
+        map.getLayer(LAYER_UNICO_PROJECTS)
+      ) {
+        interactiveLayers.push(LAYER_UNICO_PROJECTS);
+      }
       if (
         clusteringLevelRef.current !== 'none' &&
         map.getLayer(LAYER_CLUSTERS)
@@ -2090,6 +2637,43 @@ export function AntenasMap(props: AntenasMapProps) {
           ? 'crosshair'
           : ''
         : 'pointer';
+
+      // Mientras haya un popup interactivo fijado de UNICO abierto, no abrir tooltips flotantes que lo solapen
+      if (pinnedUnicoPopupRef.current !== null) {
+        if (hoveredIdRef.current !== null) {
+          hoveredIdRef.current = null;
+          popup.remove();
+        }
+        return;
+      }
+
+      const priorityUnicoHit = findPriorityUnicoHit(hits);
+      if (priorityUnicoHit && priorityUnicoHit.geometry.type === 'Point') {
+        const projectsAtCoord = collectUnicoProjectsAtSameCoord(hits);
+        if (projectsAtCoord.length > 0) {
+          const hoverKey = `${UNICO_COORD_ICON_PREFIX}${projectsAtCoord
+            .map((item) => item.id)
+            .join('|')}`;
+          const firstProj = projectsAtCoord[0];
+          if (hoveredIdRef.current !== hoverKey) {
+            hoveredIdRef.current = hoverKey;
+            const hasMatchedAntenna = projectsAtCoord.some(
+              (item) =>
+                item.matchedAntennaId !== '' &&
+                (Boolean(onFocusUnicoMatchedAntennaRef.current) ||
+                  antenasByIdRef.current.has(item.matchedAntennaId)),
+            );
+            popup.setHTML(
+              buildUnicoProjectsPopupHtml(projectsAtCoord, {
+                interactive: false,
+                hasMatchedAntenna,
+              }),
+            );
+          }
+          popup.setLngLat([firstProj.lon, firstProj.lat]).addTo(map);
+          return;
+        }
+      }
 
       if (
         (topHit.layer.id === LAYER_UNCLUSTERED_BANDS ||
@@ -2175,15 +2759,17 @@ export function AntenasMap(props: AntenasMapProps) {
       map.getCanvas().removeEventListener('mouseleave', handleCanvasLeave);
       map.setMissingStyleImageResolver(null);
       popup.remove();
+      clearPinnedUnicoPopup();
       map.remove();
       mapRef.current = null;
       popupRef.current = null;
       hoveredIdRef.current = null;
       hasLoadedOnceRef.current = false;
       lastAppliedGeoJsonRef.current = null;
+      lastAppliedUnicoGeoJsonRef.current = null;
       lastFlyTokenRef.current = null;
     };
-  }, [ensureCustomSourcesAndLayers]);
+  }, [ensureCustomSourcesAndLayers, clearPinnedUnicoPopup]);
 
   // Cambio resiliente de estilo OpenFreeMap / OSM Retina / Google Maps preservando todas las fuentes y capas
   useEffect(() => {
@@ -2196,10 +2782,12 @@ export function AntenasMap(props: AntenasMapProps) {
     appliedStyleIdRef.current = styleId;
     hoveredIdRef.current = null;
     lastAppliedGeoJsonRef.current = null;
+    lastAppliedUnicoGeoJsonRef.current = null;
     popupRef.current?.remove();
+    clearPinnedUnicoPopup();
 
     map.setStyle(resolveMapStyleInput(currentStyleOption), { diff: false });
-  }, [styleId, currentStyleOption]);
+  }, [styleId, currentStyleOption, clearPinnedUnicoPopup]);
 
   // Sincronización reactiva en memoria del dataset filtrado de antenas y sprites multicolor hacia WebGL
   useEffect(() => {
@@ -2221,6 +2809,25 @@ export function AntenasMap(props: AntenasMapProps) {
       lastAppliedGeoJsonRef.current = antenasGeoJson;
     }
   }, [antenasGeoJson, multiIconKeys]);
+
+  // Sincronización reactiva de las 9.291 coordenadas oficiales exactas de proyectos UNICO 5G hacia WebGL
+  useEffect(() => {
+    unicoProjectsGeoJsonRef.current = unicoProjectsGeoJson;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    if (effectiveShowUnicoProjects && map.getStyle()) {
+      registerAllUnicoProjectSprites(map);
+    }
+    const source = map.getSource(UNICO_PROJECTS_SOURCE_ID) as
+      | maplibregl.GeoJSONSource
+      | undefined;
+    if (source && lastAppliedUnicoGeoJsonRef.current !== unicoProjectsGeoJson) {
+      source.setData(unicoProjectsGeoJson);
+      lastAppliedUnicoGeoJsonRef.current = unicoProjectsGeoJson;
+    }
+  }, [unicoProjectsGeoJson, effectiveShowUnicoProjects]);
 
   // Sincronización reactiva aislada de la regla de distancia multi-punto (0..10 puntos)
   useEffect(() => {
@@ -2285,6 +2892,7 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     lastFlyTokenRef.current = flyToTarget.token;
+    clearPinnedUnicoPopup();
 
     // Sincronizar tamaño real del lienzo por si acaba de montarse el panel lateral de detalle (`StationDetailDrawer`)
     map.resize();
@@ -2304,7 +2912,7 @@ export function AntenasMap(props: AntenasMapProps) {
       duration: 1200,
       essential: true,
     });
-  }, [flyToTarget]);
+  }, [flyToTarget, clearPinnedUnicoPopup]);
 
   const handleFlyToRegion = useCallback(
     (lon: number, lat: number, zoom: number) => {
@@ -2312,6 +2920,7 @@ export function AntenasMap(props: AntenasMapProps) {
       if (!map) {
         return;
       }
+      clearPinnedUnicoPopup();
       map.flyTo({
         center: [lon, lat],
         zoom,
@@ -2319,7 +2928,7 @@ export function AntenasMap(props: AntenasMapProps) {
         essential: true,
       });
     },
-    [],
+    [clearPinnedUnicoPopup],
   );
 
   return (
@@ -2348,6 +2957,9 @@ export function AntenasMap(props: AntenasMapProps) {
         onClusteringLevelChange={handleClusteringLevelChange}
         highlightUnicoDeclared={effectiveHighlightUnicoDeclared}
         onToggleHighlightUnicoDeclared={handleToggleHighlightUnicoDeclared}
+        showUnicoProjects={effectiveShowUnicoProjects}
+        onToggleShowUnicoProjects={handleToggleShowUnicoProjects}
+        unicoProjectsCount={unicoProjects.length}
         onFlyToRegion={handleFlyToRegion}
       />
     </div>

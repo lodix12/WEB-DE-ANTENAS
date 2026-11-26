@@ -3,7 +3,10 @@ import type {
   OpenFreeMapStyleOption,
   OperatorKey,
 } from './antena';
-import type { UnicoDeclaredRealAntennaMatch } from './unico5g';
+import type {
+  UnicoAntennaRecord,
+  UnicoDeclaredRealAntennaMatch,
+} from './unico5g';
 
 export interface FlyToTarget {
   lat: number;
@@ -144,4 +147,14 @@ export interface AntenasMapProps {
   highlightUnicoDeclared?: boolean;
   /** Alternar el resaltado visual en mapa de antenas seleccionadas como declaración UNICO 5G */
   onToggleHighlightUnicoDeclared?: () => void;
+  /** Catálogo completo de coordenadas oficiales exactas de los proyectos UNICO 5G (9.291 ubicaciones) */
+  unicoProjects?: readonly UnicoAntennaRecord[];
+  /** Máscaras de bits 5G alineadas con `unicoProjects` para mostrar estado declarado/pendiente */
+  unicoDeclaredMasks?: Uint16Array | null;
+  /** Si está activa la capa de puntos con las coordenadas oficiales exactas de los proyectos UNICO 5G (por defecto false) */
+  showUnicoProjects?: boolean;
+  /** Alternar la visibilidad de los puntos de coordenadas oficiales exactas de los proyectos UNICO 5G */
+  onToggleShowUnicoProjects?: () => void;
+  /** Enfocar y abrir ficha de una antena real emparejada desde una coordenada UNICO 5G (incluso si está filtrada o a <= 1 km) */
+  onFocusUnicoMatchedAntenna?: (antennaId: string) => void;
 }

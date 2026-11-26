@@ -24,6 +24,7 @@ export function MapaView() {
   const { derived, isLoading, isError, error, refetch } = useAntenasData();
   const {
     dataset: unicoDataset,
+    declaredMasks: unicoDeclaredMasks,
     declaredRealAntennasById,
     isLoading: isUnicoLoading,
     isError: isUnicoError,
@@ -64,6 +65,8 @@ export function MapaView() {
     setClusteringLevel,
     highlightUnicoDeclared,
     toggleHighlightUnicoDeclared,
+    showUnicoProjects,
+    toggleShowUnicoProjects,
     sectionsMenuOpen,
     setSectionsMenuOpen,
     focusAntennaOnMap,
@@ -445,6 +448,18 @@ export function MapaView() {
             unicoDeclaredById={declaredRealAntennasById}
             highlightUnicoDeclared={highlightUnicoDeclared}
             onToggleHighlightUnicoDeclared={toggleHighlightUnicoDeclared}
+            unicoProjects={unicoDataset?.antenas}
+            unicoDeclaredMasks={unicoDeclaredMasks}
+            showUnicoProjects={showUnicoProjects}
+            onToggleShowUnicoProjects={toggleShowUnicoProjects}
+            onFocusUnicoMatchedAntenna={(antennaId) => {
+              const found = derived?.byId.get(antennaId);
+              if (!found) return;
+              if (onlyUnicoDeclared && !declaredRealAntennasById.has(found.id)) {
+                setOnlyUnicoDeclared(false);
+              }
+              focusAntennaOnMap(found);
+            }}
             activeOperators={activeOperators}
             onToggleOperator={toggleOperator}
           />
