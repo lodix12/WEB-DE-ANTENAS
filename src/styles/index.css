@@ -742,6 +742,384 @@ code {
   color: var(--accent-primary);
 }
 
+/* Fila paralela: Buscador general acortado + Buscador específico por código de antena */
+.search-inputs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+  gap: 7px;
+  align-items: end;
+}
+
+.search-input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.search-input-field .sub-field-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-inputs-row .search-input-icon {
+  left: 8px;
+}
+
+.search-input-compact {
+  height: 34px;
+  padding: 0 26px 0 27px;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.search-input-compact::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-inputs-row .search-clear-btn {
+  right: 4px;
+  width: 22px;
+  height: 22px;
+}
+
+.search-code-icon {
+  color: #d97706;
+}
+
+[data-theme='dark'] .search-code-icon {
+  color: #fbbf24;
+}
+
+.search-code-input {
+  padding: 0 30px 0 25px;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.search-code-input.has-value {
+  padding-right: 48px;
+}
+
+.search-code-input:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.16);
+}
+
+[data-theme='dark'] .search-code-input:focus {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22);
+}
+
+.search-inputs-row .search-code-clear-btn {
+  right: 26px;
+  width: 20px;
+  height: 20px;
+}
+
+.search-code-go-btn {
+  position: absolute;
+  right: 4px;
+  width: 23px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.search-code-go-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.search-code-go-btn.is-ready {
+  background: rgba(217, 119, 6, 0.14);
+  border-color: rgba(217, 119, 6, 0.34);
+  color: #b45309;
+}
+
+.search-code-go-btn.is-ready:hover {
+  background: #d97706;
+  border-color: #d97706;
+  color: #ffffff;
+}
+
+[data-theme='dark'] .search-code-go-btn.is-ready {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fde68a;
+}
+
+[data-theme='dark'] .search-code-go-btn.is-ready:hover {
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #0f172a;
+}
+
+.search-code-go-btn:focus-visible {
+  outline: 2px solid #d97706;
+  outline-offset: 1px;
+}
+
+/* Sugerencias instantáneas del buscador por código */
+.code-search-results {
+  margin-top: 7px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-search-result-item {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.code-search-result-item:last-child {
+  border-bottom: none;
+}
+
+.code-search-result-item:hover,
+.code-search-result-item.is-active {
+  background: rgba(217, 119, 6, 0.1);
+}
+
+[data-theme='dark'] .code-search-result-item:hover,
+[data-theme='dark'] .code-search-result-item.is-active {
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.code-search-result-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.code-search-result-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.code-search-result-code {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.code-search-result-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.code-search-result-tag.is-exact {
+  background: rgba(217, 119, 6, 0.13);
+  border-color: rgba(217, 119, 6, 0.32);
+  color: #b45309;
+}
+
+[data-theme='dark'] .code-search-result-tag.is-exact {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(251, 191, 36, 0.38);
+  color: #fde68a;
+}
+
+.code-search-result-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-search-result-go {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.code-search-result-item:hover .code-search-result-go,
+.code-search-result-item.is-active .code-search-result-go {
+  color: #d97706;
+}
+
+[data-theme='dark'] .code-search-result-item:hover .code-search-result-go,
+[data-theme='dark'] .code-search-result-item.is-active .code-search-result-go {
+  color: #fbbf24;
+}
+
+.code-search-empty {
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--status-warn-bg);
+  border: 1px solid rgba(217, 119, 6, 0.32);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* Indicador temporal (10 s) de antena resaltada en el mapa */
+.code-highlight-banner {
+  margin-top: 7px;
+  padding: 5px 6px 5px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.11);
+  border: 1px solid rgba(217, 119, 6, 0.36);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-theme='dark'] .code-highlight-banner {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(251, 191, 36, 0.42);
+}
+
+.code-highlight-banner-main {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.code-highlight-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.28);
+  flex-shrink: 0;
+  animation: code-highlight-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes code-highlight-dot-pulse {
+  0%,
+  100% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.38);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .code-highlight-pulse-dot {
+    animation: none;
+  }
+}
+
+.code-highlight-banner-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.22;
+}
+
+.code-highlight-banner-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-highlight-banner-loc {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.code-highlight-countdown {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(217, 119, 6, 0.16);
+  border: 1px solid rgba(217, 119, 6, 0.34);
+  color: #92400e;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+[data-theme='dark'] .code-highlight-countdown {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fef08a;
+}
+
+.code-highlight-dismiss-btn {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.code-highlight-dismiss-btn:hover {
+  background: rgba(217, 119, 6, 0.16);
+  color: var(--text-primary);
+}
+
 /* ==========================================================================
    Píldoras de Operador
    ========================================================================== */

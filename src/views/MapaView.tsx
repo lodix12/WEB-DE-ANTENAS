@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearch } from '@tanstack/react-router';
 import {
   LayoutGrid,
@@ -19,6 +19,11 @@ import {
 } from '../hooks/useAntenasData';
 import { useUnico5gData } from '../hooks/useUnico5gData';
 import { useWorkspace } from '../hooks/useWorkspace';
+import type { AntennaRecord } from '../types/antena';
+import {
+  CODE_HIGHLIGHT_DURATION_MS,
+  type HighlightedAntennaTarget,
+} from '../types/map';
 
 export function MapaView() {
   const { derived, isLoading, isError, error, refetch } = useAntenasData();
@@ -74,13 +79,25 @@ export function MapaView() {
 
   const searchParams = useSearch({ from: '/' });
   const appliedGidRef = useRef<string | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  const [highlightedAntenna, setHighlightedAntenna] =
+    useState<HighlightedAntennaTarget | null>(null);
 
   useEffect(() => {
     document.title =
       'Redes Moviles España · Mapa Interactivo de Antenas de Redes Móviles';
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -243,6 +260,97 @@ export function MapaView() {
     unicoDataset,
   ]);
 
+  const clearHighlightedAntenna = useCallback(() => {
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    setHighlightedAntenna(null);
+  }, []);
+
+  const handleLocateAntennaByCode = useCallback(
+    (antenna: AntennaRecord, matchedCode: string) => {
+      // No filtrar ni ocultar las demás antenas: solo relajar filtros previos si impiden ver esta antena
+      const isAlreadyVisible = filteredAntenas.some(
+        (item) => item.id === antenna.id,
+      );
+      if (!isAlreadyVisible) {
+        if (!activeOperators.includes(antenna.op)) {
+          toggleOperator(antenna.op);
+        }
+        if (
+          selectedComunidad &&
+          getComunidadAutonomaByProvince(antenna.prov) !== selectedComunidad
+        ) {
+          setSelectedComunidad('');
+        }
+        if (selectedProvince && selectedProvince !== antenna.prov) {
+          setSelectedProvince('');
+        }
+        if (
+          selectedBands.length > 0 &&
+          !matchesAntennaBandsFilter(antenna, selectedBands, exclusiveBands)
+        ) {
+          clearBands();
+          setExclusiveBands(false);
+        }
+        if (
+          onlyUnicoDeclared &&
+          unicoDataset &&
+          !declaredRealAntennasById.has(antenna.id)
+        ) {
+          setOnlyUnicoDeclared(false);
+        }
+        if (searchQuery.trim().length > 0) {
+          setSearchQuery('');
+        }
+      }
+
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+
+      const startedAt = Date.now();
+      const expiresAt = startedAt + CODE_HIGHLIGHT_DURATION_MS;
+      const token = `${startedAt}-${Math.random().toString(36).slice(2, 7)}`;
+
+      setHighlightedAntenna({
+        antenna,
+        matchedCode: matchedCode || antenna.gid,
+        token,
+        startedAt,
+        expiresAt,
+      });
+
+      triggerFlyTo(antenna.lat, antenna.lon, 16);
+
+      highlightTimerRef.current = window.setTimeout(() => {
+        highlightTimerRef.current = null;
+        setHighlightedAntenna((prev) => (prev?.token === token ? null : prev));
+      }, CODE_HIGHLIGHT_DURATION_MS);
+    },
+    [
+      filteredAntenas,
+      activeOperators,
+      toggleOperator,
+      selectedComunidad,
+      setSelectedComunidad,
+      selectedProvince,
+      setSelectedProvince,
+      selectedBands,
+      exclusiveBands,
+      clearBands,
+      setExclusiveBands,
+      onlyUnicoDeclared,
+      unicoDataset,
+      declaredRealAntennasById,
+      setOnlyUnicoDeclared,
+      searchQuery,
+      setSearchQuery,
+      triggerFlyTo,
+    ],
+  );
+
   const liveSelectedAntenna = useMemo(
     () => resolveLiveSelectedAntenna(selectedAntenna, derived),
     [selectedAntenna, derived],
@@ -348,6 +456,9 @@ export function MapaView() {
         hasActiveFilters={hasActiveFilters}
         onResetFilters={resetAllFilters}
         onFlyTo={triggerFlyTo}
+        onLocateAntennaByCode={handleLocateAntennaByCode}
+        highlightedAntenna={highlightedAntenna}
+        onClearHighlightedAntenna={clearHighlightedAntenna}
       />
 
       <div className="map-stage">
@@ -435,6 +546,7 @@ export function MapaView() {
             styleId={styleId}
             onStyleChange={setStyleId}
             flyToTarget={flyToTarget}
+            highlightedAntenna={highlightedAntenna}
             measurePoints={measurePoints}
             onMeasurePointsChange={(pts) => {
               setMeasurePoints(pts);

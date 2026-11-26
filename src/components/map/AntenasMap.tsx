@@ -45,6 +45,12 @@ import {
   getOrCreateBandCardSprite,
 } from '../../utils/bandCard';
 import {
+  EMPTY_CODE_HIGHLIGHT_GEOJSON,
+  buildCodeHighlightGeoJson,
+  computeCodeHighlightAnimationFrame,
+  type CodeHighlightFeatureProperties,
+} from '../../utils/codeHighlight';
+import {
   MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   SPAIN_REGION_PRESETS,
   formatDistance,
@@ -79,6 +85,7 @@ if (typeof window !== 'undefined') {
 
 const ANTENAS_SOURCE_ID = 'antenas-source';
 const UNICO_PROJECTS_SOURCE_ID = 'unico-projects-source';
+const CODE_HIGHLIGHT_SOURCE_ID = 'code-highlight-source';
 const MEASURE_SOURCE_ID = 'measure-source';
 
 const LAYER_MEASURE_CASING = 'measure-line-casing';
@@ -99,6 +106,12 @@ const LAYER_UNICO_PROJECTS = 'unico-projects-points';
 const LAYER_SELECTED_HALO = 'antenas-selected-halo';
 const LAYER_SELECTED_RING = 'antenas-selected-ring';
 const LAYER_UNCLUSTERED_BANDS = 'antenas-unclustered-bands';
+const LAYER_CODE_HIGHLIGHT_PULSE = 'antenas-code-highlight-pulse';
+const LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY =
+  'antenas-code-highlight-pulse-secondary';
+const LAYER_CODE_HIGHLIGHT_RING_CASING = 'antenas-code-highlight-ring-casing';
+const LAYER_CODE_HIGHLIGHT_RING = 'antenas-code-highlight-ring';
+const LAYER_CODE_HIGHLIGHT_LABEL = 'antenas-code-highlight-label';
 
 const UNICO_DECLARED_FILTER: maplibregl.FilterSpecification = [
   'all',
@@ -1034,6 +1047,7 @@ export function AntenasMap(props: AntenasMapProps) {
     showUnicoProjects,
     onToggleShowUnicoProjects,
     onFocusUnicoMatchedAntenna,
+    highlightedAntenna,
   } = props;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1195,6 +1209,7 @@ export function AntenasMap(props: AntenasMapProps) {
     siteBandCardKeys,
     antenasById,
     sitesById,
+    siteByMemberId,
     multiIconKeys,
   } = useMemo(() => {
     const byId = new Map<string, AntennaRecord>();
@@ -1210,12 +1225,16 @@ export function AntenasMap(props: AntenasMapProps) {
       MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
     );
     const bySiteId = new Map<string, MapSiteEntry>();
+    const byMemberId = new Map<string, MapSiteEntry>();
     const iconKeys = new Set<string>();
     const bandCardKeys = new Array<string>(sites.length);
 
     for (let i = 0; i < sites.length; i++) {
       const site = sites[i];
       bySiteId.set(site.siteId, site);
+      for (let m = 0; m < site.memberIds.length; m++) {
+        byMemberId.set(site.memberIds[m], site);
+      }
       if (site.isMultiOperator) {
         iconKeys.add(site.iconKey);
       }
@@ -1227,6 +1246,7 @@ export function AntenasMap(props: AntenasMapProps) {
       siteBandCardKeys: bandCardKeys,
       antenasById: byId,
       sitesById: bySiteId,
+      siteByMemberId: byMemberId,
       multiIconKeys: Array.from(iconKeys),
     };
   }, [antenas]);
@@ -1324,9 +1344,24 @@ export function AntenasMap(props: AntenasMapProps) {
     [effectiveMeasurePoints],
   );
 
+  // Construcción memorizada del punto resaltado durante 10 s tras búsqueda específica por código
+  const codeHighlightGeoJson = useMemo<
+    FeatureCollection<Point, CodeHighlightFeatureProperties>
+  >(() => {
+    if (!highlightedAntenna) {
+      return EMPTY_CODE_HIGHLIGHT_GEOJSON;
+    }
+    const matchedSite = siteByMemberId.get(highlightedAntenna.antenna.id);
+    return buildCodeHighlightGeoJson(
+      highlightedAntenna,
+      matchedSite ? { lat: matchedSite.lat, lon: matchedSite.lon } : null,
+    );
+  }, [highlightedAntenna, siteByMemberId]);
+
   // Referencias vivas sincronizadas en efectos para acceso estable desde listeners imperativos de MapLibre
   const antenasGeoJsonRef = useRef(antenasGeoJson);
   const unicoProjectsGeoJsonRef = useRef(unicoProjectsGeoJson);
+  const codeHighlightGeoJsonRef = useRef(codeHighlightGeoJson);
   const antenasByIdRef = useRef(antenasById);
   const sitesByIdRef = useRef(sitesById);
   const multiIconKeysRef = useRef(multiIconKeys);
@@ -1351,6 +1386,10 @@ export function AntenasMap(props: AntenasMapProps) {
   useEffect(() => {
     unicoProjectsGeoJsonRef.current = unicoProjectsGeoJson;
   }, [unicoProjectsGeoJson]);
+
+  useEffect(() => {
+    codeHighlightGeoJsonRef.current = codeHighlightGeoJson;
+  }, [codeHighlightGeoJson]);
 
   useEffect(() => {
     unicoDeclaredByIdRef.current = unicoDeclaredById;
@@ -1862,6 +1901,122 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
 
+    // 1b. Resaltado temporal (10 s) de antena localizada mediante el buscador por código
+    // Fuente independiente sin clustering para mantenerse visible y alineada a cualquier zoom o cambio de estilo
+    if (!map.getSource(CODE_HIGHLIGHT_SOURCE_ID)) {
+      map.addSource(CODE_HIGHLIGHT_SOURCE_ID, {
+        type: 'geojson',
+        data: codeHighlightGeoJsonRef.current,
+        cluster: false,
+      });
+    }
+
+    const highlightRingRadiusExpr: maplibregl.ExpressionSpecification = [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      4,
+      10,
+      8,
+      12.5,
+      12,
+      15.5,
+      16,
+      19.5,
+      18,
+      22,
+    ];
+
+    if (!map.getLayer(LAYER_CODE_HIGHLIGHT_PULSE)) {
+      map.addLayer({
+        id: LAYER_CODE_HIGHLIGHT_PULSE,
+        type: 'circle',
+        source: CODE_HIGHLIGHT_SOURCE_ID,
+        paint: {
+          'circle-radius': 22,
+          'circle-color': isDark ? '#FDE047' : '#FACC15',
+          'circle-opacity': 0.18,
+          'circle-stroke-width': 2.6,
+          'circle-stroke-color': isDark ? '#FDE047' : '#D97706',
+          'circle-stroke-opacity': 0.85,
+          'circle-pitch-scale': 'viewport',
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY)) {
+      map.addLayer({
+        id: LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY,
+        type: 'circle',
+        source: CODE_HIGHLIGHT_SOURCE_ID,
+        paint: {
+          'circle-radius': 34,
+          'circle-color': isDark ? '#FDE047' : '#FACC15',
+          'circle-opacity': 0.1,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': isDark ? '#FACC15' : '#EA580C',
+          'circle-stroke-opacity': 0.55,
+          'circle-pitch-scale': 'viewport',
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_CODE_HIGHLIGHT_RING_CASING)) {
+      map.addLayer({
+        id: LAYER_CODE_HIGHLIGHT_RING_CASING,
+        type: 'circle',
+        source: CODE_HIGHLIGHT_SOURCE_ID,
+        paint: {
+          'circle-radius': highlightRingRadiusExpr,
+          'circle-color': 'rgba(0, 0, 0, 0)',
+          'circle-stroke-width': 7,
+          'circle-stroke-color': '#0F172A',
+          'circle-stroke-opacity': 0.92,
+          'circle-pitch-scale': 'viewport',
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_CODE_HIGHLIGHT_RING)) {
+      map.addLayer({
+        id: LAYER_CODE_HIGHLIGHT_RING,
+        type: 'circle',
+        source: CODE_HIGHLIGHT_SOURCE_ID,
+        paint: {
+          'circle-radius': highlightRingRadiusExpr,
+          'circle-color': isDark ? '#FDE047' : '#FACC15',
+          'circle-opacity': 0.14,
+          'circle-stroke-width': 3.4,
+          'circle-stroke-color': isDark ? '#FDE047' : '#FACC15',
+          'circle-stroke-opacity': 1,
+          'circle-pitch-scale': 'viewport',
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_CODE_HIGHLIGHT_LABEL)) {
+      map.addLayer({
+        id: LAYER_CODE_HIGHLIGHT_LABEL,
+        type: 'symbol',
+        source: CODE_HIGHLIGHT_SOURCE_ID,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': ['Noto Sans Regular'],
+          'text-size': 12.5,
+          'text-anchor': 'bottom',
+          'text-offset': [0, -2.35],
+          'text-allow-overlap': true,
+          'text-ignore-placement': true,
+        },
+        paint: {
+          'text-color': '#FEF08A',
+          'text-halo-color': '#0F172A',
+          'text-halo-width': 2.6,
+          'text-opacity': 1,
+        },
+      });
+    }
+
     // 2. Capas de la regla de distancia multi-punto (Puntos 1..10, tramos y total), aisladas en try/catch
     try {
       if (!map.getSource(MEASURE_SOURCE_ID)) {
@@ -2176,6 +2331,12 @@ export function AntenasMap(props: AntenasMapProps) {
       ) {
         antSource.setData(antenasGeoJsonRef.current);
         lastAppliedGeoJsonRef.current = antenasGeoJsonRef.current;
+      }
+      const highlightSource = map.getSource(CODE_HIGHLIGHT_SOURCE_ID) as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      if (highlightSource) {
+        highlightSource.setData(codeHighlightGeoJsonRef.current);
       }
       try {
         const measSource = map.getSource(MEASURE_SOURCE_ID) as
@@ -2920,6 +3081,137 @@ export function AntenasMap(props: AntenasMapProps) {
       map.setFilter(LAYER_SELECTED_RING, filter);
     }
   }, [selectedAntenna]);
+
+  // Sincronización reactiva del marcador resaltado durante 10 s tras búsqueda por código
+  useEffect(() => {
+    codeHighlightGeoJsonRef.current = codeHighlightGeoJson;
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+    const source = map.getSource(CODE_HIGHLIGHT_SOURCE_ID) as
+      | maplibregl.GeoJSONSource
+      | undefined;
+    if (source) {
+      source.setData(codeHighlightGeoJson);
+    }
+  }, [codeHighlightGeoJson]);
+
+  // Animación WebGL de pulso radar de 10 s (con desvanecimiento suave y soporte prefers-reduced-motion)
+  useEffect(() => {
+    if (!highlightedAntenna) {
+      return;
+    }
+    const map = mapRef.current;
+    if (!map || typeof window === 'undefined') {
+      return;
+    }
+
+    const reducedMotion = Boolean(
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches,
+    );
+    const durationMs = Math.max(
+      1,
+      highlightedAntenna.expiresAt - highlightedAntenna.startedAt,
+    );
+    let rafId: number | null = null;
+    let cancelled = false;
+
+    const applyFrame = () => {
+      if (cancelled) {
+        return;
+      }
+      const activeMap = mapRef.current;
+      if (!activeMap) {
+        return;
+      }
+
+      const now = Date.now();
+      const elapsedMs = now - highlightedAntenna.startedAt;
+      const frame = computeCodeHighlightAnimationFrame(
+        elapsedMs,
+        durationMs,
+        reducedMotion,
+      );
+
+      if (activeMap.getStyle()) {
+        if (activeMap.getLayer(LAYER_CODE_HIGHLIGHT_PULSE)) {
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE,
+            'circle-radius',
+            frame.pulse1Radius,
+          );
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE,
+            'circle-opacity',
+            frame.pulse1FillOpacity,
+          );
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE,
+            'circle-stroke-opacity',
+            frame.pulse1StrokeOpacity,
+          );
+        }
+        if (activeMap.getLayer(LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY)) {
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY,
+            'circle-radius',
+            frame.pulse2Radius,
+          );
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY,
+            'circle-opacity',
+            frame.pulse2FillOpacity,
+          );
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_PULSE_SECONDARY,
+            'circle-stroke-opacity',
+            frame.pulse2StrokeOpacity,
+          );
+        }
+        if (activeMap.getLayer(LAYER_CODE_HIGHLIGHT_RING_CASING)) {
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_RING_CASING,
+            'circle-stroke-opacity',
+            frame.casingStrokeOpacity,
+          );
+        }
+        if (activeMap.getLayer(LAYER_CODE_HIGHLIGHT_RING)) {
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_RING,
+            'circle-opacity',
+            frame.ringFillOpacity,
+          );
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_RING,
+            'circle-stroke-opacity',
+            frame.ringStrokeOpacity,
+          );
+        }
+        if (activeMap.getLayer(LAYER_CODE_HIGHLIGHT_LABEL)) {
+          activeMap.setPaintProperty(
+            LAYER_CODE_HIGHLIGHT_LABEL,
+            'text-opacity',
+            frame.labelOpacity,
+          );
+        }
+      }
+
+      if (now < highlightedAntenna.expiresAt) {
+        rafId = window.requestAnimationFrame(applyFrame);
+      } else {
+        rafId = null;
+      }
+    };
+
+    rafId = window.requestAnimationFrame(applyFrame);
+    return () => {
+      cancelled = true;
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [highlightedAntenna, styleId]);
 
   const canAddMoreMeasurePoints =
     effectiveMeasureModeActive &&

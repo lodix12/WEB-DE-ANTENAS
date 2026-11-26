@@ -76,6 +76,8 @@ export interface DerivedAntenasStructures {
   /** Búsqueda O(1) por id o Gis_ID (incluyendo mergedGids fusionados) */
   byId: Map<string, AntennaRecord>;
   byGid: Map<string, AntennaRecord>;
+  /** Búsqueda O(1) case-insensitive por código de antena (soporta códigos compartidos entre operadores y mergedGids) */
+  byNormalizedGid: Map<string, AntennaRecord | AntennaRecord[]>;
   /** Índice pre-normalizado sin tildes alineado con dataset.antenas */
   searchIndex: string[];
 }
@@ -2371,6 +2373,7 @@ export function buildDerivedAntenasStructures(
   let bandsPopulatedCount = 0;
   const byId = new Map<string, AntennaRecord>();
   const byGid = new Map<string, AntennaRecord>();
+  const byNormalizedGid = new Map<string, AntennaRecord | AntennaRecord[]>();
   const searchIndex = new Array<string>(antenas.length);
 
   for (let i = 0; i < antenas.length; i++) {
@@ -2380,6 +2383,17 @@ export function buildDerivedAntenasStructures(
     byId.set(ant.id, ant);
     if (!byGid.has(ant.gid)) {
       byGid.set(ant.gid, ant);
+    }
+    const normGid = ant.gid.trim().toUpperCase();
+    if (normGid) {
+      const existing = byNormalizedGid.get(normGid);
+      if (existing === undefined) {
+        byNormalizedGid.set(normGid, ant);
+      } else if (Array.isArray(existing)) {
+        existing.push(ant);
+      } else {
+        byNormalizedGid.set(normGid, [existing, ant]);
+      }
     }
 
     const normalizedAntBands = Array.isArray(ant.bandas)
@@ -2454,8 +2468,22 @@ export function buildDerivedAntenasStructures(
     if (!ant.mergedGids) continue;
     for (let g = 0; g < ant.mergedGids.length; g++) {
       const mgid = ant.mergedGids[g];
-      if (mgid && !byGid.has(mgid)) {
+      if (!mgid) continue;
+      if (!byGid.has(mgid)) {
         byGid.set(mgid, ant);
+      }
+      const normMgid = mgid.trim().toUpperCase();
+      if (normMgid) {
+        const existing = byNormalizedGid.get(normMgid);
+        if (existing === undefined) {
+          byNormalizedGid.set(normMgid, ant);
+        } else if (Array.isArray(existing)) {
+          if (!existing.includes(ant)) {
+            existing.push(ant);
+          }
+        } else if (existing !== ant) {
+          byNormalizedGid.set(normMgid, [existing, ant]);
+        }
       }
     }
   }
@@ -2572,6 +2600,7 @@ export function buildDerivedAntenasStructures(
     provinceCentroids,
     byId,
     byGid,
+    byNormalizedGid,
     searchIndex,
   };
 }
@@ -3344,3 +3373,214 @@ export function useFilteredAntenas({
     ],
   );
 }
+
+export interface AntennaCodeMatch {
+  antenna: AntennaRecord;
+  /** Código concreto (gid principal o mergedGid) que coincidió con la búsqueda */
+  matchedCode: string;
+  matchType: 'exact' | 'prefix' | 'contains';
+  /** `true` si la coincidencia se resolvió mediante un Gis_ID absorbido (`mergedGids`) */
+  isMergedCode: boolean;
+}
+
+export interface FindAntennasByCodeOptions {
+  limit?: number;
+  preferredIds?: ReadonlySet<string>;
+}
+
+const CODE_OPERATOR_RANK: Record<OperatorKey, number> = (() => {
+  const rank = {} as Record<OperatorKey, number>;
+  for (let i = 0; i < OPERATOR_ORDER.length; i++) {
+    rank[OPERATOR_ORDER[i]] = i;
+  }
+  return rank;
+})();
+
+/**
+ * Normaliza un código de antena introducido por el usuario eliminando espacios
+ * y almohadillas iniciales (`#3600449` -> `3600449`, `galr0453b` -> `GALR0453B`).
+ */
+export function normalizeAntennaCodeInput(raw: string): string {
+  return raw.trim().replace(/^#+/, '').trim().toUpperCase();
+}
+
+/**
+ * Busca antenas específicamente por su código oficial (`gid`, `mergedGids` o `id` completo)
+ * sin alterar ni filtrar el conjunto visible en el mapa.
+ * Prioriza coincidencias exactas (O(1)), seguidas de prefijos y subcadenas (≥ 3 caracteres).
+ */
+export function findAntennasByCode(
+  derived: DerivedAntenasStructures | null,
+  rawQuery: string,
+  options?: FindAntennasByCodeOptions,
+): AntennaCodeMatch[] {
+  if (!derived) return [];
+  const trimmed = rawQuery.trim();
+  if (!trimmed) return [];
+
+  const limit = Math.max(1, options?.limit ?? 6);
+  const preferredIds = options?.preferredIds;
+
+  const exactById = derived.byId.get(trimmed);
+  if (exactById) {
+    return [
+      {
+        antenna: exactById,
+        matchedCode: exactById.gid,
+        matchType: 'exact',
+        isMergedCode: false,
+      },
+    ];
+  }
+
+  const code = normalizeAntennaCodeInput(trimmed);
+  if (!code) return [];
+
+  const seenIds = new Set<string>();
+  const exactMatches: AntennaCodeMatch[] = [];
+
+  const exactEntry = derived.byNormalizedGid?.get(code);
+  const exactBucket =
+    exactEntry === undefined
+      ? null
+      : Array.isArray(exactEntry)
+        ? exactEntry
+        : [exactEntry];
+  if (exactBucket && exactBucket.length > 0) {
+    for (let i = 0; i < exactBucket.length; i++) {
+      const ant = exactBucket[i];
+      if (seenIds.has(ant.id)) continue;
+      seenIds.add(ant.id);
+      const primaryNorm = ant.gid.trim().toUpperCase();
+      if (primaryNorm === code) {
+        exactMatches.push({
+          antenna: ant,
+          matchedCode: ant.gid,
+          matchType: 'exact',
+          isMergedCode: false,
+        });
+      } else {
+        const matchedMerged =
+          ant.mergedGids?.find((mg) => mg.trim().toUpperCase() === code) ??
+          ant.gid;
+        exactMatches.push({
+          antenna: ant,
+          matchedCode: matchedMerged,
+          matchType: 'exact',
+          isMergedCode: matchedMerged !== ant.gid,
+        });
+      }
+    }
+  }
+
+  const compareMatches = (a: AntennaCodeMatch, b: AntennaCodeMatch): number => {
+    if (a.isMergedCode !== b.isMergedCode) {
+      return a.isMergedCode ? 1 : -1;
+    }
+    if (preferredIds) {
+      const aPref = preferredIds.has(a.antenna.id) ? 0 : 1;
+      const bPref = preferredIds.has(b.antenna.id) ? 0 : 1;
+      if (aPref !== bPref) return aPref - bPref;
+    }
+    if (a.matchedCode.length !== b.matchedCode.length) {
+      return a.matchedCode.length - b.matchedCode.length;
+    }
+    const codeDiff = a.matchedCode.localeCompare(b.matchedCode, 'es', {
+      numeric: true,
+    });
+    if (codeDiff !== 0) return codeDiff;
+    const opDiff =
+      (CODE_OPERATOR_RANK[a.antenna.op] ?? 99) -
+      (CODE_OPERATOR_RANK[b.antenna.op] ?? 99);
+    if (opDiff !== 0) return opDiff;
+    return a.antenna.id.localeCompare(b.antenna.id, 'es');
+  };
+
+  if (exactMatches.length > 1) {
+    exactMatches.sort(compareMatches);
+  }
+  if (exactMatches.length >= limit) {
+    return exactMatches.slice(0, limit);
+  }
+
+  const remaining = limit - exactMatches.length;
+  const maxPrefixBuffer = Math.max(remaining * 4, 24);
+  const maxContainsBuffer = Math.max(remaining * 2, 12);
+  const allowContains = code.length >= 3;
+
+  const prefixMatches: AntennaCodeMatch[] = [];
+  const containsMatches: AntennaCodeMatch[] = [];
+  const antenas = derived.dataset.antenas;
+
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+    if (seenIds.has(ant.id)) continue;
+
+    const primaryNorm = ant.gid.trim().toUpperCase();
+    let matchType: 'prefix' | 'contains' | null = null;
+    let matchedCode = ant.gid;
+    let isMergedCode = false;
+
+    if (primaryNorm.startsWith(code)) {
+      matchType = 'prefix';
+    } else if (allowContains && primaryNorm.includes(code)) {
+      matchType = 'contains';
+    }
+
+    if (matchType !== 'prefix' && ant.mergedGids && ant.mergedGids.length > 0) {
+      for (let g = 0; g < ant.mergedGids.length; g++) {
+        const mgid = ant.mergedGids[g];
+        if (!mgid) continue;
+        const mgidNorm = mgid.trim().toUpperCase();
+        if (mgidNorm.startsWith(code)) {
+          matchType = 'prefix';
+          matchedCode = mgid;
+          isMergedCode = mgid !== ant.gid;
+          break;
+        }
+        if (matchType === null && allowContains && mgidNorm.includes(code)) {
+          matchType = 'contains';
+          matchedCode = mgid;
+          isMergedCode = mgid !== ant.gid;
+        }
+      }
+    }
+
+    if (matchType === 'prefix') {
+      seenIds.add(ant.id);
+      if (prefixMatches.length < maxPrefixBuffer) {
+        prefixMatches.push({
+          antenna: ant,
+          matchedCode,
+          matchType: 'prefix',
+          isMergedCode,
+        });
+      }
+    } else if (
+      matchType === 'contains' &&
+      prefixMatches.length < remaining &&
+      containsMatches.length < maxContainsBuffer
+    ) {
+      seenIds.add(ant.id);
+      containsMatches.push({
+        antenna: ant,
+        matchedCode,
+        matchType: 'contains',
+        isMergedCode,
+      });
+    }
+  }
+
+  if (prefixMatches.length > 1) {
+    prefixMatches.sort(compareMatches);
+  }
+  if (containsMatches.length > 1) {
+    containsMatches.sort(compareMatches);
+  }
+
+  return [...exactMatches, ...prefixMatches, ...containsMatches].slice(
+    0,
+    limit,
+  );
+}
+

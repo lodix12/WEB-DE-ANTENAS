@@ -60,9 +60,11 @@ import {
 } from '../types/antena';
 import {
   CLUSTERING_LEVEL_OPTIONS,
+  CODE_HIGHLIGHT_DURATION_MS,
   DEFAULT_CLUSTERING_LEVEL,
   getClusteringLevelConfig,
   type ClusteringLevel,
+  type HighlightedAntennaTarget,
 } from '../types/map';
 import {
   buildCsvExportContent,
@@ -77,6 +79,10 @@ import {
   extractAntennaBandCodes,
   renderBandCardSprite,
 } from '../utils/bandCard';
+import {
+  buildCodeHighlightGeoJson,
+  computeCodeHighlightAnimationFrame,
+} from '../utils/codeHighlight';
 import {
   MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   groupColocatedAntennasForMap,
@@ -93,6 +99,7 @@ import {
   compareFrequencyRanges,
   computeAntennaRfBandMask,
   filterAntenas,
+  findAntennasByCode,
   fuseSameOperatorExactCoordsInDataset,
   fuseVodafoneAntennasInDataset,
   fuseXferaIntoOrangeInDataset,
@@ -103,6 +110,7 @@ import {
   matchesAntennaBandsFilter,
   mergeLiveDeltaIntoAntenasDataset,
   normalizeAntennaBandsList,
+  normalizeAntennaCodeInput,
   normalizeCommercialBandLabel,
   normalizeOperatorKeyInput,
   parseCustomAntenasJson,
@@ -9716,3 +9724,319 @@ describe('Mapa — FilterPanel: cabecera rediseñada (Opción A) sin Exportar ni
     expect(indexCssSource).toContain('.sections-drawer .sidebar-header');
   });
 });
+
+describe('Mapa — Buscador específico por código de antena en la misma fila + desplazamiento y resaltado de 10 segundos sin ocultar las demás', () => {
+  it('normaliza y busca antenas por código exacto, códigos compartidos entre operadoras, mergedGids, prefijos y subcadenas sin alterar el filtro general', () => {
+    expect(normalizeAntennaCodeInput('  #galr0453b  ')).toBe('GALR0453B');
+    expect(normalizeAntennaCodeInput('##3600449')).toBe('3600449');
+    expect(normalizeAntennaCodeInput('   ')).toBe('');
+
+    const base = createSampleCustomDataset();
+    const dataset: AntenasDataset = {
+      ...base,
+      total: 5,
+      antenas: [
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 1500042',
+          gid: '1500042',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 43.3042,
+          lon: -8.5081,
+          dir: 'AV. ARTEIXO 10',
+          mun: 'ARTEIXO',
+          prov: 'A CORUÑA',
+          bandas: ['800 MHz', '1800 MHz'],
+        },
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - 1500042',
+          gid: '1500042',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 43.30422,
+          lon: -8.50812,
+          dir: 'AV. ARTEIXO 10',
+          mun: 'ARTEIXO',
+          prov: 'A CORUÑA',
+          bandas: ['1800 MHz', '3500 MHz'],
+        },
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - GALR0453B',
+          gid: 'GALR0453B',
+          mergedGids: ['GALR0453B', 'GALR0453A'],
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.2265,
+          lon: -8.2889,
+          dir: 'CTRA. ABEGONDO KM 2',
+          mun: 'ABEGONDO',
+          prov: 'A CORUÑA',
+          bandas: ['700 MHz', '3500 MHz'],
+        },
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - 1500999',
+          gid: '1500999',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 43.3623,
+          lon: -8.4115,
+          dir: 'C/ REAL 5',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+        },
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - 2804531',
+          gid: '2804531',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'PUERTA DEL SOL 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+        },
+      ],
+    };
+
+    const derived = buildDerivedAntenasStructures(dataset);
+
+    // 1. Código compartido exacto devuelve ambos operadores ordenados canónicamente (Movistar -> DIGI)
+    const sharedMatches = findAntennasByCode(derived, '#1500042');
+    expect(sharedMatches).toHaveLength(2);
+    expect(sharedMatches[0]).toMatchObject({
+      matchedCode: '1500042',
+      matchType: 'exact',
+      isMergedCode: false,
+    });
+    expect(sharedMatches[0].antenna.op).toBe('movistar');
+    expect(sharedMatches[1].antenna.op).toBe('digi');
+
+    // 2. preferredIds prioriza la operadora visible en el mapa cuando comparten código
+    const preferredDigi = findAntennasByCode(derived, '1500042', {
+      preferredIds: new Set(['DIGI SPAIN TELECOM, S.L.U. - 1500042']),
+    });
+    expect(preferredDigi[0].antenna.op).toBe('digi');
+    expect(preferredDigi[1].antenna.op).toBe('movistar');
+
+    // 3. Código absorbido en mergedGids y case-insensitive
+    const mergedMatches = findAntennasByCode(derived, 'galr0453a');
+    expect(mergedMatches).toHaveLength(1);
+    expect(mergedMatches[0]).toMatchObject({
+      matchedCode: 'GALR0453A',
+      matchType: 'exact',
+      isMergedCode: true,
+    });
+    expect(mergedMatches[0].antenna.gid).toBe('GALR0453B');
+
+    // 4. Prefijo priorizado frente a subcadena (y subcadena habilitada desde >= 3 caracteres)
+    const prefixMatches = findAntennasByCode(derived, '1500');
+    expect(prefixMatches.map((m) => m.antenna.gid)).toEqual([
+      '1500042',
+      '1500042',
+      '1500999',
+    ]);
+    expect(prefixMatches.every((m) => m.matchType === 'prefix')).toBe(true);
+
+    const substringMatches = findAntennasByCode(derived, '0453');
+    expect(substringMatches.map((m) => m.antenna.gid)).toEqual([
+      '2804531',
+      'GALR0453B',
+    ]);
+    expect(substringMatches.every((m) => m.matchType === 'contains')).toBe(true);
+
+    // 5. Pegar el id oficial completo también localiza la antena exacta
+    const byFullId = findAntennasByCode(
+      derived,
+      'ORANGE ESPAGNE, S.A.U. - GALR0453B',
+    );
+    expect(byFullId).toHaveLength(1);
+    expect(byFullId[0].antenna.gid).toBe('GALR0453B');
+
+    // 6. Buscar por código NO altera filterAntenas: todas las demás antenas siguen visibles
+    const allVisible = filterAntenas({
+      derived,
+      searchQuery: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+    });
+    expect(allVisible).toHaveLength(5);
+  });
+
+  it('construye el GeoJSON y los fotogramas del resaltado de 10 segundos con alineación a torres compartidas y soporte reduced-motion', () => {
+    expect(CODE_HIGHLIGHT_DURATION_MS).toBe(10_000);
+
+    const sample = createSampleCustomDataset();
+    const targetAnt = sample.antenas[0];
+    const target: HighlightedAntennaTarget = {
+      antenna: targetAnt,
+      matchedCode: targetAnt.gid,
+      token: 'hl-1',
+      startedAt: 100_000,
+      expiresAt: 110_000,
+    };
+
+    expect(buildCodeHighlightGeoJson(null).features).toHaveLength(0);
+
+    const directGeo = buildCodeHighlightGeoJson(target);
+    expect(directGeo.features).toHaveLength(1);
+    expect(directGeo.features[0].geometry.coordinates).toEqual([
+      targetAnt.lon,
+      targetAnt.lat,
+    ]);
+    expect(directGeo.features[0].properties.label).toBe(`#${targetAnt.gid}`);
+
+    // Cuando pertenece a un emplazamiento compartido (< 15 m), alinea el resaltado al centroide del icono
+    const sharedGeo = buildCodeHighlightGeoJson(target, {
+      lat: 40.5,
+      lon: -3.6,
+    });
+    expect(sharedGeo.features[0].geometry.coordinates).toEqual([-3.6, 40.5]);
+
+    const startFrame = computeCodeHighlightAnimationFrame(
+      0,
+      CODE_HIGHLIGHT_DURATION_MS,
+      false,
+    );
+    expect(startFrame.fade).toBe(1);
+    expect(startFrame.labelOpacity).toBe(1);
+    expect(startFrame.pulse1StrokeOpacity).toBeGreaterThan(0.8);
+
+    const midFrame = computeCodeHighlightAnimationFrame(
+      5_000,
+      CODE_HIGHLIGHT_DURATION_MS,
+      false,
+    );
+    expect(midFrame.fade).toBe(1);
+    expect(midFrame.pulse1Radius).toBeGreaterThan(15);
+
+    const fadeFrame = computeCodeHighlightAnimationFrame(
+      9_500,
+      CODE_HIGHLIGHT_DURATION_MS,
+      false,
+    );
+    expect(fadeFrame.fade).toBeCloseTo(0.5, 4);
+    expect(fadeFrame.labelOpacity).toBeCloseTo(0.5, 4);
+
+    const endFrame = computeCodeHighlightAnimationFrame(
+      10_000,
+      CODE_HIGHLIGHT_DURATION_MS,
+      false,
+    );
+    expect(endFrame.fade).toBe(0);
+    expect(endFrame.labelOpacity).toBe(0);
+    expect(endFrame.ringStrokeOpacity).toBe(0);
+
+    const reducedFrameA = computeCodeHighlightAnimationFrame(
+      1_200,
+      CODE_HIGHLIGHT_DURATION_MS,
+      true,
+    );
+    const reducedFrameB = computeCodeHighlightAnimationFrame(
+      4_700,
+      CODE_HIGHLIGHT_DURATION_MS,
+      true,
+    );
+    expect(reducedFrameA.pulse1Radius).toBe(reducedFrameB.pulse1Radius);
+    expect(reducedFrameA.pulse2StrokeOpacity).toBe(0);
+  });
+
+  it('renderiza ambos buscadores en la misma fila en FilterPanel, muestra el banner de 10 s y conecta MapaView, AntenasMap e index.css', async () => {
+    const sample = createSampleCustomDataset();
+    const derived = buildDerivedAntenasStructures(sample);
+    const ant = derived.dataset.antenas[0];
+    const activeHighlight: HighlightedAntennaTarget = {
+      antenna: ant,
+      matchedCode: ant.gid,
+      token: 'tok-10s',
+      startedAt: 1_000,
+      expiresAt: 1_000 + CODE_HIGHLIGHT_DURATION_MS,
+    };
+
+    const html = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+        onLocateAntennaByCode: () => {},
+        highlightedAntenna: activeHighlight,
+        onClearHighlightedAntenna: () => {},
+      }),
+    );
+
+    // 1. Misma fila (.search-inputs-row): buscador general a la izquierda y buscador por código a la derecha
+    expect(html).toContain('class="search-inputs-row"');
+    const rowSlice = html.split('class="search-inputs-row"')[1]?.split('</section>')[0] ?? '';
+    const generalIdx = rowSlice.indexOf('id="map-search-input"');
+    const codeIdx = rowSlice.indexOf('id="map-code-search-input"');
+    const submitIdx = rowSlice.indexOf('id="map-code-search-submit-btn"');
+    expect(generalIdx).toBeGreaterThan(-1);
+    expect(codeIdx).toBeGreaterThan(generalIdx);
+    expect(submitIdx).toBeGreaterThan(codeIdx);
+    expect(rowSlice).toContain('>Buscador general<');
+    expect(rowSlice).toContain('>Código antena<');
+
+    // 2. Banner de resaltado temporal de 10 s con código, cuenta atrás y botón de cierre
+    expect(html).toContain('id="map-code-highlight-banner"');
+    expect(html).toContain(`#${ant.gid}`);
+    expect(html).toContain('>10 s<');
+    expect(html).toContain('id="map-code-highlight-dismiss-btn"');
+
+    // 3. Verificación de código fuente en MapaView, AntenasMap y CSS
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapaViewSource = readFileSync(
+      new URL('../views/MapaView.tsx', import.meta.url),
+      'utf-8',
+    );
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+
+    expect(mapaViewSource).toContain('CODE_HIGHLIGHT_DURATION_MS');
+    expect(mapaViewSource).toContain('handleLocateAntennaByCode');
+    expect(mapaViewSource).toContain('triggerFlyTo(antenna.lat, antenna.lon, 16)');
+    expect(mapaViewSource).toContain('onLocateAntennaByCode={handleLocateAntennaByCode}');
+    expect(mapaViewSource).toContain('highlightedAntenna={highlightedAntenna}');
+
+    expect(antenasMapRawSource).toContain("const CODE_HIGHLIGHT_SOURCE_ID = 'code-highlight-source';");
+    expect(antenasMapRawSource).toContain("const LAYER_CODE_HIGHLIGHT_PULSE = 'antenas-code-highlight-pulse';");
+    expect(antenasMapRawSource).toContain('LAYER_CODE_HIGHLIGHT_RING_CASING');
+    expect(antenasMapRawSource).toContain('LAYER_CODE_HIGHLIGHT_RING');
+    expect(antenasMapRawSource).toContain('LAYER_CODE_HIGHLIGHT_LABEL');
+    expect(
+      antenasMapRawSource.indexOf('id: LAYER_SELECTED_RING,'),
+    ).toBeLessThan(antenasMapRawSource.indexOf('id: LAYER_CODE_HIGHLIGHT_PULSE,'));
+    expect(antenasMapRawSource).toContain('requestAnimationFrame');
+
+    expect(indexCssSource).toMatch(
+      /\.search-inputs-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1\.12fr\)\s+minmax\(0,\s*1fr\);/s,
+    );
+    expect(indexCssSource).toContain('.search-code-input');
+    expect(indexCssSource).toContain('.code-highlight-banner');
+  });
+});
+

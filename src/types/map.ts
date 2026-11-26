@@ -15,6 +15,21 @@ export interface FlyToTarget {
   token: number | string;
 }
 
+export const CODE_HIGHLIGHT_DURATION_MS = 10_000;
+
+export interface HighlightedAntennaTarget {
+  /** Antena localizada mediante el buscador específico por código */
+  antenna: AntennaRecord;
+  /** Código exacto o absorbido (`gid` / `mergedGids`) que originó la localización */
+  matchedCode: string;
+  /** Token único de disparo para reiniciar el temporizador de 10 s incluso en la misma antena */
+  token: string;
+  /** Marca temporal de inicio en milisegundos (`Date.now()`) */
+  startedAt: number;
+  /** Marca temporal de expiración en milisegundos (`startedAt + CODE_HIGHLIGHT_DURATION_MS`) */
+  expiresAt: number;
+}
+
 export interface RadarPoint {
   lat: number;
   lon: number;
@@ -157,4 +172,6 @@ export interface AntenasMapProps {
   onToggleShowUnicoProjects?: () => void;
   /** Enfocar y abrir ficha de una antena real emparejada desde una coordenada UNICO 5G (incluso si está filtrada o a <= 1.200 m) */
   onFocusUnicoMatchedAntenna?: (antennaId: string) => void;
+  /** Antena resaltada temporalmente (10 s) en el mapa tras búsqueda específica por código */
+  highlightedAntenna?: HighlightedAntennaTarget | null;
 }
