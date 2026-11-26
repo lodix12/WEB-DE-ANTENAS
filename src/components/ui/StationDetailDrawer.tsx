@@ -305,11 +305,11 @@ export function StationDetailDrawer({
             </div>
 
             <p className="station-unico-desc">
-              Antena más próxima disponible de la operadora (a{' '}
+              Antena válida más próxima disponible de la operadora (a{' '}
               <strong className="mono">
                 {formatUnicoDistance(unicoMatch.minDistanceKm)}
               </strong>
-              , ≤&nbsp;1.000&nbsp;m) con 5G declarado en UNICO.
+              , ≤&nbsp;1.200&nbsp;m) con 5G declarado en UNICO.
             </p>
 
             {unicoDeclaredBands.length > 0 && (

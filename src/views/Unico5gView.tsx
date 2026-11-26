@@ -478,7 +478,7 @@ export function Unico5gView() {
           className="unico-card-title unico-declared-heading"
         >
           {!isDeclaredReady && isAntenasLoading ? (
-            'DECLARADAS (cruzando censo real ≤ 1.000 m…)'
+            'DECLARADAS (cruzando censo real ≤ 1.200 m…)'
           ) : (
             <>
               <span>DECLARADAS</span>{' '}

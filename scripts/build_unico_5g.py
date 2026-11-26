@@ -41,7 +41,7 @@ OPERATOR_LABELS: dict[str, str] = {
     "vodafone": "Vodafone",
 }
 
-UNICO_MAX_MATCH_DISTANCE_KM = 1.0
+UNICO_MAX_MATCH_DISTANCE_KM = 1.2
 EARTH_RADIUS_KM = 6371.0088
 DEG_TO_RAD = math.pi / 180.0
 GRID_CELL_DEG = 0.02
@@ -724,10 +724,12 @@ def match_unico_declared_antennas_masks(
 ) -> list[int]:
     """
     Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales:
-    - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real de su misma operadora en <= 1.000 m.
-    - Las asignaciones se resuelven por cercanía global creciente (distancia mínima primero).
-    - Si la antena real más próxima ya ha sido elegida como declarada por otro proyecto del mismo
-      operador, se busca la siguiente antena real más cercana disponible dentro de <= 1.000 m.
+    - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real válida (con bandas requeridas
+      `N28`, `N28+` o `N78`) de su misma operadora en <= 1.200 m.
+    - Las asignaciones se resuelven de más cercano a lejano (distancia mínima global creciente).
+    - Si la antena real más próxima no es válida (carece de N28/N28+/N78) o ya ha sido elegida como
+      declarada por otro proyecto del mismo operador, se permiten los saltos necesarios para buscar
+      la siguiente antena real válida disponible más cercana dentro de <= 1.200 m.
     - Dos proyectos UNICO de operadoras distintas que coinciden en un emplazamiento real compartido
       se resuelven de forma independiente por operadora y ambos pueden quedar declarados.
     Espejo bit a bit de `matchUnicoDeclaredAntennasMasks` en `src/hooks/useUnico5gData.ts`.
@@ -765,9 +767,12 @@ def match_unico_declared_antennas_masks(
         if not (math.isfinite(lat) and math.isfinite(lon)):
             continue
 
+        declared_bits = compute_antenna_unico_5g_mask(ant)
+        if declared_bits == 0:
+            continue
+
         raw_id = ant.get("id")
         ant_id = raw_id if isinstance(raw_id, str) else ""
-        declared_bits = compute_antenna_unico_5g_mask(ant)
         gx = math.floor(lat / GRID_CELL_DEG)
         gy = math.floor(lon / GRID_CELL_DEG)
         cell_key = (gx + 10000) * 100000 + (gy + 20000)
@@ -846,7 +851,11 @@ def match_unico_declared_antennas_masks(
 
         cands = candidates_by_unico[u_idx]
         _, station_idx, ant_id, declared_bits = cands[cand_pos]
-        if station_idx in claimed_for_op or (ant_id != "" and ant_id in claimed_ids_for_op):
+        if (
+            declared_bits == 0
+            or station_idx in claimed_for_op
+            or (ant_id != "" and ant_id in claimed_ids_for_op)
+        ):
             next_pos = cand_pos + 1
             if next_pos < len(cands):
                 heapq.heappush(heap, (cands[next_pos][0], u_idx, next_pos))
@@ -855,11 +864,10 @@ def match_unico_declared_antennas_masks(
             continue
 
         resolved[u_idx] = True
-        if declared_bits != 0:
-            claimed_for_op.add(station_idx)
-            if ant_id != "":
-                claimed_ids_for_op.add(ant_id)
-            result[u_idx] = declared_bits
+        claimed_for_op.add(station_idx)
+        if ant_id != "":
+            claimed_ids_for_op.add(ant_id)
+        result[u_idx] = declared_bits
 
     return result
 
@@ -991,7 +999,7 @@ def _print_declared_summary(dataset: dict[str, Any]) -> None:
     pct_total = (declared / total * 100.0) if total else 0.0
     by_band = summary.get("byBand") or {}
     print(
-        f"Declaradas 5G (<= 1,0 km): {declared}/{total} ({pct_total:.2f}%) "
+        f"Declaradas 5G (<= 1,2 km): {declared}/{total} ({pct_total:.2f}%) "
         f"[N78={by_band.get('N78', 0)}, N28={by_band.get('N28', 0)}, N28+={by_band.get('N28+', 0)}] · "
         f"antenasUpdatedAt={dataset.get('declaredUpdatedAt', '')}"
     )

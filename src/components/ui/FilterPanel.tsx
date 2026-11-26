@@ -498,8 +498,8 @@ export function FilterPanel({
                       : onlyUnicoDeclared
                         ? 'Mostrando únicamente antenas seleccionadas como declaración UNICO 5G'
                         : highlightUnicoDeclared
-                          ? 'Resaltadas con aro verde en el mapa (≤ 1 km con N28/N28+/N78)'
-                          : 'Resaltado verde desactivado en opciones del mapa (≤ 1 km con N28/N28+/N78)'}
+                          ? 'Resaltadas con aro verde en el mapa (≤ 1.200 m con N28/N28+/N78)'
+                          : 'Resaltado verde desactivado en opciones del mapa (≤ 1.200 m con N28/N28+/N78)'}
                 </span>
               </span>
             </label>

@@ -204,7 +204,7 @@ function makeLiveDelta(
   };
 }
 
-describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.000 m (N28/N28+/N78) y vista simplificada sin tablas ni rankings', () => {
+describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.200 m (N28/N28+/N78) y vista simplificada sin tablas ni rankings', () => {
   it('valida public/data/unico-5g.json (7.330 Fase 1 + 1.961 Fase 2 = 9.291), unifica Orange + UTE Orange + Avatel en Orange (2.832) y garantiza cero códigos excluidos', async () => {
     const dataset = await loadRealUnicoDatasetFromDisk();
 
@@ -337,8 +337,8 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     ).toThrow(/prohibidos/i);
   });
 
-  it('cruza la antena real más cercana de la misma operadora <= 1.000 m con bandas N28 / N28+ / N78 y filtra por banda, fase, provincia y comunidad', () => {
-    expect(UNICO_MAX_MATCH_DISTANCE_KM).toBe(1.0);
+  it('cruza la antena real válida más cercana de la misma operadora <= 1.200 m con bandas N28 / N28+ / N78 (saltando no válidas de más cercano a lejano) y filtra por banda, fase, provincia y comunidad', () => {
+    expect(UNICO_MAX_MATCH_DISTANCE_KM).toBe(1.2);
     expect(bandFilterToMask('all')).toBe(UNICO_DECLARED_ANY_MASK);
     expect(bandFilterToMask('N78')).toBe(UNICO_BIT_N78);
     expect(bandFilterToMask('N28')).toBe(UNICO_BIT_N28);
@@ -381,7 +381,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lat: 43.3,
         lon: -7.6,
       }),
-      // Caso 2: Fuera del radio de 1.000 m (~1.279 m -> lat + 0.0115) aunque tenga N78 + N28 -> NO declarada (mask === 0)
+      // Caso 2: Fuera del radio de 1.200 m (~1.279 m -> lat + 0.0115) aunque tenga N78 + N28 -> NO declarada (mask === 0)
       makeUnicoAntenna({
         id: 'u-case2-out-of-range',
         fase: 1,
@@ -392,10 +392,11 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lat: 40.4,
         lon: -1.4,
       }),
-      // Caso 3: La estación real más cercana de la misma operadora (~150 m) SOLO tiene 4G (B20 + B3),
-      // aunque exista una segunda estación de esa misma operadora a ~700 m con N78 -> NO declarada (mask === 0)
+      // Caso 3: Las estaciones reales más cercanas de la misma operadora (~150 m solo 4G y ~400 m solo B7/N258)
+      // NO tienen bandas requeridas, pero puede dar los saltos necesarios de más cercano a lejano y alcanzar
+      // la estación válida más cercana a ~1.145 m (<= 1.200 m) con N78 antes que otra válida más lejana (~1.190 m N28)
       makeUnicoAntenna({
-        id: 'u-case3-closest-only-4g',
+        id: 'u-case3-jumps-over-4g',
         fase: 2,
         op: 'movistar',
         ccaa: 'Castilla y León',
@@ -448,7 +449,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lon: -7.6,
         frecuencias: ['758.00 - 788.00'],
       }),
-      // Caso 2 (~1.279 m > 1.000 m): Movistar con N78 y N28 fuera de rango
+      // Caso 2 (~1.279 m > 1.200 m): Movistar con N78 y N28 fuera de rango
       makeRealAntenna({
         id: 'MV-2-FAR',
         gid: '2001',
@@ -457,7 +458,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lon: -1.4,
         frecuencias: ['758.00 - 768.00', '3600.00 - 3700.00'],
       }),
-      // Caso 3a (~150 m): Movistar más cercana solo con B20 (800) + B3 (1800)
+      // Caso 3a (~150 m): Movistar más cercana solo con B20 (800) + B3 (1800) -> saltada por no válida
       makeRealAntenna({
         id: 'MV-3-CLOSEST-4G',
         gid: '3001',
@@ -466,14 +467,32 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lon: -1.92,
         frecuencias: ['791.00 - 801.00', '1805.00 - 1825.00'],
       }),
-      // Caso 3b (~700 m): Segunda Movistar más lejana con N78 (ignorada por no ser la más cercana)
+      // Caso 3b (~400 m): Segunda Movistar solo con B7 (2600) + N258 (26 GHz) -> saltada por no válida
       makeRealAntenna({
-        id: 'MV-3-SECOND-5G',
+        id: 'MV-3-SECOND-INVALID',
         gid: '3002',
         op: 'movistar',
-        lat: 41.85 + 0.0063,
+        lat: 41.85 + 0.0036,
+        lon: -1.92,
+        frecuencias: ['2620.00 - 2640.00', '26.5 - 27.5 GHz'],
+      }),
+      // Caso 3c (~1.145 m <= 1.200 m): Tercera Movistar válida con N78 -> seleccionada (más cercana válida)
+      makeRealAntenna({
+        id: 'MV-3-THIRD-5G',
+        gid: '3003',
+        op: 'movistar',
+        lat: 41.85 + 0.0103,
         lon: -1.92,
         frecuencias: ['3600.00 - 3700.00'],
+      }),
+      // Caso 3d (~1.190 m <= 1.200 m): Cuarta Movistar válida con N28 -> más lejana, no debe imponerse sobre MV-3-THIRD-5G
+      makeRealAntenna({
+        id: 'MV-3-FOURTH-5G',
+        gid: '3004',
+        op: 'movistar',
+        lat: 41.85 + 0.0107,
+        lon: -1.92,
+        frecuencias: ['758.00 - 768.00'],
       }),
       // Caso 4 (~20 m): Movistar pegada a coordenada UNICO de Orange
       makeRealAntenna({
@@ -492,7 +511,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(masks[1]).toBe(UNICO_BIT_N28);
     expect(masks[2]).toBe(UNICO_BIT_N28_PLUS);
     expect(masks[3]).toBe(0);
-    expect(masks[4]).toBe(0);
+    expect(masks[4]).toBe(UNICO_BIT_N78);
     expect(masks[5]).toBe(0);
 
     // Caso 5: Filtros de banda ('all' | 'N78' | 'N28' | 'N28+'), Fase ('all' | '1' | '2'), Provincias y Comunidades
@@ -505,8 +524,8 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       bandFilter: 'all',
     });
     expect(summaryAll.totalAntennas).toBe(6);
-    expect(summaryAll.totalDeclared).toBe(3);
-    expect(summaryAll.pctDeclaredGlobal).toBeCloseTo(50, 5);
+    expect(summaryAll.totalDeclared).toBe(4);
+    expect(summaryAll.pctDeclaredGlobal).toBeCloseTo((4 / 6) * 100, 5);
     expect(summaryAll.byOperator.map((o) => o.key)).toEqual([
       'movistar',
       'orange',
@@ -519,7 +538,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         declared: o.declared,
       })),
     ).toEqual([
-      { key: 'movistar', total: 3, declared: 1 },
+      { key: 'movistar', total: 3, declared: 2 },
       { key: 'orange', total: 2, declared: 1 },
       { key: 'vodafone', total: 1, declared: 1 },
     ]);
@@ -531,10 +550,10 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       bandFilter: 'N78',
     });
     expect(summaryOnlyN78.totalAntennas).toBe(6);
-    expect(summaryOnlyN78.totalDeclared).toBe(1);
+    expect(summaryOnlyN78.totalDeclared).toBe(2);
     expect(
       summaryOnlyN78.byOperator.find((o) => o.key === 'movistar')?.declared,
-    ).toBe(1);
+    ).toBe(2);
     expect(
       summaryOnlyN78.byOperator.find((o) => o.key === 'orange')?.declared,
     ).toBe(0);
@@ -580,8 +599,8 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       selectedComunidades: emptySet,
       bandFilter: 'all',
     });
-    expect(summaryFase2.totalAntennas).toBe(3); // u-case1-n28, u-case3-closest-only-4g, u-case4-other-op
-    expect(summaryFase2.totalDeclared).toBe(1);
+    expect(summaryFase2.totalAntennas).toBe(3); // u-case1-n28, u-case3-jumps-over-4g, u-case4-other-op
+    expect(summaryFase2.totalDeclared).toBe(2);
 
     // Filtro por Provincias seleccionadas
     const summaryProvs = computeUnicoSimpleSummary(unicoAntenas, masks, {
@@ -1218,7 +1237,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     );
     expect(Array.from(baseMasks)).toEqual([0, 0, UNICO_BIT_N78]);
 
-    // 1) Alta en vivo de una nueva antena real con N78 a ~445 m (<= 1,0 km) -> Sitio 0 pasa a UNICO_BIT_N78
+    // 1) Alta en vivo de una nueva antena real con N78 a ~445 m (<= 1,2 km) -> Sitio 0 pasa a UNICO_BIT_N78
     const deltaAddN78 = makeLiveDelta({
       deltaSeq: 1,
       updatedAt: '2026-11-24T17:10:00Z',
@@ -1430,16 +1449,16 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lat: 40.0 + 0.00005,
         lon: -3.5,
       }),
-      // 4: Caso 4G más cercana (~100 m, libre) bloquea a una 5G más lejana (~600 m) -> ninguna seleccionada
+      // 4: Caso 4G-only más cercana (~100 m) + segunda sin bandas requeridas (~350 m) -> salta ambas y elige la 5G válida más cercana (~1.145 m <= 1.200 m)
       makeUnicoAntenna({
-        id: 'u-map-blocked-by-4g',
+        id: 'u-map-jumps-over-4g',
         fase: 1,
         op: 'orange',
         empresa: 'ORANGE ESPAGNE S.A.',
         lat: 38.0,
         lon: -4.0,
       }),
-      // 5: Caso fuera de rango (> 1 km) -> no seleccionada
+      // 5: Caso fuera de rango (> 1.200 m, ~1.334 m) -> no seleccionada
       makeUnicoAntenna({
         id: 'u-map-too-far',
         fase: 2,
@@ -1490,11 +1509,21 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         frecuencias: ['791.00 - 801.00'],
       }),
       makeRealAntenna({
-        id: 'OR-SECOND-5G',
+        id: 'OR-SECOND-INVALID',
+        gid: '880005',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 38.0 + 0.0031,
+        lon: -4.0,
+        bandas: ['1800 MHz'],
+        frecuencias: ['1805.00 - 1825.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-THIRD-5G',
         gid: '880003',
         op: 'orange',
         opRaw: 'ORANGE ESPAGNE, S.A.U.',
-        lat: 38.0 + 0.0054,
+        lat: 38.0 + 0.0103,
         lon: -4.0,
         bandas: ['3500 MHz'],
         frecuencias: ['3600.00 - 3700.00'],
@@ -1517,16 +1546,17 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       UNICO_BIT_N78 | UNICO_BIT_N28,
       0,
       UNICO_BIT_N28_PLUS,
-      0,
+      UNICO_BIT_N78,
       0,
     ]);
-    expect(matchResult.declaredRealAntennasById.size).toBe(3);
+    expect(matchResult.declaredRealAntennasById.size).toBe(4);
     expect(matchResult.declaredRealAntennasById.has('OR-CLOSEST-4G')).toBe(
       false,
     );
-    expect(matchResult.declaredRealAntennasById.has('OR-SECOND-5G')).toBe(
+    expect(matchResult.declaredRealAntennasById.has('OR-SECOND-INVALID')).toBe(
       false,
     );
+    expect(matchResult.declaredRealAntennasById.has('OR-THIRD-5G')).toBe(true);
     expect(matchResult.declaredRealAntennasById.has('VF-TOO-FAR-5G')).toBe(
       false,
     );
@@ -1554,6 +1584,18 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(vfSharedMatch?.declaredBits).toBe(UNICO_BIT_N28_PLUS);
     expect(vfSharedMatch?.entries).toHaveLength(1);
     expect(vfSharedMatch?.entries[0]?.unicoId).toBe('u-map-vf-shared');
+
+    const orThirdMatch =
+      matchResult.declaredRealAntennasById.get('OR-THIRD-5G');
+    expect(orThirdMatch).toBeDefined();
+    expect(orThirdMatch?.fases).toEqual([1]);
+    expect(orThirdMatch?.declaredBits).toBe(UNICO_BIT_N78);
+    expect(orThirdMatch?.entries).toHaveLength(1);
+    expect(orThirdMatch?.entries[0]?.unicoId).toBe('u-map-jumps-over-4g');
+    expect(orThirdMatch?.minDistanceKm).toBeGreaterThan(1.0);
+    expect(orThirdMatch?.minDistanceKm).toBeLessThanOrEqual(
+      UNICO_MAX_MATCH_DISTANCE_KM,
+    );
 
     // Paridad exacta 1-a-1 sobre el dataset real en disco (unico-5g.json × antenas.json)
     const [unicoDataset, rawAntenasDataset] = await Promise.all([
@@ -1714,6 +1756,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(filterHtml).toContain('Solo declaradas UNICO 5G');
     expect(filterHtml).toContain('1 declarada');
     expect(filterHtml).toContain('unico-filter-legend-swatch');
+    expect(filterHtml).toContain('≤ 1.200 m con N28/N28+/N78');
 
     // FilterPanel SSR con unicoStatus loading/error y highlightUnicoDeclared desactivado
     const filterLoadingHtml = renderToStaticMarkup(
@@ -1789,7 +1832,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     );
     expect(filterMutedHtml).toContain('unico-filter-legend-swatch is-muted');
     expect(filterMutedHtml).toContain(
-      'Resaltado verde desactivado en opciones del mapa',
+      'Resaltado verde desactivado en opciones del mapa (≤ 1.200 m con N28/N28+/N78)',
     );
 
     const filterErrorHtml = renderToStaticMarkup(
@@ -1842,6 +1885,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     expect(drawerMovistarHtml).toContain('id="station-unico-card"');
     expect(drawerMovistarHtml).toContain('Declaración UNICO 5G');
     expect(drawerMovistarHtml).toContain('UNICO 5G · Fase 1');
+    expect(drawerMovistarHtml).toContain('1.200');
     expect(drawerMovistarHtml).toContain('Buitrago del Lozoya');
     expect(drawerMovistarHtml).toContain('integrated-op-unico-tag');
     expect(drawerMovistarHtml).toContain(
@@ -2033,8 +2077,12 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       tieRes.declaredRealAntennasById.get('MV-TIE-B')?.entries[0]?.unicoId,
     ).toBe('u-tie-1');
 
-    // Interacción 4G-only: (a) dos proyectos con la misma 4G-only más cercana -> ambos 0;
-    // (b) fallback tras 5G reclamada que encuentra una 4G-only libre antes de otra 5G -> se detiene en 0
+    // Saltos sobre antenas no válidas (4G-only) y ocupadas de más cercano a lejano hasta 1.200 m:
+    // (a) Dos proyectos Vodafone con la misma 4G-only más cercana: ambos la saltan; u-4g-shared-2 está más
+    //     cerca de VF-5G-FAR (39.105) que u-4g-shared-1 -> u-4g-shared-2 gana VF-5G-FAR (N78) y
+    //     u-4g-shared-1 salta a VF-5G-FURTHER (N28+ a ~1.112 m <= 1.200 m).
+    // (b) Fallback tras 5G reclamada (OR-5G-CLAIMED) que salta dos 4G-only intermedias (OR-4G-NEXT,
+    //     OR-4G-EXTRA) y alcanza OR-5G-FOURTH (N28 a ~1.112 m <= 1.200 m).
     const fourGUnico: UnicoAntennaRecord[] = [
       makeUnicoAntenna({
         id: 'u-4g-shared-1',
@@ -2061,7 +2109,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         lon: -2.0,
       }),
       makeUnicoAntenna({
-        id: 'u-fb-hits-4g',
+        id: 'u-fb-jumps-4g',
         fase: 2,
         op: 'orange',
         empresa: 'ORANGE ESPAGNE S.A.',
@@ -2091,6 +2139,16 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         frecuencias: ['3600.00 - 3700.00'],
       }),
       makeRealAntenna({
+        id: 'VF-5G-FURTHER',
+        gid: '992006',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        lat: 39.11,
+        lon: -2.0,
+        bandas: ['700 MHz'],
+        frecuencias: ['758.00 - 788.00'],
+      }),
+      makeRealAntenna({
         id: 'OR-5G-CLAIMED',
         gid: '992003',
         op: 'orange',
@@ -2111,11 +2169,21 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
         frecuencias: ['791.00 - 801.00'],
       }),
       makeRealAntenna({
-        id: 'OR-5G-THIRD',
-        gid: '992005',
+        id: 'OR-4G-EXTRA',
+        gid: '992007',
         op: 'orange',
         opRaw: 'ORANGE ESPAGNE, S.A.U.',
         lat: 39.206,
+        lon: -2.0,
+        bandas: ['1800 MHz'],
+        frecuencias: ['1805.00 - 1825.00'],
+      }),
+      makeRealAntenna({
+        id: 'OR-5G-FOURTH',
+        gid: '992005',
+        op: 'orange',
+        opRaw: 'ORANGE ESPAGNE, S.A.U.',
+        lat: 39.211,
         lon: -2.0,
         bandas: ['700 MHz'],
         frecuencias: ['758.00 - 768.00'],
@@ -2123,12 +2191,30 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
     ];
     const fourGRes = matchUnicoDeclaredAntennas(fourGUnico, fourGReals);
     expect(Array.from(fourGRes.declaredMasks)).toEqual([
-      0,
-      0,
+      UNICO_BIT_N28_PLUS,
       UNICO_BIT_N78,
-      0,
+      UNICO_BIT_N78,
+      UNICO_BIT_N28,
     ]);
-    expect(fourGRes.declaredRealAntennasById.size).toBe(1);
+    expect(fourGRes.declaredRealAntennasById.size).toBe(4);
+    expect(fourGRes.declaredRealAntennasById.has('VF-4G-NEAR')).toBe(false);
+    expect(fourGRes.declaredRealAntennasById.has('OR-4G-NEXT')).toBe(false);
+    expect(fourGRes.declaredRealAntennasById.has('OR-4G-EXTRA')).toBe(false);
+    expect(
+      fourGRes.declaredRealAntennasById.get('VF-5G-FAR')?.entries[0]?.unicoId,
+    ).toBe('u-4g-shared-2');
+    expect(
+      fourGRes.declaredRealAntennasById.get('VF-5G-FURTHER')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-4g-shared-1');
+    expect(
+      fourGRes.declaredRealAntennasById.get('OR-5G-CLAIMED')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-fb-winner');
+    expect(
+      fourGRes.declaredRealAntennasById.get('OR-5G-FOURTH')?.entries[0]
+        ?.unicoId,
+    ).toBe('u-fb-jumps-4g');
 
     // Protección ante ID duplicado en dataset sintético: conserva el match más cercano y nunca duplica
     const dupIdUnico: UnicoAntennaRecord[] = [

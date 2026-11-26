@@ -207,18 +207,22 @@ class TestBuildUnico5g(unittest.TestCase):
         self.assertIsNone(resolve_real_station_unico_op({"op": "digi", "opRaw": "DIGI SPAIN"}))
         self.assertIsNone(resolve_real_station_unico_op({"op": "otros", "opRaw": "OTRA"}))
 
-    def test_nearest_station_matching_within_1km(self) -> None:
-        # 1 degree of latitude is ~111.195 km -> 0.0085 deg ~= 0.945 km (<= 1.0 km)
-        # 0.0095 deg ~= 1.056 km (> 1.0 km)
-        self.assertLessEqual(haversine_distance_km(40.0, -3.0, 40.0085, -3.0), 1.0)
-        self.assertGreater(haversine_distance_km(40.0, -3.0, 40.0095, -3.0), 1.0)
+    def test_nearest_valid_station_matching_within_1200m(self) -> None:
+        # 1 degree of latitude is ~111.195 km:
+        # - 0.0103 deg ~= 1.145 km (> 1.0 km, <= 1.2 km)
+        # - 0.0115 deg ~= 1.279 km (> 1.2 km)
+        self.assertEqual(bu.UNICO_MAX_MATCH_DISTANCE_KM, 1.2)
+        self.assertGreater(haversine_distance_km(40.0, -3.0, 40.0103, -3.0), 1.0)
+        self.assertLessEqual(haversine_distance_km(40.0, -3.0, 40.0103, -3.0), 1.2)
+        self.assertGreater(haversine_distance_km(40.0, -3.0, 40.0115, -3.0), 1.2)
 
         unico_antenas = [
-            # 0: matches Movistar at ~0.945 km with N78
+            # 0: matches Movistar at ~1.145 km (<= 1.2 km) with N78
             {"id": "u-0", "op": "movistar", "lat": 40.0, "lon": -3.0},
-            # 1: Movistar station is > 1.0 km away -> 0
+            # 1: Movistar station is > 1.2 km away (~1.279 km) -> 0
             {"id": "u-1", "op": "movistar", "lat": 40.2, "lon": -3.0},
-            # 2: nearest same-op station (100 m) is 4G-only; farther (500 m) has N78 -> nearest wins (0)
+            # 2: nearest same-op stations (~111 m 4G-only, ~334 m B7+N258, ~445 m sin bandas) are invalid;
+            #    jumps over all of them and picks nearest valid 5G (~556 m N28) over farther valid (~1.000 m N78)
             {"id": "u-2", "op": "vodafone", "lat": 40.4, "lon": -3.0},
             # 3: crosses GRID_CELL_DEG=0.02 cell boundary (40.0199 vs 40.0201) + legacy masmovil -> orange
             {"id": "u-3", "op": "orange", "lat": 40.0199, "lon": -3.5},
@@ -234,31 +238,52 @@ class TestBuildUnico5g(unittest.TestCase):
                 "lon": -3.0,
                 "frecuencias": ["758.00 - 788.00"],
             },
-            # Movistar within 1 km of u-0 with N78
+            # Movistar within 1.2 km (~1.145 km) of u-0 with N78
             {
                 "op": "movistar",
-                "lat": 40.0085,
+                "lat": 40.0103,
                 "lon": -3.0,
                 "frecuencias": ["3600.00 - 3700.00"],
             },
-            # Movistar > 1 km from u-1
+            # Movistar > 1.2 km (~1.279 km) from u-1
             {
                 "op": "movistar",
-                "lat": 40.2095,
+                "lat": 40.2115,
                 "lon": -3.0,
                 "frecuencias": ["3600.00 - 3700.00"],
             },
-            # Vodafone 4G-only closer (~111 m) to u-2
+            # Vodafone invalid #1: 4G-only closer (~111 m) to u-2
             {
                 "op": "vodafone",
                 "lat": 40.401,
                 "lon": -3.0,
                 "frecuencias": ["801.00 - 811.00"],
             },
-            # Vodafone 5G farther (~556 m) from u-2
+            # Vodafone invalid #2: non-UNICO bands (~334 m) to u-2
+            {
+                "op": "vodafone",
+                "lat": 40.403,
+                "lon": -3.0,
+                "frecuencias": ["2620.00 - 2640.00", "26.5 - 27.5 GHz"],
+            },
+            # Vodafone invalid #3: sin frecuencias (~445 m) to u-2
+            {
+                "op": "vodafone",
+                "lat": 40.404,
+                "lon": -3.0,
+                "frecuencias": [],
+            },
+            # Vodafone valid #1: nearest valid 5G (~556 m) with N28 -> MUST win (de más cercano a lejano)
             {
                 "op": "vodafone",
                 "lat": 40.405,
+                "lon": -3.0,
+                "frecuencias": ["758.00 - 768.00"],
+            },
+            # Vodafone valid #2: farther valid 5G (~1.000 m) with N78 -> must NOT win over closer valid N28
+            {
+                "op": "vodafone",
+                "lat": 40.409,
                 "lon": -3.0,
                 "frecuencias": ["3600.00 - 3700.00"],
             },
@@ -280,13 +305,13 @@ class TestBuildUnico5g(unittest.TestCase):
         ]
 
         masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
-        self.assertEqual(masks, [BIT_N78, 0, 0, BIT_N28_PLUS, BIT_N28 | BIT_N78])
+        self.assertEqual(masks, [BIT_N78, 0, BIT_N28, BIT_N28_PLUS, BIT_N28 | BIT_N78])
 
     def test_one_to_one_per_operator_and_shared_multiop_tower(self) -> None:
         # 1) Dos proyectos Movistar apuntan a MV-1 (40.0, -3.5):
         #    - u-mv-far (~445 m) aparece antes en la lista que u-mv-close (~111 m),
         #      pero u-mv-close está más cerca y se queda MV-1 (N78).
-        #    - u-mv-far busca la siguiente antena Movistar más cercana libre: MV-2 (N28) a ~333 m al norte.
+        #    - u-mv-far busca la siguiente antena Movistar válida más cercana libre: MV-2 (N28) a ~333 m al norte.
         # 2) Un tercer proyecto Movistar u-mv-exhausted (~222 m al sur de MV-1) tiene MV-1 ocupada
         #    y MV-2 ya ocupada (a ~1.0 km) / sin otra libre -> queda 0.
         # 3) Un proyecto Vodafone en el mismo emplazamiento compartido (< 15 m de MV-1)
@@ -324,7 +349,7 @@ class TestBuildUnico5g(unittest.TestCase):
         masks = match_unico_declared_antennas_masks(unico_antenas, real_antenas)
         self.assertEqual(masks, [BIT_N28, BIT_N78, 0, BIT_N28_PLUS])
 
-        # Caso cascada con 3 estaciones libres del mismo operador (A -> B -> C)
+        # Caso cascada con 3 estaciones válidas libres del mismo operador (A -> B -> C)
         cascade_unico = [
             {"id": "u-c1", "op": "orange", "lat": 41.0001, "lon": -2.0},  # ~11 m de OR-1
             {"id": "u-c2", "op": "orange", "lat": 41.0010, "lon": -2.0},  # ~111 m de OR-1, ~222 m de OR-2
@@ -353,8 +378,11 @@ class TestBuildUnico5g(unittest.TestCase):
         ]
         self.assertEqual(match_unico_declared_antennas_masks(tie_unico, tie_real), [BIT_N78, BIT_N28])
 
-        # Interacción 4G-only: (a) dos proyectos con la misma 4G-only más cercana -> ambos 0;
-        # (b) fallback tras 5G reclamada que encuentra una 4G-only libre antes de otra 5G -> 0
+        # Saltos sobre antenas no válidas (4G-only) y ocupadas de más cercano a lejano hasta 1.200 m:
+        # (a) Dos proyectos Vodafone con la misma 4G-only más cercana: ambos la saltan; u-4g-2 está más
+        #     cerca de VF-5G (39.105) que u-4g-1 -> u-4g-2 gana VF-5G (N78) y u-4g-1 salta a VF-5G-2 (N28+, ~1.112 m).
+        # (b) Fallback tras 5G reclamada (OR-5G-1) que atraviesa dos 4G-only intermedias (OR-4G-2, OR-4G-3)
+        #     y alcanza OR-5G-4 (N28 a ~1.112 m <= 1.200 m).
         fourg_unico = [
             {"id": "u-4g-1", "op": "vodafone", "lat": 39.1, "lon": -2.0},
             {"id": "u-4g-2", "op": "vodafone", "lat": 39.1002, "lon": -2.0},
@@ -364,13 +392,15 @@ class TestBuildUnico5g(unittest.TestCase):
         fourg_real = [
             {"id": "VF-4G", "op": "vodafone", "lat": 39.1001, "lon": -2.0, "frecuencias": ["791.00 - 801.00"]},
             {"id": "VF-5G", "op": "vodafone", "lat": 39.105, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
+            {"id": "VF-5G-2", "op": "vodafone", "lat": 39.110, "lon": -2.0, "frecuencias": ["758.00 - 788.00"]},
             {"id": "OR-5G-1", "op": "orange", "lat": 39.2, "lon": -2.0, "frecuencias": ["3600.00 - 3700.00"]},
             {"id": "OR-4G-2", "op": "orange", "lat": 39.203, "lon": -2.0, "frecuencias": ["791.00 - 801.00"]},
-            {"id": "OR-5G-3", "op": "orange", "lat": 39.206, "lon": -2.0, "frecuencias": ["758.00 - 768.00"]},
+            {"id": "OR-4G-3", "op": "orange", "lat": 39.206, "lon": -2.0, "frecuencias": ["1805.00 - 1825.00"]},
+            {"id": "OR-5G-4", "op": "orange", "lat": 39.211, "lon": -2.0, "frecuencias": ["758.00 - 768.00"]},
         ]
         self.assertEqual(
             match_unico_declared_antennas_masks(fourg_unico, fourg_real),
-            [0, 0, BIT_N78, 0],
+            [BIT_N28_PLUS, BIT_N78, BIT_N78, BIT_N28],
         )
 
         # Protección ante ID duplicado en dataset sintético y coordenadas no finitas/booleanas/inválidas

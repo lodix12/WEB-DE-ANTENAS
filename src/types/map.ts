@@ -155,6 +155,6 @@ export interface AntenasMapProps {
   showUnicoProjects?: boolean;
   /** Alternar la visibilidad de los puntos de coordenadas oficiales exactas de los proyectos UNICO 5G */
   onToggleShowUnicoProjects?: () => void;
-  /** Enfocar y abrir ficha de una antena real emparejada desde una coordenada UNICO 5G (incluso si está filtrada o a <= 1 km) */
+  /** Enfocar y abrir ficha de una antena real emparejada desde una coordenada UNICO 5G (incluso si está filtrada o a <= 1.200 m) */
   onFocusUnicoMatchedAntenna?: (antennaId: string) => void;
 }

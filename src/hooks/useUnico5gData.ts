@@ -31,8 +31,8 @@ import {
 
 const VALID_UNICO_OPERATORS = new Set<string>(UNICO_OPERATOR_ORDER);
 
-/** Radio máximo en kilómetros (1000 metros) para considerar una antena real como correspondiente a la coordenada oficial UNICO 5G */
-export const UNICO_MAX_MATCH_DISTANCE_KM = 1.0;
+/** Radio máximo en kilómetros (1200 metros) para considerar una antena real como correspondiente a la coordenada oficial UNICO 5G */
+export const UNICO_MAX_MATCH_DISTANCE_KM = 1.2;
 
 /** Bits RF alineados con computeAntennaRfBandMask en useAntenasData.ts */
 export const UNICO_BIT_N28 = 1 << 0;
@@ -440,7 +440,7 @@ export function validateUnico5gSearch(
   return result;
 }
 
-const GRID_CELL_DEG = 0.02; // ~2.22 km lat, ~1.61 km lon a 44°N (> 1.0 km en toda España)
+const GRID_CELL_DEG = 0.02; // ~2.22 km lat, ~1.61 km lon a 44°N (> 1.2 km en toda España)
 
 const EMPTY_DECLARED_REAL_ANTENNAS: ReadonlyMap<
   string,
@@ -588,10 +588,12 @@ export function formatUnicoFasesLabel(fases: readonly UnicoFase[]): string {
 
 /**
  * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales:
- * - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real de su misma operadora en <= 1.000 m.
- * - Las asignaciones se resuelven por cercanía global creciente (distancia mínima primero).
- * - Si la antena real más próxima ya ha sido elegida como declarada por otro proyecto del mismo
- *   operador, se busca la siguiente antena real más cercana disponible dentro de <= 1.000 m.
+ * - Cada ubicación UNICO 5G solo puede coincidir con 1 antena real válida (con bandas requeridas
+ *   `N28`, `N28+` o `N78`) de su misma operadora en <= 1.200 m.
+ * - Las asignaciones se resuelven de más cercano a lejano (distancia mínima global creciente).
+ * - Si la antena real más próxima no es válida (carece de N28/N28+/N78) o ya ha sido elegida como
+ *   declarada por otro proyecto del mismo operador, se permiten los saltos necesarios para buscar
+ *   la siguiente antena real válida disponible más cercana dentro de <= 1.200 m.
  * - Dos proyectos UNICO de operadoras distintas que coinciden en un emplazamiento real compartido
  *   se resuelven de forma independiente por operadora y ambos pueden quedar declarados.
  *
@@ -638,6 +640,7 @@ export function matchUnicoDeclaredAntennas(
         ? realBandMasks[i]
         : computeAntennaRfBandMask(ant);
     const declaredBits = rawMask & UNICO_DECLARED_ANY_MASK;
+    if (declaredBits === 0) continue;
 
     const gx = Math.floor(ant.lat / GRID_CELL_DEG);
     const gy = Math.floor(ant.lon / GRID_CELL_DEG);
@@ -737,6 +740,7 @@ export function matchUnicoDeclaredAntennas(
     const claimedIdsForOp = claimedIdsByOp[u.op];
     const cand = cands[candPos];
     if (
+      cand.declaredBits === 0 ||
       claimedForOp.has(cand.stationIdx) ||
       (cand.antennaId !== '' && claimedIdsForOp.has(cand.antennaId))
     ) {
@@ -754,38 +758,36 @@ export function matchUnicoDeclaredAntennas(
     }
 
     resolved[unicoIdx] = 1;
-    if (cand.declaredBits !== 0) {
-      claimedForOp.add(cand.stationIdx);
-      if (cand.antennaId !== '') {
-        claimedIdsForOp.add(cand.antennaId);
-      }
-      declaredMasks[unicoIdx] = cand.declaredBits;
+    claimedForOp.add(cand.stationIdx);
+    if (cand.antennaId !== '') {
+      claimedIdsForOp.add(cand.antennaId);
+    }
+    declaredMasks[unicoIdx] = cand.declaredBits;
 
-      const matchedEntry: UnicoDeclaredMatchedEntry = {
-        unicoId: u.id,
-        fase: u.fase,
+    const matchedEntry: UnicoDeclaredMatchedEntry = {
+      unicoId: u.id,
+      fase: u.fase,
+      op: u.op,
+      empresa: u.empresa,
+      mun: u.mun,
+      prov: u.prov,
+      lat: u.lat,
+      lon: u.lon,
+      distanceKm: cand.distKm,
+    };
+
+    if (
+      cand.antennaId !== '' &&
+      !declaredRealAntennasById.has(cand.antennaId)
+    ) {
+      declaredRealAntennasById.set(cand.antennaId, {
+        antennaId: cand.antennaId,
         op: u.op,
-        empresa: u.empresa,
-        mun: u.mun,
-        prov: u.prov,
-        lat: u.lat,
-        lon: u.lon,
-        distanceKm: cand.distKm,
-      };
-
-      if (
-        cand.antennaId !== '' &&
-        !declaredRealAntennasById.has(cand.antennaId)
-      ) {
-        declaredRealAntennasById.set(cand.antennaId, {
-          antennaId: cand.antennaId,
-          op: u.op,
-          declaredBits: cand.declaredBits,
-          fases: [u.fase],
-          minDistanceKm: cand.distKm,
-          entries: [matchedEntry],
-        });
-      }
+        declaredBits: cand.declaredBits,
+        fases: [u.fase],
+        minDistanceKm: cand.distKm,
+        entries: [matchedEntry],
+      });
     }
   }
 
@@ -797,10 +799,11 @@ export function matchUnicoDeclaredAntennas(
 
 /**
  * Emparejamiento 1-a-1 por operadora entre coordenadas oficiales UNICO 5G y antenas reales
- * en un radio máximo de 1.000 metros (1,0 km), buscando la siguiente antena más cercana
- * disponible cuando la más próxima ya fue elegida como declarada por otro proyecto del mismo operador.
+ * en un radio máximo de 1.200 metros (1,2 km), buscando de más cercano a lejano y dando los
+ * saltos necesarios sobre antenas no válidas (sin N28/N28+/N78) o ya ocupadas por otro proyecto
+ * del mismo operador.
  * Devuelve un `Uint16Array` con las bandas 5G (`N28`, `N28+`, `N78`) de la antena asignada
- * (o `0` si no hay antena disponible <= 1.000 m o la más cercana disponible no tiene N28/N28+/N78).
+ * (o `0` si no hay ninguna antena válida disponible en <= 1.200 m).
  */
 export function matchUnicoDeclaredAntennasMasks(
   unicoAntenas: readonly UnicoAntennaRecord[],
