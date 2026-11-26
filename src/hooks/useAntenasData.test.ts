@@ -9698,7 +9698,7 @@ describe('Mapa — FilterPanel: cabecera rediseñada (Opción A) sin Exportar ni
       /\.sidebar-header\.filter-sidebar-header\s*\{[^}]*padding:\s*6px\s+6px\s+8px;/s,
     );
     expect(indexCssSource).toMatch(
-      /\.filter-count-showcase\s*\{[^}]*padding:\s*14px\s+15px\s+15px;/s,
+      /\.filter-count-showcase\s*\{[^}]*padding:\s*14px\s+15px\s+15px;[^}]*border:\s*2px\s+solid\s+#000000;/s,
     );
     expect(indexCssSource).toMatch(
       /\.filter-count-current\s*\{[^}]*font-size:\s*34px;[^}]*color:\s*#7c3aed;/s,

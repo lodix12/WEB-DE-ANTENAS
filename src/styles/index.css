@@ -1232,10 +1232,10 @@ code {
   padding: 14px 15px 15px;
   border-radius: 12px;
   background: linear-gradient(180deg, #ffffff 0%, #f5f7fb 100%);
-  border: 1px solid var(--border-subtle);
+  border: 2px solid #000000;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    0 2px 6px rgba(15, 23, 42, 0.05);
+    0 2px 6px rgba(15, 23, 42, 0.06);
   transition:
     background 0.18s ease,
     border-color 0.18s ease,
@@ -1245,13 +1245,13 @@ code {
 [data-theme='dark'] .filter-count-showcase {
   background: linear-gradient(
     180deg,
-    rgba(30, 41, 59, 0.9) 0%,
+    rgba(30, 41, 59, 0.92) 0%,
     rgba(15, 23, 42, 0.96) 100%
   );
-  border-color: var(--border-subtle);
+  border-color: #000000;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 2px 8px rgba(2, 6, 23, 0.42);
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 2px 8px rgba(0, 0, 0, 0.55);
 }
 
 .filter-count-showcase.is-filtered {
@@ -1260,10 +1260,10 @@ code {
     rgba(124, 58, 237, 0.06) 0%,
     rgba(248, 250, 252, 0.96) 100%
   );
-  border-color: rgba(124, 58, 237, 0.24);
+  border-color: #000000;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 2px 8px rgba(124, 58, 237, 0.08);
+    0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
 [data-theme='dark'] .filter-count-showcase.is-filtered {
@@ -1272,10 +1272,10 @@ code {
     rgba(124, 58, 237, 0.16) 0%,
     rgba(15, 23, 42, 0.94) 100%
   );
-  border-color: rgba(192, 132, 252, 0.34);
+  border-color: #000000;
   box-shadow:
     inset 0 1px 0 rgba(192, 132, 252, 0.1),
-    0 3px 10px rgba(2, 6, 23, 0.46);
+    0 3px 10px rgba(0, 0, 0, 0.58);
 }
 
 .filter-count-showcase.is-empty {
@@ -1284,7 +1284,7 @@ code {
     rgba(217, 119, 6, 0.075) 0%,
     rgba(248, 250, 252, 0.96) 100%
   );
-  border-color: rgba(217, 119, 6, 0.3);
+  border-color: #000000;
 }
 
 [data-theme='dark'] .filter-count-showcase.is-empty {
@@ -1293,7 +1293,7 @@ code {
     rgba(245, 158, 11, 0.14) 0%,
     rgba(15, 23, 42, 0.92) 100%
   );
-  border-color: rgba(245, 158, 11, 0.34);
+  border-color: #000000;
 }
 
 .filter-count-top {
