@@ -54,6 +54,8 @@ import {
 } from '../../utils/geo';
 import {
   UNICO_COORD_ICON_PREFIX,
+  UNICO_PROJECT_ICON_ANCHOR,
+  UNICO_PROJECT_ICON_OFFSET,
   UNICO_PROJECT_ICON_STOPS,
   UNICO_PROJECT_SPRITE_PIXEL_RATIO,
   buildUnicoProjectsGeoJson,
@@ -103,6 +105,18 @@ const UNICO_DECLARED_FILTER: maplibregl.FilterSpecification = [
   ['!', ['has', 'point_count']],
   ['==', ['get', 'isUnicoDeclared'], true],
 ];
+
+const UNICO_PIN_POPUP_OFFSET: maplibregl.Offset = {
+  center: [0, -14],
+  top: [0, 8],
+  'top-left': [0, 8],
+  'top-right': [0, 8],
+  bottom: [0, -28],
+  'bottom-left': [0, -28],
+  'bottom-right': [0, -28],
+  left: [14, -14],
+  right: [-14, -14],
+};
 
 const NONE_SELECTED_SENTINEL = '__none_selected__';
 const MULTI_SPRITE_CACHE = new Map<string, ImageData>();
@@ -566,11 +580,12 @@ function parseUnicoProjectFeature(
 
 function collectUnicoProjectsAtSameCoord(
   hits: readonly maplibregl.MapGeoJSONFeature[],
+  anchor?: { lat: number; lon: number },
 ): UnicoProjectFeatureProperties[] {
   const result: UnicoProjectFeatureProperties[] = [];
   const seenIds = new Set<string>();
-  let anchorLat: number | null = null;
-  let anchorLon: number | null = null;
+  let anchorLat: number | null = anchor ? anchor.lat : null;
+  let anchorLon: number | null = anchor ? anchor.lon : null;
 
   for (let i = 0; i < hits.length; i++) {
     const hit = hits[i];
@@ -1684,6 +1699,11 @@ export function AntenasMap(props: AntenasMapProps) {
         layout: {
           visibility: showUnicoProjectsActive ? 'visible' : 'none',
           'icon-image': ['get', 'iconKey'],
+          'icon-anchor': UNICO_PROJECT_ICON_ANCHOR,
+          'icon-offset': [
+            UNICO_PROJECT_ICON_OFFSET[0],
+            UNICO_PROJECT_ICON_OFFSET[1],
+          ],
           'icon-allow-overlap': true,
           'icon-ignore-placement': true,
           'icon-size': buildUnicoProjectsIconSizeExpr(),
@@ -2266,14 +2286,25 @@ export function AntenasMap(props: AntenasMapProps) {
 
     const findPriorityUnicoHit = (
       hits: readonly maplibregl.MapGeoJSONFeature[],
-    ): maplibregl.MapGeoJSONFeature | null => {
+      point: maplibregl.Point,
+    ): UnicoProjectFeatureProperties | null => {
+      const maxDistSq = 64 * 64;
       for (let i = 0; i < hits.length; i++) {
         const layerId = hits[i].layer.id;
         if (layerId === LAYER_CLUSTERS) {
           return null;
         }
         if (layerId === LAYER_UNICO_PROJECTS) {
-          return hits[i];
+          const parsed = parseUnicoProjectFeature(hits[i]);
+          if (!parsed) {
+            continue;
+          }
+          const projected = map.project([parsed.lon, parsed.lat]);
+          const dx = projected.x - point.x;
+          const dy = projected.y - point.y;
+          if (dx * dx + dy * dy <= maxDistSq) {
+            return parsed;
+          }
         }
       }
       return null;
@@ -2329,7 +2360,7 @@ export function AntenasMap(props: AntenasMapProps) {
       const pinned = new maplibregl.Popup({
         closeButton: true,
         closeOnClick: false,
-        offset: 12,
+        offset: UNICO_PIN_POPUP_OFFSET,
         maxWidth: 'min(330px, calc(100vw - 24px))',
         className: 'antenas-map-popup antenas-map-popup-interactive',
       })
@@ -2463,30 +2494,34 @@ export function AntenasMap(props: AntenasMapProps) {
             clickablePointLayers,
           );
           if (snappedFeatures.length > 0) {
-            const unicoSnap = findPriorityUnicoHit(snappedFeatures);
-            if (unicoSnap) {
-              const parsedUnico = parseUnicoProjectFeature(unicoSnap);
-              if (parsedUnico) {
-                targetLat = Number(parsedUnico.lat.toFixed(6));
-                targetLon = Number(parsedUnico.lon.toFixed(6));
-                targetLabel = `UNICO F${parsedUnico.fase} · ${parsedUnico.mun}`;
-              }
+            const parsedUnico = findPriorityUnicoHit(
+              snappedFeatures,
+              event.point,
+            );
+            if (parsedUnico) {
+              targetLat = Number(parsedUnico.lat.toFixed(6));
+              targetLon = Number(parsedUnico.lon.toFixed(6));
+              targetLabel = `UNICO F${parsedUnico.fase} · ${parsedUnico.mun}`;
             } else {
-              const topSnap = snappedFeatures[0];
-              const snapRaw = topSnap.properties as Record<string, unknown>;
-              const snapSiteId = String(snapRaw.id ?? '');
-              const snapSite = sitesByIdRef.current.get(snapSiteId);
-              if (snapSite) {
-                targetLat = Number(snapSite.lat.toFixed(6));
-                targetLon = Number(snapSite.lon.toFixed(6));
-                const opShort =
-                  OPERATOR_META[snapSite.primary.op]?.shortName ?? 'Estación';
-                targetLabel = snapSite.isMultiOperator
-                  ? `Mástil compartido (${snapSite.operators.length} oper.)`
-                  : `${opShort} #${snapSite.primary.gid}`;
-              } else if (topSnap.geometry.type === 'Point') {
-                targetLon = Number(topSnap.geometry.coordinates[0].toFixed(6));
-                targetLat = Number(topSnap.geometry.coordinates[1].toFixed(6));
+              const topSnap = snappedFeatures.find(
+                (f) => f.layer.id !== LAYER_UNICO_PROJECTS,
+              );
+              if (topSnap) {
+                const snapRaw = topSnap.properties as Record<string, unknown>;
+                const snapSiteId = String(snapRaw.id ?? '');
+                const snapSite = sitesByIdRef.current.get(snapSiteId);
+                if (snapSite) {
+                  targetLat = Number(snapSite.lat.toFixed(6));
+                  targetLon = Number(snapSite.lon.toFixed(6));
+                  const opShort =
+                    OPERATOR_META[snapSite.primary.op]?.shortName ?? 'Estación';
+                  targetLabel = snapSite.isMultiOperator
+                    ? `Mástil compartido (${snapSite.operators.length} oper.)`
+                    : `${opShort} #${snapSite.primary.gid}`;
+                } else if (topSnap.geometry.type === 'Point') {
+                  targetLon = Number(topSnap.geometry.coordinates[0].toFixed(6));
+                  targetLat = Number(topSnap.geometry.coordinates[1].toFixed(6));
+                }
               }
             }
           }
@@ -2555,9 +2590,12 @@ export function AntenasMap(props: AntenasMapProps) {
             return;
           }
 
-          const unicoHit = findPriorityUnicoHit(hitFeatures);
+          const unicoHit = findPriorityUnicoHit(hitFeatures, event.point);
           if (unicoHit) {
-            const projectsAtCoord = collectUnicoProjectsAtSameCoord(hitFeatures);
+            const projectsAtCoord = collectUnicoProjectsAtSameCoord(
+              hitFeatures,
+              { lat: unicoHit.lat, lon: unicoHit.lon },
+            );
             if (projectsAtCoord.length > 0) {
               const underlyingStationFeature = hitFeatures.find(
                 (f) =>
@@ -2575,14 +2613,21 @@ export function AntenasMap(props: AntenasMapProps) {
             }
           }
 
-          clearPinnedUnicoPopup();
-          const resolvedStation = resolveStationFromFeature(
-            topFeature,
-            event.lngLat,
+          const stationFeature = hitFeatures.find(
+            (f) =>
+              f.layer.id !== LAYER_UNICO_PROJECTS &&
+              f.layer.id !== LAYER_CLUSTERS,
           );
-          if (resolvedStation) {
-            onSelectAntennaRef.current(resolvedStation);
-            return;
+          if (stationFeature) {
+            clearPinnedUnicoPopup();
+            const resolvedStation = resolveStationFromFeature(
+              stationFeature,
+              event.lngLat,
+            );
+            if (resolvedStation) {
+              onSelectAntennaRef.current(resolvedStation);
+              return;
+            }
           }
         }
       }
@@ -2631,7 +2676,20 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      const topHit = hits[0];
+      const priorityUnicoHit = findPriorityUnicoHit(hits, event.point);
+      const topNonUnicoHit = hits.find(
+        (f) => f.layer.id !== LAYER_UNICO_PROJECTS,
+      );
+      if (!priorityUnicoHit && !topNonUnicoHit) {
+        map.getCanvas().style.cursor = isCrosshairActive ? 'crosshair' : '';
+        if (hoveredIdRef.current !== null) {
+          hoveredIdRef.current = null;
+          popup.remove();
+        }
+        return;
+      }
+
+      const topHit = topNonUnicoHit ?? hits[0];
       map.getCanvas().style.cursor = measureModeActiveRef.current
         ? isCrosshairActive
           ? 'crosshair'
@@ -2647,9 +2705,11 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      const priorityUnicoHit = findPriorityUnicoHit(hits);
-      if (priorityUnicoHit && priorityUnicoHit.geometry.type === 'Point') {
-        const projectsAtCoord = collectUnicoProjectsAtSameCoord(hits);
+      if (priorityUnicoHit) {
+        const projectsAtCoord = collectUnicoProjectsAtSameCoord(hits, {
+          lat: priorityUnicoHit.lat,
+          lon: priorityUnicoHit.lon,
+        });
         if (projectsAtCoord.length > 0) {
           const hoverKey = `${UNICO_COORD_ICON_PREFIX}${projectsAtCoord
             .map((item) => item.id)
@@ -2663,6 +2723,7 @@ export function AntenasMap(props: AntenasMapProps) {
                 (Boolean(onFocusUnicoMatchedAntennaRef.current) ||
                   antenasByIdRef.current.has(item.matchedAntennaId)),
             );
+            popup.setOffset(UNICO_PIN_POPUP_OFFSET);
             popup.setHTML(
               buildUnicoProjectsPopupHtml(projectsAtCoord, {
                 interactive: false,
@@ -2716,6 +2777,7 @@ export function AntenasMap(props: AntenasMapProps) {
           const primaryAnt =
             matchedSite?.primary ??
             antenasByIdRef.current.get(popupProps.primaryId);
+          popup.setOffset(12);
           popup.setHTML(
             buildPopupHtml(
               popupProps,

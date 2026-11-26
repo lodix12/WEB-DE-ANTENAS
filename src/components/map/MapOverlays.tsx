@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Check,
-  Crosshair,
   Group,
   Layers,
   Loader2,
   LocateFixed,
   Lock,
   LockOpen,
+  MapPin,
   Radio,
   RadioTower,
   Ruler,
@@ -450,7 +450,7 @@ export function MapOverlays({
                       onClick={() => onToggleShowUnicoProjects()}
                     >
                       <span className="map-lock-3d-icon" aria-hidden="true">
-                        <Crosshair size={15} aria-hidden="true" />
+                        <MapPin size={15} aria-hidden="true" />
                       </span>
                       <span className="map-style-option-body">
                         <span className="map-style-option-title map-style-option-name">

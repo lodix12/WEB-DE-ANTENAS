@@ -15,6 +15,8 @@ import { FilterPanel } from '../components/ui/FilterPanel';
 import { StationDetailDrawer } from '../components/ui/StationDetailDrawer';
 import { MapOverlays } from '../components/map/MapOverlays';
 import {
+  UNICO_PROJECT_ICON_ANCHOR,
+  UNICO_PROJECT_ICON_OFFSET,
   buildUnicoProjectsGeoJson,
   buildUnicoProjectsPopupHtml,
 } from '../utils/unicoProjectsMap';
@@ -2475,13 +2477,21 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.0
       antenasMapSource.indexOf('id: LAYER_UNICO_PROJECTS,'),
     ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_SELECTED_HALO,'));
     expect(antenasMapSource).toContain('registerAllUnicoProjectSprites(map)');
+    expect(antenasMapSource).toContain(
+      "'icon-anchor': UNICO_PROJECT_ICON_ANCHOR",
+    );
+    expect(antenasMapSource).toContain('UNICO_PROJECT_ICON_OFFSET');
+    expect(antenasMapSource).toContain('UNICO_PIN_POPUP_OFFSET');
     expect(antenasMapSource).toContain('antenas-map-popup-interactive');
     expect(antenasMapSource).toContain('unicoProjectsCount={unicoProjects.length}');
+    expect(UNICO_PROJECT_ICON_ANCHOR).toBe('bottom');
+    expect(UNICO_PROJECT_ICON_OFFSET).toEqual([0, 4]);
 
     // 4. CSS: estilos del conmutador ámbar y del popup interactivo de coordenadas oficiales
     expect(mapCssSource).toContain('.map-lock-3d-option.is-unico-coords-active');
     expect(mapCssSource).toContain('.map-switch-pill.is-unico-coords-on');
     expect(mapCssSource).toContain('.antenas-map-popup-interactive.maplibregl-popup');
     expect(mapCssSource).toContain('.map-popup-unico-coord-badge');
+    expect(mapCssSource).toContain('.map-popup-unico-coord-pin');
   });
 });

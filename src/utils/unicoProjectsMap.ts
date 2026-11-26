@@ -15,15 +15,22 @@ import {
 
 export const UNICO_COORD_ICON_PREFIX = 'unico-coord:';
 export const UNICO_PROJECT_SPRITE_PIXEL_RATIO = 2;
+export const UNICO_PROJECT_ICON_ANCHOR = 'bottom' as const;
+/**
+ * Desplazamiento lógico (`icon-offset`) en píxeles CSS del sprite `64×76` (`pixelRatio: 2`,
+ * tamaño lógico `32×38`) para apoyar exactamente la punta del pin (`y = 68` px físicos -> `34` px
+ * lógicos, 4 px por encima del borde inferior de la sombra) sobre la coordenada WGS84.
+ */
+export const UNICO_PROJECT_ICON_OFFSET: readonly [number, number] = [0, 4];
 
 export const UNICO_PROJECT_ICON_STOPS: readonly [number, number][] = [
-  [3, 0.12],
-  [5, 0.17],
-  [7, 0.25],
-  [9, 0.36],
-  [11, 0.48],
-  [14, 0.62],
-  [17, 0.74],
+  [3, 0.18],
+  [5, 0.26],
+  [7, 0.36],
+  [9, 0.48],
+  [11, 0.62],
+  [14, 0.78],
+  [17, 0.94],
 ];
 
 export interface UnicoProjectFeatureProperties {
@@ -62,55 +69,73 @@ function escapeHtml(raw: string): string {
 }
 
 /**
- * Genera en Canvas 2D (`64x64` px, `pixelRatio: 2`) un rombo de precisión con borde
- * ámbar/dorado y núcleo del color de la operadora para distinguir las coordenadas oficiales
- * exactas de proyectos UNICO 5G sobre las antenas reales circulares en mapas claros, oscuros y satélite.
+ * Genera en Canvas 2D (`64×76` px, `pixelRatio: 2`) un pin GPS clásico en lágrima con el color
+ * oficial de la operadora, borde blanco de alto contraste, sombra suave en la punta y círculo
+ * interno blanco reducido (`r = 1.6` u.), anclado exactamente en la punta sobre la coordenada WGS84.
  */
 export function createUnicoProjectSprite(op: UnicoOperatorKey): ImageData {
-  const size = 64;
-  const cx = size / 2;
-  const cy = size / 2;
+  const width = 64;
+  const height = 76;
+  const cx = width / 2;
+  const tipY = 68;
+  const scale = 2.4;
 
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    return new ImageData(size, size);
+    return new ImageData(width, height);
   }
-
-  const fillDiamond = (radius: number, fillStyle: string) => {
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - radius);
-    ctx.lineTo(cx + radius, cy);
-    ctx.lineTo(cx, cy + radius);
-    ctx.lineTo(cx - radius, cy);
-    ctx.closePath();
-    ctx.fillStyle = fillStyle;
-    ctx.fill();
-  };
 
   const opColor =
     OPERATOR_META[op]?.color ??
     UNICO_OPERATOR_META[op]?.color ??
     UNICO_OPERATOR_META.orange.color;
 
-  // 1. Halo exterior oscuro de alto contraste (nitidez en mapas claros y vías amarillas)
-  fillDiamond(24.6, 'rgba(15, 23, 42, 0.92)');
-  // 2. Marco romboidal ámbar/dorado identificativo de coordenada oficial UNICO 5G
-  fillDiamond(22.8, '#F59E0B');
-  // 3. Bisel blanco interior de separación
-  fillDiamond(18.6, '#FFFFFF');
-  // 4. Núcleo romboidal amplio con el color oficial de la operadora adjudicataria
-  fillDiamond(17.0, opColor);
+  ctx.save();
+  ctx.translate(cx, tipY);
+  ctx.scale(scale, scale);
 
-  // 5. Retícula central exacta marcando el punto geodésico WGS84
+  const tracePinPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(-5.5, -6.5, -9, -11.5, -9, -15.5);
+    ctx.arc(0, -15.5, 9, Math.PI, 0, false);
+    ctx.bezierCurveTo(9, -11.5, 5.5, -6.5, 0, 0);
+    ctx.closePath();
+  };
+
+  // 1. Sombra elíptica suave apoyada bajo la punta exacta (0, 0)
   ctx.beginPath();
-  ctx.arc(cx, cy, 2.2, 0, Math.PI * 2);
+  ctx.ellipse(0, 0.5, 4.2, 1.8, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.38)';
+  ctx.fill();
+
+  // 2. Halo exterior oscuro de contraste (nitidez en mapas claros, oscuros y satélite)
+  tracePinPath();
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3.2;
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.55)';
+  ctx.stroke();
+
+  // 3. Cuerpo del pin con el color de la operadora + borde blanco limpio
+  tracePinPath();
+  ctx.fillStyle = opColor;
+  ctx.fill();
+  ctx.lineWidth = 1.9;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.stroke();
+
+  // 4. Círculo interno blanco compacto (mitad de tamaño: radio 1.6 frente a 3.2)
+  ctx.beginPath();
+  ctx.arc(0, -15.5, 1.6, 0, Math.PI * 2);
   ctx.fillStyle = '#FFFFFF';
   ctx.fill();
 
-  return ctx.getImageData(0, 0, size, size);
+  ctx.restore();
+
+  return ctx.getImageData(0, 0, width, height);
 }
 
 export function getOrCreateUnicoProjectSprite(
@@ -295,10 +320,13 @@ export function buildUnicoProjectsPopupHtml(
       })
       .join('');
 
+    const pinBadgeSvg =
+      '<svg class="map-popup-unico-coord-pin" viewBox="0 0 12 16" width="9" height="12" aria-hidden="true"><path d="M6 15.5C3.5 12.2 1 9.5 1 6a5 5 0 1 1 10 0c0 3.5-2.5 6.2-5 9.5Z" fill="currentColor"/><circle cx="6" cy="6" r="1.15" fill="#0f172a"/></svg>';
+
     return `
       <div class="${headClass}">
         <span class="map-popup-unico-coord-badge">
-          <span class="map-popup-unico-coord-diamond"></span>
+          ${pinBadgeSvg}
           <span>Coordenadas UNICO 5G</span>
         </span>
         <span class="map-popup-gid">${projects.length} proy.</span>
@@ -332,7 +360,7 @@ export function buildUnicoProjectsPopupHtml(
   return `
     <div class="${headClass}">
       <span class="map-popup-unico-coord-badge">
-        <span class="map-popup-unico-coord-diamond"></span>
+        <svg class="map-popup-unico-coord-pin" viewBox="0 0 12 16" width="9" height="12" aria-hidden="true"><path d="M6 15.5C3.5 12.2 1 9.5 1 6a5 5 0 1 1 10 0c0 3.5-2.5 6.2-5 9.5Z" fill="currentColor"/><circle cx="6" cy="6" r="1.15" fill="#0f172a"/></svg>
         <span>Coordenada oficial UNICO 5G</span>
       </span>
       <span class="map-popup-unico-fase-pill">Fase ${safeFase}</span>
