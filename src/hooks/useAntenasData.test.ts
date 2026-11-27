@@ -10958,6 +10958,12 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(indexCssSource).toMatch(
       /\.bands-exclusive-row\.unico-filter-compact\s*\{[^}]*flex:\s*1\s+1\s+auto;/s,
     );
+    expect(indexCssSource).toMatch(
+      /\.bands-exclusive-row\.bands-exclusive-compact\s*\{[^}]*flex:\s*0\s+0\s+auto;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.bands-exclusive-row\.bands-exclusive-compact\s+\.bands-exclusive-checkbox\s*\{[^}]*margin:\s*0;/s,
+    );
   });
 });
 

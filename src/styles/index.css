@@ -1348,18 +1348,17 @@ code {
   padding: 0 7px;
   align-items: center;
   gap: 5px;
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
   width: 14px;
   height: 14px;
-  margin-top: 0;
+  margin: 0;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title {
-  font-size: 11.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -4283,17 +4282,34 @@ code {
     }
 
     .bands-exclusive-row.bands-exclusive-compact {
+      min-height: 32px;
       padding: 0 5px;
       gap: 4px;
     }
 
-    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title {
-      font-size: 11px;
+    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
+      width: 13px;
+      height: 13px;
+    }
+
+    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title,
+    .bands-exclusive-row.unico-filter-compact .unico-filter-compact-title {
+      font-size: 10px;
     }
 
     .bands-exclusive-row.unico-filter-compact {
       padding: 2px 5px;
       gap: 4px;
+    }
+
+    .unico-filter-count-badge {
+      font-size: 10px;
+    }
+
+    .filter-reset-btn,
+    .filter-close-btn {
+      width: 32px;
+      min-height: 32px;
     }
   }
 
