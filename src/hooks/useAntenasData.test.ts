@@ -10904,7 +10904,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(rowHtml).toContain('class="unico-filter-eu-flag"');
     expect(rowHtml).toContain('aria-label="Unión Europea"');
     expect(rowHtml).toContain(
-      'class="unico-filter-count-number mono">7.164</span> Proyectos declarados.</span>',
+      '<strong class="unico-filter-count-number mono">7.164</strong> <span class="unico-filter-count-label">Proyectos declarados.</span>',
     );
     expect(rowHtml).toContain('id="map-reset-filters-btn"');
     expect(rowHtml).toContain('lucide-rotate-ccw');
@@ -10939,7 +10939,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     });
     expect(activeHtml).toContain('unico-filter-compact is-active');
     expect(activeHtml).toContain(
-      'class="unico-filter-count-number mono">42</span> Proyectos declarados.</span>',
+      '<strong class="unico-filter-count-number mono">42</strong> <span class="unico-filter-count-label">Proyectos declarados.</span>',
     );
     expect(activeHtml).toContain('filter-reset-btn has-active-filters');
 
@@ -10950,7 +10950,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(fallbackHtml).toContain('id="map-reset-filters-btn"');
     expect(fallbackHtml).toContain('id="sidebar-collapse-btn"');
 
-    // 4. Reglas CSS: Reset y X exactamente del mismo tamaño (34px × 34px) y caja UNICO compacta con checkbox centrado
+    // 4. Reglas CSS: Reset y X exactamente del mismo tamaño (34px × 34px) y caja UNICO compacta con checkbox centrado, número en negrita y espacio triple
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -10967,6 +10967,12 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     );
     expect(indexCssSource).toMatch(
       /\.bands-exclusive-row\.unico-filter-compact\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*row;[^}]*align-items:\s*center;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.unico-filter-count-badge\s*\{[^}]*display:\s*inline-flex;[^}]*gap:\s*6\.5px;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.unico-filter-count-number\s*\{[^}]*font-weight:\s*800;/s,
     );
     expect(indexCssSource).toMatch(
       /\.bands-exclusive-row\.bands-exclusive-compact\s*\{[^}]*flex:\s*0\s+0\s+auto;/s,

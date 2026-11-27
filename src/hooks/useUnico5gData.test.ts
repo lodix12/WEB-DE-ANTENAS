@@ -1755,7 +1755,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(filterBandsActions).toContain('unico-filter-compact');
     expect(filterBandsActions).toContain('>UNICO 5G<');
     expect(filterBandsActions).toContain(
-      'class="unico-filter-count-number mono">1</span> Proyectos declarados.</span>',
+      '<strong class="unico-filter-count-number mono">1</strong> <span class="unico-filter-count-label">Proyectos declarados.</span>',
     );
     expect(filterBandsActions.indexOf('>Exclusivamente<')).toBeLessThan(
       filterBandsActions.indexOf('id="filter-unico-declared-checkbox"'),
@@ -1802,7 +1802,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
       }),
     );
     expect(filterLoadingHtml).toContain(
-      'class="unico-filter-count-number mono">…</span>',
+      '<strong class="unico-filter-count-number mono">…</strong>',
     );
     expect(filterLoadingHtml).toContain('disabled=""');
     expect(filterLoadingHtml).toContain(
@@ -1843,7 +1843,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
       }),
     );
     expect(filterErrorHtml).toContain(
-      'class="unico-filter-count-number mono">—</span>',
+      '<strong class="unico-filter-count-number mono">—</strong>',
     );
     expect(filterErrorHtml).toContain('disabled=""');
     expect(filterErrorHtml).toContain(
@@ -1932,7 +1932,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(mapaBandsActions).toContain('id="filter-unico-declared-checkbox"');
     expect(mapaBandsActions).toContain('>UNICO 5G<');
     expect(mapaBandsActions).toContain(
-      'class="unico-filter-count-number mono">1</span> Proyectos declarados.</span>',
+      '<strong class="unico-filter-count-number mono">1</strong> <span class="unico-filter-count-label">Proyectos declarados.</span>',
     );
     expect(mapaHtml).not.toContain('Solo declaradas UNICO 5G');
 

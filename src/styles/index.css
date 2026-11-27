@@ -1474,7 +1474,7 @@ code {
   flex-direction: row;
   align-items: center;
   justify-content: flex-start;
-  padding: 2px 5px;
+  padding: 2px 4px;
   gap: 4px;
 }
 
@@ -1520,10 +1520,12 @@ code {
 }
 
 .unico-filter-count-badge {
-  display: block;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6.5px;
   max-width: 100%;
-  font-size: 9px;
-  font-weight: 600;
+  font-size: 8.8px;
+  font-weight: 500;
   line-height: 1.05;
   color: #166534;
   text-transform: none;
@@ -1532,8 +1534,13 @@ code {
 }
 
 .unico-filter-count-number {
-  font-weight: 700;
+  font-size: 9.2px;
+  font-weight: 800;
   letter-spacing: -0.02em;
+}
+
+.unico-filter-count-label {
+  font-weight: 500;
 }
 
 [data-theme='dark'] .unico-filter-count-badge {
@@ -4307,7 +4314,12 @@ code {
     }
 
     .unico-filter-count-badge {
-      font-size: 8.6px;
+      gap: 6px;
+      font-size: 8.4px;
+    }
+
+    .unico-filter-count-number {
+      font-size: 8.8px;
     }
 
     .mobile-controls-bar {
@@ -4349,7 +4361,7 @@ code {
     }
 
     .bands-exclusive-row.unico-filter-compact {
-      padding: 2px 4px;
+      padding: 2px 3px;
       gap: 3px;
     }
 
@@ -4359,7 +4371,12 @@ code {
     }
 
     .unico-filter-count-badge {
-      font-size: 7.7px;
+      gap: 5px;
+      font-size: 7.5px;
+    }
+
+    .unico-filter-count-number {
+      font-size: 7.9px;
     }
 
     .filter-reset-btn,

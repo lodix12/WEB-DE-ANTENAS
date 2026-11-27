@@ -482,15 +482,17 @@ export function FilterPanel({
         <span className="unico-filter-count-badge">
           {unicoStatus === 'ready' ? (
             <>
-              <span className="unico-filter-count-number mono">
+              <strong className="unico-filter-count-number mono">
                 {unicoCountDisplay}
-              </span>{' '}
-              Proyectos declarados.
+              </strong>{' '}
+              <span className="unico-filter-count-label">
+                Proyectos declarados.
+              </span>
             </>
           ) : (
-            <span className="unico-filter-count-number mono">
+            <strong className="unico-filter-count-number mono">
               {unicoCountDisplay}
-            </span>
+            </strong>
           )}
         </span>
       </span>
