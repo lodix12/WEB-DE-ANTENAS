@@ -19,7 +19,6 @@ import {
 import { WorkspaceProvider } from '../hooks/WorkspaceProvider';
 import mainRawSource from '../main.tsx?raw';
 import type { AntenasDataset } from '../types/antena';
-import { EstadisticasView } from '../views/EstadisticasView';
 import {
   registerServiceWorker,
   shouldRegisterServiceWorker,
@@ -109,14 +108,14 @@ async function renderAppHeaderMarkup(): Promise<string> {
   queryClient.setQueryData(['scan-status'], null);
 
   const root = createRootRoute({ component: RootLayout });
-  const statsRoute = createRoute({
+  const novedadesStubRoute = createRoute({
     getParentRoute: () => root,
-    path: '/estadisticas',
-    component: EstadisticasView,
+    path: '/novedades',
+    component: () => createElement('main', null, 'Novedades'),
   });
   const router = createRouter({
-    routeTree: root.addChildren([statsRoute]),
-    history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    routeTree: root.addChildren([novedadesStubRoute]),
+    history: createMemoryHistory({ initialEntries: ['/novedades'] }),
   });
   await router.load();
 
@@ -523,6 +522,11 @@ describe('Manifiesto WebAPK, Iconos PNG y Service Worker (public/ e index.html)'
     }
 
     expect(manifest.shortcuts.length).toBeGreaterThanOrEqual(3);
+    expect(
+      manifest.shortcuts.some((shortcut) =>
+        shortcut.url.includes('/estadisticas'),
+      ),
+    ).toBe(false);
 
     // Verificar cabecera binaria PNG (firma + IHDR width/height) de cada icono generado
     const expectedPngDimensions: Array<[string, number, number]> = [

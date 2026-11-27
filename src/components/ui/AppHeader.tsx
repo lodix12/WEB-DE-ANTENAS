@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from '@tanstack/react-router';
 import {
-  BarChart3,
   Download,
   LayoutGrid,
   Map as MapIcon,
@@ -127,18 +126,6 @@ export function AppHeader() {
               Navegación y apariencia · Redes Moviles España
             </span>
           </div>
-
-          <button
-            type="button"
-            id="sections-drawer-close-btn"
-            className="icon-btn"
-            aria-label="Cerrar menú de secciones"
-            title="Cerrar menú de secciones"
-            onClick={() => setSectionsMenuOpen(false)}
-            style={{ padding: '0 8px' }}
-          >
-            <X size={16} aria-hidden="true" />
-          </button>
         </div>
 
         <div className="sidebar-scroll">
@@ -216,23 +203,6 @@ export function AppHeader() {
                   </span>
                   <span className="sections-nav-sub">
                     Bajas de antenas y frecuencias retiradas en MINETUR
-                  </span>
-                </span>
-              </Link>
-
-              <Link
-                to="/estadisticas"
-                id="nav-tab-estadisticas"
-                className="sections-nav-item"
-                onClick={() => setSectionsMenuOpen(false)}
-              >
-                <span className="sections-nav-icon" aria-hidden="true">
-                  <BarChart3 size={17} />
-                </span>
-                <span className="sections-nav-copy">
-                  <span className="sections-nav-title">Datos y Estadísticas</span>
-                  <span className="sections-nav-sub">
-                    Métricas por operadora, banda y provincia
                   </span>
                 </span>
               </Link>
@@ -384,6 +354,19 @@ export function AppHeader() {
               )}
             </div>
           </section>
+        </div>
+
+        <div className="sections-drawer-footer">
+          <button
+            type="button"
+            id="sections-drawer-close-btn"
+            className="filter-close-btn"
+            aria-label="Cerrar menú de secciones"
+            title="Cerrar menú de secciones"
+            onClick={() => setSectionsMenuOpen(false)}
+          >
+            <X size={16} strokeWidth={2.25} aria-hidden="true" />
+          </button>
         </div>
       </aside>
     </>

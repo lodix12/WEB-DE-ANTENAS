@@ -87,7 +87,6 @@ import {
   MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS,
   groupColocatedAntennasForMap,
 } from '../utils/geo';
-import { EstadisticasView } from '../views/EstadisticasView';
 import { MapaView } from '../views/MapaView';
 import { NovedadesView } from '../views/NovedadesView';
 import { WorkspaceProvider } from './WorkspaceProvider';
@@ -4148,13 +4147,8 @@ describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pa
         path: '/novedades',
         component: NovedadesView,
       });
-      const statsR = createRoute({
-        getParentRoute: () => root,
-        path: '/estadisticas',
-        component: EstadisticasView,
-      });
       return createRouter({
-        routeTree: root.addChildren([mapR, novR, statsR]),
+        routeTree: root.addChildren([mapR, novR]),
         history: createMemoryHistory({ initialEntries: [initialPath] }),
       });
     };
@@ -4183,17 +4177,21 @@ describe('Botón flotante "Secciones", cajón deslizable y paneles móviles a pa
       mapHtml.indexOf('id="mobile-open-sections-btn"'),
     ).toBeLessThan(mapHtml.indexOf('id="mobile-open-filters-btn"'));
 
-    // El cajón #sections-drawer contiene las secciones, el selector de modo oscuro/claro y el censo
+    // El cajón #sections-drawer contiene las secciones vigentes (sin Datos y Estadísticas),
+    // el selector de modo oscuro/claro, el censo y la X roja de cierre abajo
     expect(mapHtml).toContain('id="sections-drawer"');
     expect(mapHtml).toContain('id="sections-drawer-close-btn"');
     expect(mapHtml).toContain('id="nav-tab-mapa"');
     expect(mapHtml).toContain('id="nav-tab-novedades"');
-    expect(mapHtml).toContain('id="nav-tab-estadisticas"');
+    expect(mapHtml).toContain('id="nav-tab-eliminaciones"');
+    expect(mapHtml).toContain('id="nav-tab-unico-5g"');
+    expect(mapHtml).not.toContain('id="nav-tab-estadisticas"');
+    expect(mapHtml).not.toContain('Datos y Estadísticas');
     expect(mapHtml).toContain('id="theme-toggle-btn"');
     expect(mapHtml).toContain('Modo oscuro');
     expect(mapHtml).toContain('>7<');
 
-    // 2. En "/novedades" y "/estadisticas": aparece el botón flotante compacto #page-open-sections-btn
+    // 2. En "/novedades": aparece el botón flotante compacto #page-open-sections-btn
     const novRouter = buildAppRouter('/novedades');
     await novRouter.load();
     const novHtml = renderToStaticMarkup(
@@ -9490,22 +9488,8 @@ describe('Mapa — FilterPanel: fila compacta "Exclusivamente" + Reset permanent
   });
 });
 
-describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco', () => {
-  it('renderiza únicamente una página en blanco sin el contenido anterior y mantiene el botón Secciones en RootLayout', async () => {
-    const viewHtml = renderToStaticMarkup(createElement(EstadisticasView));
-    expect(viewHtml).toBe(
-      '<main id="estadisticas-blank-page" class="estadisticas-blank-page" aria-label="Datos y Estadísticas"></main>',
-    );
-    expect(viewHtml).not.toContain('Radiografía de Infraestructura RF');
-    expect(viewHtml).not.toContain('Estadísticas de Despliegue Móvil en España');
-    expect(viewHtml).not.toContain('Distribución Nacional por Operador');
-    expect(viewHtml).not.toContain('Cobertura y Desglose por Bandas');
-    expect(viewHtml).not.toContain('Despliegue Territorial por Provincia');
-    expect(viewHtml).not.toContain('Estado del Pipeline');
-    expect(viewHtml).not.toContain('metrics-strip');
-    expect(viewHtml).not.toContain('section-block');
-    expect(viewHtml).not.toContain('spinner-ring');
-
+describe('Eliminación de Datos y Estadísticas y botón X rojo abajo en menú de Secciones', () => {
+  it('elimina la sección Datos y Estadísticas de la app y coloca la X roja en la parte inferior del menú de Secciones igual que en Filtros', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -9521,17 +9505,20 @@ describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco',
     });
     queryClient.setQueryData(['scan-status'], null);
 
-    const root = createRootRoute({ component: RootLayout });
-    const statsRoute = createRoute({
+    const root = createRootRoute({
+      component: RootLayout,
+      notFoundComponent: NotFoundView,
+    });
+    const mapRoute = createRoute({
       getParentRoute: () => root,
-      path: '/estadisticas',
-      component: EstadisticasView,
+      path: '/',
+      component: MapaView,
     });
-    const statsRouter = createRouter({
-      routeTree: root.addChildren([statsRoute]),
-      history: createMemoryHistory({ initialEntries: ['/estadisticas'] }),
+    const testRouter = createRouter({
+      routeTree: root.addChildren([mapRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
     });
-    await statsRouter.load();
+    await testRouter.load();
 
     const fullHtml = renderToStaticMarkup(
       createElement(
@@ -9540,27 +9527,79 @@ describe('Sección Datos y Estadísticas (/estadisticas) — página en blanco',
         createElement(
           WorkspaceProvider,
           null,
-          createElement(RouterProvider, { router: statsRouter }),
+          createElement(RouterProvider, { router: testRouter }),
         ),
       ),
     );
 
-    expect(fullHtml).toContain('id="page-open-sections-btn"');
-    expect(fullHtml).toContain('id="sections-drawer"');
-    expect(fullHtml).toContain(
-      '<main id="estadisticas-blank-page" class="estadisticas-blank-page" aria-label="Datos y Estadísticas"></main>',
-    );
+    const drawerStart = fullHtml.indexOf('id="sections-drawer"');
+    expect(drawerStart).toBeGreaterThan(-1);
+    const drawerEnd = fullHtml.indexOf('</aside>', drawerStart);
+    expect(drawerEnd).toBeGreaterThan(drawerStart);
+    const drawerHtml = fullHtml.slice(drawerStart, drawerEnd);
 
+    // 1. La sección "Datos y Estadísticas" ya no existe en el menú de Secciones
+    expect(drawerHtml).not.toContain('id="nav-tab-estadisticas"');
+    expect(drawerHtml).not.toContain('Datos y Estadísticas');
+    expect(drawerHtml).not.toContain('/estadisticas');
+    expect(drawerHtml).toContain('id="nav-tab-mapa"');
+    expect(drawerHtml).toContain('id="nav-tab-novedades"');
+    expect(drawerHtml).toContain('id="nav-tab-eliminaciones"');
+    expect(drawerHtml).toContain('id="nav-tab-unico-5g"');
+
+    // 2. El botón X de cierre ya no está arriba en .sidebar-header sino abajo en .sections-drawer-footer con clase .filter-close-btn (roja)
+    const drawerHeaderPart = drawerHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+    const drawerFooterStart = drawerHtml.indexOf('class="sections-drawer-footer"');
+    const drawerScrollStart = drawerHtml.indexOf('class="sidebar-scroll"');
+    expect(drawerHeaderPart).not.toContain('id="sections-drawer-close-btn"');
+    expect(drawerFooterStart).toBeGreaterThan(drawerScrollStart);
+
+    const drawerFooterPart = drawerHtml.slice(drawerFooterStart);
+    expect(drawerFooterPart).toContain('id="sections-drawer-close-btn"');
+    expect(drawerFooterPart).toContain('class="filter-close-btn"');
+    expect(drawerFooterPart).toContain('aria-label="Cerrar menú de secciones"');
+    expect(drawerFooterPart).toContain('lucide-x');
+    expect(drawerFooterPart).toContain('stroke-width="2.25"');
+    expect(drawerHtml.match(/id="sections-drawer-close-btn"/g)).toHaveLength(1);
+
+    // 3. Verificación en código fuente: sin EstadisticasView.tsx, sin ruta /estadisticas y con estilos CSS del pie y X roja
     const fsSpecifier = 'node:fs';
-    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+    const { existsSync, readFileSync } = (await import(
+      /* @vite-ignore */ fsSpecifier
+    )) as {
+      existsSync: (path: URL) => boolean;
       readFileSync: (path: URL, encoding: string) => string;
     };
+
+    expect(
+      existsSync(new URL('../views/EstadisticasView.tsx', import.meta.url)),
+    ).toBe(false);
+
+    const routerSource = readFileSync(
+      new URL('../router.tsx', import.meta.url),
+      'utf-8',
+    );
+    expect(routerSource).not.toContain('/estadisticas');
+    expect(routerSource).not.toContain('EstadisticasView');
+
+    const manifestSource = readFileSync(
+      new URL('../../public/manifest.webmanifest', import.meta.url),
+      'utf-8',
+    );
+    expect(manifestSource).not.toContain('/estadisticas');
+    expect(manifestSource).not.toContain('Datos y Estadísticas');
+
     const indexCssSource = readFileSync(
       new URL('../styles/index.css', import.meta.url),
       'utf-8',
     );
+    expect(indexCssSource).not.toContain('.estadisticas-blank-page');
     expect(indexCssSource).toMatch(
-      /\.estadisticas-blank-page\s*\{[^}]*min-height:\s*100dvh;/s,
+      /\.sections-drawer-footer\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s,
+    );
+    expect(indexCssSource).toContain('.sections-drawer .sections-drawer-footer');
+    expect(indexCssSource).toMatch(
+      /\.filter-close-btn\s*\{[^}]*color:\s*#dc2626;/s,
     );
   });
 });

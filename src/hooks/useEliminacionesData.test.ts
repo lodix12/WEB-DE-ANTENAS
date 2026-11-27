@@ -753,14 +753,9 @@ describe('Eliminaciones — Renderizado SSR de EliminacionesView y AppHeader', (
       validateSearch: validateNovedadesSearch,
       component: EliminacionesView,
     });
-    const testStats = createRoute({
-      getParentRoute: () => testRoot,
-      path: '/estadisticas',
-      component: () => createElement('div', null, 'Estadisticas'),
-    });
 
     const testRouter = createRouter({
-      routeTree: testRoot.addChildren([testMap, testNov, testElim, testStats]),
+      routeTree: testRoot.addChildren([testMap, testNov, testElim]),
       history: createMemoryHistory({ initialEntries: ['/eliminaciones'] }),
     });
     await testRouter.load();

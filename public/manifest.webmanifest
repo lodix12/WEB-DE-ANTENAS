@@ -76,10 +76,24 @@
       ]
     },
     {
-      "name": "Datos y Estadísticas",
-      "short_name": "Estadísticas",
-      "description": "Ver estadísticas por operador, banda de frecuencia y provincia",
-      "url": "./#/estadisticas",
+      "name": "Eliminaciones",
+      "short_name": "Eliminaciones",
+      "description": "Consultar bajas de antenas y frecuencias retiradas en MINETUR",
+      "url": "./#/eliminaciones",
+      "icons": [
+        {
+          "src": "./icons/pwa-192x192.png",
+          "sizes": "192x192",
+          "type": "image/png",
+          "purpose": "any"
+        }
+      ]
+    },
+    {
+      "name": "UNICO 5G",
+      "short_name": "UNICO 5G",
+      "description": "Explorar las antenas subvencionadas de UNICO 5G Fase 1 y Fase 2",
+      "url": "./#/unico-5g",
       "icons": [
         {
           "src": "./icons/pwa-192x192.png",

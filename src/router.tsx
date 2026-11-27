@@ -13,7 +13,6 @@ import {
 import { validateUnico5gSearch } from './hooks/useUnico5gData';
 import type { UnicoRouteSearch } from './types/unico5g';
 import { EliminacionesView } from './views/EliminacionesView';
-import { EstadisticasView } from './views/EstadisticasView';
 import { MapaView } from './views/MapaView';
 import { NovedadesView } from './views/NovedadesView';
 import { Unico5gView } from './views/Unico5gView';
@@ -99,12 +98,6 @@ const eliminacionesRoute = createRoute({
   component: EliminacionesView,
 });
 
-const estadisticasRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/estadisticas',
-  component: EstadisticasView,
-});
-
 const unico5gRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/unico-5g',
@@ -116,7 +109,6 @@ const routeTree = rootRoute.addChildren([
   mapaRoute,
   novedadesRoute,
   eliminacionesRoute,
-  estadisticasRoute,
   unico5gRoute,
 ]);
 

@@ -238,6 +238,16 @@ code {
     visibility 0s linear 0s;
 }
 
+.sections-drawer-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
 .sections-nav-list {
   display: flex;
   flex-direction: column;
@@ -2922,7 +2932,7 @@ code {
 }
 
 /* ==========================================================================
-   Páginas Analíticas y de Referencia (/estadisticas, /metodologia)
+   Páginas Analíticas y de Referencia
    ========================================================================== */
 
 .page-container {
@@ -2933,13 +2943,6 @@ code {
   display: flex;
   flex-direction: column;
   gap: 32px;
-}
-
-.estadisticas-blank-page {
-  flex: 1;
-  width: 100%;
-  min-height: 100dvh;
-  background-color: var(--bg-canvas);
 }
 
 .page-hero {
@@ -4524,6 +4527,10 @@ code {
   .filter-sidebar .sidebar-scroll,
   .sections-drawer .sidebar-scroll {
     padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .sections-drawer .sections-drawer-footer {
+    padding: 10px 16px calc(12px + env(safe-area-inset-bottom, 0px));
   }
 
   @media (max-width: 600px) {

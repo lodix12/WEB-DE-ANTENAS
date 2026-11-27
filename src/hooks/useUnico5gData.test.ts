@@ -883,11 +883,6 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
       path: '/eliminaciones',
       component: () => createElement('div', null, 'Eliminaciones'),
     });
-    const estadisticasStubRoute = createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/estadisticas',
-      component: () => createElement('div', null, 'Estadisticas'),
-    });
     const unicoRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: '/unico-5g',
@@ -900,7 +895,6 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         mapStubRoute,
         novedadesStubRoute,
         eliminacionesStubRoute,
-        estadisticasStubRoute,
         unicoRoute,
       ]),
       history: createMemoryHistory({ initialEntries: ['/unico-5g'] }),
