@@ -8,12 +8,16 @@ import {
   type NovedadesDataset,
   type OperatorKey,
 } from '../types/antena';
+import { classifyFrequencyRangeToBandCode } from '../utils/bandCard';
 import { normalizeSearchText } from '../utils/export';
 import {
+  ALL_RF_BAND_CODES,
   ALL_SPANISH_COMUNIDADES,
   getCanonicalProvincesByComunidad,
   getCanonicalSpanishProvince,
   getComunidadAutonomaByProvince,
+  normalizeCommercialBandLabel,
+  type RfBandCode,
 } from './useAntenasData';
 import {
   useLiveScanDelta,
@@ -240,7 +244,14 @@ export async function importNovedadesJsonDataset(): Promise<NovedadesDataset> {
   return parseCustomNovedadesJson(raw);
 }
 
-export const STANDARD_NOVEDADES_BANDS = [
+/**
+ * Opciones canónicas del filtro de bandas en la sección de Novedades:
+ * idénticas en nombres y orden a los filtros de bandas de la sección de Mapa
+ * (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`).
+ */
+export const STANDARD_NOVEDADES_BANDS: readonly RfBandCode[] = ALL_RF_BAND_CODES;
+
+export const LEGACY_COMMERCIAL_BANDS_MHZ = [
   '700 MHz',
   '800 MHz',
   '900 MHz',
@@ -390,8 +401,224 @@ export interface NovedadesTableViewState {
   page: number;
 }
 
-const VALID_STANDARD_NOVEDADES_BANDS = new Set<string>(STANDARD_NOVEDADES_BANDS);
+const VALID_NOVEDADES_RF_BANDS = new Map<string, RfBandCode>(
+  ALL_RF_BAND_CODES.map((code) => [code.toUpperCase(), code]),
+);
+
+const LEGACY_NOVEDADES_BAND_TO_RF_CODE: Record<string, RfBandCode> = {
+  '700 MHz': 'N28',
+  '800 MHz': 'B20',
+  '900 MHz': 'G9',
+  '1800 MHz': 'B3',
+  '2100 MHz': 'B1',
+  '2600 MHz': 'B7',
+  '3500 MHz': 'N78',
+  '26 GHz': 'N258',
+};
+
 const DMY_DATE_ONLY_REGEX = /^\d{2}\/\d{2}\/\d{4}$/;
+
+/**
+ * Normaliza un valor de filtro de banda de Novedades a uno de los 11 códigos RF
+ * canónicos usados en la sección de Mapa (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`,
+ * `B38`, `B7`, `B7+`, `N78`, `N258`), admitiendo también alias heredados en MHz/GHz
+ * para preservar compatibilidad con URLs guardadas previamente.
+ */
+export function normalizeNovedadesBandFilter(
+  rawBand: string,
+): RfBandCode | null {
+  const trimmed = rawBand.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'all') {
+    return null;
+  }
+  const compactUpper = trimmed.replace(/\s*\+\s*/g, '+').toUpperCase();
+  const direct = VALID_NOVEDADES_RF_BANDS.get(compactUpper);
+  if (direct) {
+    return direct;
+  }
+  const normalizedLegacy = normalizeCommercialBandLabel(trimmed);
+  if (Object.hasOwn(LEGACY_NOVEDADES_BAND_TO_RF_CODE, normalizedLegacy)) {
+    return LEGACY_NOVEDADES_BAND_TO_RF_CODE[normalizedLegacy];
+  }
+  return null;
+}
+
+export function createTableSearchHelpers(
+  normalizeBand: (rawBand: string) => string | null,
+) {
+  function validateSearch(raw: Record<string, unknown>): NovedadesRouteSearch {
+    const parsed: NovedadesRouteSearch = {};
+
+    if (raw.tipo === 'antena' || raw.tipo === 'frecuencia') {
+      parsed.tipo = raw.tipo;
+    }
+
+    if (typeof raw.op === 'string') {
+      const normalizedOp = normalizeOperatorKeyInput(
+        raw.op.trim().toLowerCase(),
+      );
+      if (normalizedOp !== null) {
+        parsed.op = normalizedOp;
+      }
+    }
+
+    if (typeof raw.banda === 'string') {
+      const normalizedBand = normalizeBand(raw.banda);
+      if (normalizedBand !== null) {
+        parsed.banda = normalizedBand;
+      }
+    }
+
+    if (typeof raw.ccaa === 'string') {
+      const trimmedCcaa = raw.ccaa.trim();
+      if (trimmedCcaa.length > 0 && trimmedCcaa !== 'all') {
+        parsed.ccaa = trimmedCcaa;
+      }
+    }
+
+    if (typeof raw.prov === 'string') {
+      const trimmedProv = raw.prov.trim();
+      if (trimmedProv.length > 0 && trimmedProv !== 'all') {
+        parsed.prov = getCanonicalSpanishProvince(trimmedProv) || trimmedProv;
+      }
+    }
+
+    if (typeof raw.fecha === 'string') {
+      const trimmedDate = raw.fecha.trim();
+      if (DMY_DATE_ONLY_REGEX.test(trimmedDate)) {
+        parsed.fecha = trimmedDate;
+      }
+    }
+
+    if (typeof raw.q === 'string') {
+      if (raw.q.length > 0) {
+        parsed.q = raw.q;
+      }
+    } else if (typeof raw.q === 'number' && Number.isFinite(raw.q)) {
+      parsed.q = String(raw.q);
+    } else if (typeof raw.q === 'boolean') {
+      parsed.q = String(raw.q);
+    }
+
+    let parsedFilas: number | null = null;
+    if (typeof raw.filas === 'number' && Number.isInteger(raw.filas)) {
+      parsedFilas = raw.filas;
+    } else if (
+      typeof raw.filas === 'string' &&
+      /^\d+$/.test(raw.filas.trim())
+    ) {
+      parsedFilas = Number.parseInt(raw.filas.trim(), 10);
+    }
+    if (
+      parsedFilas !== null &&
+      isValidNovedadesPageSize(parsedFilas) &&
+      parsedFilas !== DEFAULT_NOVEDADES_PAGE_SIZE
+    ) {
+      parsed.filas = parsedFilas;
+    }
+
+    let parsedPagina: number | null = null;
+    if (typeof raw.pagina === 'number' && Number.isFinite(raw.pagina)) {
+      parsedPagina = Math.trunc(raw.pagina);
+    } else if (
+      typeof raw.pagina === 'string' &&
+      /^\d+$/.test(raw.pagina.trim())
+    ) {
+      parsedPagina = Number.parseInt(raw.pagina.trim(), 10);
+    }
+    if (parsedPagina !== null && parsedPagina > 1) {
+      parsed.pagina = parsedPagina;
+    }
+
+    return parsed;
+  }
+
+  function resolveTableStateFromSearch(
+    rawSearch: unknown,
+  ): NovedadesTableViewState {
+    const validated = validateSearch(
+      isPlainRecord(rawSearch) ? rawSearch : {},
+    );
+    return {
+      tipoFilter: validated.tipo ?? 'all',
+      operatorFilter: validated.op ?? 'all',
+      bandFilter: validated.banda ?? 'all',
+      comunidadFilter: validated.ccaa ?? 'all',
+      provinceFilter: validated.prov ?? 'all',
+      dateFilter: validated.fecha ?? 'all',
+      searchQuery: validated.q ?? '',
+      pageSize: validated.filas ?? DEFAULT_NOVEDADES_PAGE_SIZE,
+      page: validated.pagina ?? 1,
+    };
+  }
+
+  function serializeTableStateToSearch(
+    state: NovedadesTableViewState,
+  ): NovedadesRouteSearch {
+    const search: NovedadesRouteSearch = {};
+
+    if (state.tipoFilter === 'antena' || state.tipoFilter === 'frecuencia') {
+      search.tipo = state.tipoFilter;
+    }
+    if (state.operatorFilter !== 'all') {
+      const normalizedOp = normalizeOperatorKeyInput(state.operatorFilter);
+      if (normalizedOp !== null) {
+        search.op = normalizedOp;
+      }
+    }
+    if (state.bandFilter !== 'all') {
+      const normalizedBand = normalizeBand(state.bandFilter);
+      if (normalizedBand !== null) {
+        search.banda = normalizedBand;
+      }
+    }
+    if (
+      state.comunidadFilter !== 'all' &&
+      state.comunidadFilter.trim().length > 0
+    ) {
+      search.ccaa = state.comunidadFilter.trim();
+    }
+    if (
+      state.provinceFilter !== 'all' &&
+      state.provinceFilter.trim().length > 0
+    ) {
+      search.prov = state.provinceFilter.trim();
+    }
+    if (
+      state.dateFilter !== 'all' &&
+      DMY_DATE_ONLY_REGEX.test(state.dateFilter.trim())
+    ) {
+      search.fecha = state.dateFilter.trim();
+    }
+    if (state.searchQuery.length > 0) {
+      search.q = state.searchQuery;
+    }
+    if (
+      isValidNovedadesPageSize(state.pageSize) &&
+      state.pageSize !== DEFAULT_NOVEDADES_PAGE_SIZE
+    ) {
+      search.filas = state.pageSize;
+    }
+    const normalizedPage = Math.trunc(
+      Number.isFinite(state.page) ? state.page : 1,
+    );
+    if (normalizedPage > 1) {
+      search.pagina = normalizedPage;
+    }
+
+    return search;
+  }
+
+  return {
+    validateSearch,
+    resolveTableStateFromSearch,
+    serializeTableStateToSearch,
+  };
+}
+
+const novedadesSearchHelpers = createTableSearchHelpers(
+  normalizeNovedadesBandFilter,
+);
 
 /**
  * Valida y normaliza los parámetros de búsqueda URL de `/novedades`
@@ -401,88 +628,7 @@ const DMY_DATE_ONLY_REGEX = /^\d{2}\/\d{2}\/\d{4}$/;
 export function validateNovedadesSearch(
   raw: Record<string, unknown>,
 ): NovedadesRouteSearch {
-  const parsed: NovedadesRouteSearch = {};
-
-  if (raw.tipo === 'antena' || raw.tipo === 'frecuencia') {
-    parsed.tipo = raw.tipo;
-  }
-
-  if (typeof raw.op === 'string') {
-    const normalizedOp = normalizeOperatorKeyInput(raw.op.trim().toLowerCase());
-    if (normalizedOp !== null) {
-      parsed.op = normalizedOp;
-    }
-  }
-
-  if (typeof raw.banda === 'string') {
-    const trimmedBand = raw.banda.trim();
-    if (VALID_STANDARD_NOVEDADES_BANDS.has(trimmedBand)) {
-      parsed.banda = trimmedBand;
-    }
-  }
-
-  if (typeof raw.ccaa === 'string') {
-    const trimmedCcaa = raw.ccaa.trim();
-    if (trimmedCcaa.length > 0 && trimmedCcaa !== 'all') {
-      parsed.ccaa = trimmedCcaa;
-    }
-  }
-
-  if (typeof raw.prov === 'string') {
-    const trimmedProv = raw.prov.trim();
-    if (trimmedProv.length > 0 && trimmedProv !== 'all') {
-      parsed.prov = getCanonicalSpanishProvince(trimmedProv) || trimmedProv;
-    }
-  }
-
-  if (typeof raw.fecha === 'string') {
-    const trimmedDate = raw.fecha.trim();
-    if (DMY_DATE_ONLY_REGEX.test(trimmedDate)) {
-      parsed.fecha = trimmedDate;
-    }
-  }
-
-  if (typeof raw.q === 'string') {
-    if (raw.q.length > 0) {
-      parsed.q = raw.q;
-    }
-  } else if (typeof raw.q === 'number' && Number.isFinite(raw.q)) {
-    parsed.q = String(raw.q);
-  } else if (typeof raw.q === 'boolean') {
-    parsed.q = String(raw.q);
-  }
-
-  let parsedFilas: number | null = null;
-  if (typeof raw.filas === 'number' && Number.isInteger(raw.filas)) {
-    parsedFilas = raw.filas;
-  } else if (
-    typeof raw.filas === 'string' &&
-    /^\d+$/.test(raw.filas.trim())
-  ) {
-    parsedFilas = Number.parseInt(raw.filas.trim(), 10);
-  }
-  if (
-    parsedFilas !== null &&
-    isValidNovedadesPageSize(parsedFilas) &&
-    parsedFilas !== DEFAULT_NOVEDADES_PAGE_SIZE
-  ) {
-    parsed.filas = parsedFilas;
-  }
-
-  let parsedPagina: number | null = null;
-  if (typeof raw.pagina === 'number' && Number.isFinite(raw.pagina)) {
-    parsedPagina = Math.trunc(raw.pagina);
-  } else if (
-    typeof raw.pagina === 'string' &&
-    /^\d+$/.test(raw.pagina.trim())
-  ) {
-    parsedPagina = Number.parseInt(raw.pagina.trim(), 10);
-  }
-  if (parsedPagina !== null && parsedPagina > 1) {
-    parsed.pagina = parsedPagina;
-  }
-
-  return parsed;
+  return novedadesSearchHelpers.validateSearch(raw);
 }
 
 /**
@@ -492,20 +638,7 @@ export function validateNovedadesSearch(
 export function resolveNovedadesTableStateFromSearch(
   rawSearch: unknown,
 ): NovedadesTableViewState {
-  const validated = validateNovedadesSearch(
-    isPlainRecord(rawSearch) ? rawSearch : {},
-  );
-  return {
-    tipoFilter: validated.tipo ?? 'all',
-    operatorFilter: validated.op ?? 'all',
-    bandFilter: validated.banda ?? 'all',
-    comunidadFilter: validated.ccaa ?? 'all',
-    provinceFilter: validated.prov ?? 'all',
-    dateFilter: validated.fecha ?? 'all',
-    searchQuery: validated.q ?? '',
-    pageSize: validated.filas ?? DEFAULT_NOVEDADES_PAGE_SIZE,
-    page: validated.pagina ?? 1,
-  };
+  return novedadesSearchHelpers.resolveTableStateFromSearch(rawSearch);
 }
 
 /**
@@ -515,58 +648,7 @@ export function resolveNovedadesTableStateFromSearch(
 export function serializeNovedadesTableStateToSearch(
   state: NovedadesTableViewState,
 ): NovedadesRouteSearch {
-  const search: NovedadesRouteSearch = {};
-
-  if (state.tipoFilter === 'antena' || state.tipoFilter === 'frecuencia') {
-    search.tipo = state.tipoFilter;
-  }
-  if (state.operatorFilter !== 'all') {
-    const normalizedOp = normalizeOperatorKeyInput(state.operatorFilter);
-    if (normalizedOp !== null) {
-      search.op = normalizedOp;
-    }
-  }
-  if (
-    state.bandFilter !== 'all' &&
-    VALID_STANDARD_NOVEDADES_BANDS.has(state.bandFilter.trim())
-  ) {
-    search.banda = state.bandFilter.trim();
-  }
-  if (
-    state.comunidadFilter !== 'all' &&
-    state.comunidadFilter.trim().length > 0
-  ) {
-    search.ccaa = state.comunidadFilter.trim();
-  }
-  if (
-    state.provinceFilter !== 'all' &&
-    state.provinceFilter.trim().length > 0
-  ) {
-    search.prov = state.provinceFilter.trim();
-  }
-  if (
-    state.dateFilter !== 'all' &&
-    DMY_DATE_ONLY_REGEX.test(state.dateFilter.trim())
-  ) {
-    search.fecha = state.dateFilter.trim();
-  }
-  if (state.searchQuery.length > 0) {
-    search.q = state.searchQuery;
-  }
-  if (
-    isValidNovedadesPageSize(state.pageSize) &&
-    state.pageSize !== DEFAULT_NOVEDADES_PAGE_SIZE
-  ) {
-    search.filas = state.pageSize;
-  }
-  const normalizedPage = Math.trunc(
-    Number.isFinite(state.page) ? state.page : 1,
-  );
-  if (normalizedPage > 1) {
-    search.pagina = normalizedPage;
-  }
-
-  return search;
+  return novedadesSearchHelpers.serializeTableStateToSearch(state);
 }
 
 
@@ -643,6 +725,43 @@ export function classifyFrequencyBandMhz(freqText: string): string | null {
   if (mid >= 3300 && mid <= 3850) return '3500 MHz';
   if (mid >= 24000 && mid <= 29500) return '26 GHz';
   return null;
+}
+
+/**
+ * Clasifica un rango de frecuencias declarado en MINETUR (ej. "758.00 - 788.00 MHz",
+ * "2680.00 - 2690.00 MHz", "2575.00 - 2595.00 MHz", "3460.00 - 3600.00 MHz") en su
+ * código de banda RF canónico idéntico al de la sección de Mapa
+ * (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`).
+ */
+export function classifyNovedadFrequencyBandCode(
+  freqText: string,
+): RfBandCode | null {
+  return classifyFrequencyRangeToBandCode(freqText);
+}
+
+const RF_BAND_SEARCH_TOKEN_RE =
+  /^(n258|n78|b7\+|b7|b38|b1|b3|g9|b20|n28\+|n28)$/;
+
+function matchesExactBandToken(haystack: string, token: string): boolean {
+  let idx = haystack.indexOf(token);
+  while (idx !== -1) {
+    const before = idx === 0 ? ' ' : haystack[idx - 1];
+    const afterIdx = idx + token.length;
+    const after = afterIdx >= haystack.length ? ' ' : haystack[afterIdx];
+    if (!/[a-z0-9+]/.test(before) && !/[a-z0-9+]/.test(after)) {
+      return true;
+    }
+    idx = haystack.indexOf(token, idx + 1);
+  }
+  return false;
+}
+
+function matchesNovedadSearchToken(haystack: string, token: string): boolean {
+  const stripped = token.replace(/^[,;]+|[,;]+$/g, '');
+  if (RF_BAND_SEARCH_TOKEN_RE.test(stripped)) {
+    return matchesExactBandToken(haystack, stripped);
+  }
+  return haystack.includes(token);
 }
 
 /**
@@ -733,7 +852,15 @@ export function filterNovedades({
   const tokens = normalizedQuery
     ? normalizedQuery.split(/\s+/).filter(Boolean)
     : [];
-  const activeBand = bandFilter && bandFilter !== 'all' ? bandFilter : '';
+  const rawActiveBand =
+    bandFilter && bandFilter !== 'all' ? bandFilter.trim() : '';
+  const activeRfBand = rawActiveBand
+    ? (VALID_NOVEDADES_RF_BANDS.get(
+        rawActiveBand.replace(/\s*\+\s*/g, '+').toUpperCase(),
+      ) ?? null)
+    : null;
+  const activeLegacyBand =
+    rawActiveBand && !activeRfBand ? rawActiveBand : '';
   const activeComunidad =
     comunidadFilter && comunidadFilter !== 'all'
       ? normalizeSearchText(comunidadFilter)
@@ -753,7 +880,7 @@ export function filterNovedades({
   if (
     tipoFilter === 'all' &&
     operatorFilter === 'all' &&
-    !activeBand &&
+    !rawActiveBand &&
     !activeComunidad &&
     !targetProv &&
     !activeLocation &&
@@ -770,10 +897,14 @@ export function filterNovedades({
     if (tipoFilter !== 'all' && row.tipo !== tipoFilter) continue;
     if (operatorFilter !== 'all' && rowOp !== operatorFilter) continue;
 
-    if (activeBand) {
+    if (activeRfBand) {
+      if (row.tipo !== 'frecuencia') continue;
+      const inferredCode = classifyNovedadFrequencyBandCode(row.frecuencia);
+      if (inferredCode !== activeRfBand) continue;
+    } else if (activeLegacyBand) {
       if (row.tipo !== 'frecuencia') continue;
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia);
-      if (inferredBand !== activeBand) continue;
+      if (inferredBand !== activeLegacyBand) continue;
     }
 
     if (activeComunidad) {
@@ -817,14 +948,18 @@ export function filterNovedades({
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia) ?? '';
       const inferredBandSearch =
         inferredBand === '26 GHz' ? '26 GHz 26GHz' : inferredBand;
+      const inferredRfBand =
+        row.tipo === 'frecuencia'
+          ? (classifyNovedadFrequencyBandCode(row.frecuencia) ?? '')
+          : '';
       const resolvedProv = resolveNovedadProvince(row);
       const resolvedComunidad = resolveNovedadComunidad(row);
       const haystack = normalizeSearchText(
-        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${rowOp} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
+        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${rowOp} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${inferredRfBand} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
       );
       let matchesAll = true;
       for (let t = 0; t < tokens.length; t++) {
-        if (!haystack.includes(tokens[t])) {
+        if (!matchesNovedadSearchToken(haystack, tokens[t])) {
           matchesAll = false;
           break;
         }

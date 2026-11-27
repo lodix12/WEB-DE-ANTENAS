@@ -24,17 +24,19 @@ import {
 } from 'lucide-react';
 import { useAntenasData } from '../hooks/useAntenasData';
 import {
+  STANDARD_ELIMINACIONES_BANDS,
   computeLatestScanEliminacionesCounts,
   filterEliminaciones,
   getEliminacionAntennaGroupKey,
   getEliminacionScanBatchKey,
   orderEliminacionesGroupedByRemovedAntenna,
+  resolveEliminacionesTableStateFromSearch,
+  serializeEliminacionesTableStateToSearch,
   useEliminacionesData,
 } from '../hooks/useEliminacionesData';
 import {
   NOVEDADES_PAGE_SIZE_OPTIONS,
   NOVEDADES_SPANISH_COMUNIDADES,
-  STANDARD_NOVEDADES_BANDS,
   buildPaginationTokens,
   extractScanDayDmy,
   formatScanDateTimeDmyHms,
@@ -45,8 +47,6 @@ import {
   paginateNovedades,
   resolveNovedadComunidad,
   resolveNovedadProvince,
-  resolveNovedadesTableStateFromSearch,
-  serializeNovedadesTableStateToSearch,
   splitFrequencyRangeLines,
   splitScanDateTimeLines,
   type NovedadesTableViewState,
@@ -64,7 +64,7 @@ export function EliminacionesView() {
   const router = useRouter();
   const rawSearch = useSearch({ strict: false });
   const urlState = useMemo(
-    () => resolveNovedadesTableStateFromSearch(rawSearch),
+    () => resolveEliminacionesTableStateFromSearch(rawSearch),
     [rawSearch],
   );
 
@@ -271,7 +271,7 @@ export function EliminacionesView() {
     pendingCommitCountRef.current += 1;
     void navigate({
       to: '/eliminaciones',
-      search: serializeNovedadesTableStateToSearch(nextState),
+      search: serializeEliminacionesTableStateToSearch(nextState),
       replace: true,
       resetScroll: false,
     }).finally(() => {
@@ -518,7 +518,7 @@ export function EliminacionesView() {
 
     const targetLocation = router.buildLocation({
       to: '/eliminaciones',
-      search: serializeNovedadesTableStateToSearch(stateToPersist),
+      search: serializeEliminacionesTableStateToSearch(stateToPersist),
     });
 
     if (router.history.location.href !== targetLocation.href) {
@@ -889,7 +889,7 @@ export function EliminacionesView() {
                   onChange={(e) => handleBandChange(e.target.value)}
                 >
                   <option value="all">Todas las bandas</option>
-                  {STANDARD_NOVEDADES_BANDS.map((band) => (
+                  {STANDARD_ELIMINACIONES_BANDS.map((band) => (
                     <option key={band} value={band}>
                       {band}
                     </option>

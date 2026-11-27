@@ -5,6 +5,7 @@ import {
   createRouter,
 } from '@tanstack/react-router';
 import { NotFoundView, RootLayout } from './components/ui/RootLayout';
+import { validateEliminacionesSearch } from './hooks/useEliminacionesData';
 import {
   validateNovedadesSearch,
   type NovedadesRouteSearch,
@@ -94,7 +95,7 @@ const novedadesRoute = createRoute({
 const eliminacionesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/eliminaciones',
-  validateSearch: validateNovedadesSearch,
+  validateSearch: validateEliminacionesSearch,
   component: EliminacionesView,
 });
 

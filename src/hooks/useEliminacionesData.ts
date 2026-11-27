@@ -11,7 +11,9 @@ import {
 import { normalizeSearchText } from '../utils/export';
 import { getCanonicalSpanishProvince } from './useAntenasData';
 import {
+  LEGACY_COMMERCIAL_BANDS_MHZ,
   classifyFrequencyBandMhz,
+  createTableSearchHelpers,
   extractScanDayDmy,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
@@ -20,6 +22,8 @@ import {
   orderNovedadesGroupedByNewAntenna,
   resolveNovedadComunidad,
   resolveNovedadProvince,
+  type NovedadesRouteSearch,
+  type NovedadesTableViewState,
 } from './useNovedadesData';
 import {
   useLiveScanDelta,
@@ -27,6 +31,35 @@ import {
 } from './useScanProgress';
 
 const VALID_ELIMINACION_TIPOS = new Set<string>(['antena', 'frecuencia']);
+
+export const STANDARD_ELIMINACIONES_BANDS = LEGACY_COMMERCIAL_BANDS_MHZ;
+
+const VALID_STANDARD_ELIMINACIONES_BANDS = new Set<string>(
+  STANDARD_ELIMINACIONES_BANDS,
+);
+
+const eliminacionesSearchHelpers = createTableSearchHelpers((rawBand) => {
+  const trimmed = rawBand.trim();
+  return VALID_STANDARD_ELIMINACIONES_BANDS.has(trimmed) ? trimmed : null;
+});
+
+export function validateEliminacionesSearch(
+  raw: Record<string, unknown>,
+): NovedadesRouteSearch {
+  return eliminacionesSearchHelpers.validateSearch(raw);
+}
+
+export function resolveEliminacionesTableStateFromSearch(
+  rawSearch: unknown,
+): NovedadesTableViewState {
+  return eliminacionesSearchHelpers.resolveTableStateFromSearch(rawSearch);
+}
+
+export function serializeEliminacionesTableStateToSearch(
+  state: NovedadesTableViewState,
+): NovedadesRouteSearch {
+  return eliminacionesSearchHelpers.serializeTableStateToSearch(state);
+}
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
