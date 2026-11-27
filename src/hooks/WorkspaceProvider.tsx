@@ -21,6 +21,7 @@ import {
   type RadarPoint,
 } from '../types/map';
 import {
+  computeNextActiveOperators,
   getComunidadAutonomaByProvince,
   matchesAntennaBandsFilter,
 } from './useAntenasData';
@@ -154,9 +155,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toggleOperator = useCallback((op: OperatorKey) => {
-    setActiveOperators((prev) =>
-      prev.includes(op) ? prev.filter((item) => item !== op) : [...prev, op],
-    );
+    setActiveOperators((prev) => computeNextActiveOperators(prev, op));
   }, []);
 
   const selectAllOperators = useCallback(() => {
@@ -314,7 +313,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const focusAntennaOnMap = useCallback(
     (ant: AntennaRecord) => {
       setActiveOperators((prev) =>
-        prev.includes(ant.op) ? prev : [...prev, ant.op],
+        prev.includes(ant.op)
+          ? prev
+          : OPERATOR_ORDER.filter((key) => prev.includes(key) || key === ant.op),
       );
       setSelectedComunidadState((prev) =>
         prev && getComunidadAutonomaByProvince(ant.prov) !== prev ? '' : prev,

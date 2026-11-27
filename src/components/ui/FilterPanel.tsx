@@ -16,10 +16,12 @@ import {
 } from 'lucide-react';
 import {
   bandCodeToDomId,
+  computeMapFilterFacetCounts,
   findAntennasByCode,
   normalizeAntennaCodeInput,
   type AntennaCodeMatch,
   type DerivedAntenasStructures,
+  type MapFilterFacetCounts,
 } from '../../hooks/useAntenasData';
 import { formatUnicoInt } from '../../hooks/useUnico5gData';
 import {
@@ -37,6 +39,7 @@ import { parseCoordinateInput } from '../../utils/export';
 export interface FilterPanelProps {
   derived: DerivedAntenasStructures | null;
   filteredAntenas: AntennaRecord[];
+  facetCounts?: MapFilterFacetCounts;
   collapsed: boolean;
   mobileOpen: boolean;
   onCollapseDesktop: () => void;
@@ -74,6 +77,7 @@ export interface FilterPanelProps {
 export function FilterPanel({
   derived,
   filteredAntenas,
+  facetCounts,
   collapsed,
   mobileOpen,
   onCollapseDesktop,
@@ -295,6 +299,38 @@ export function FilterPanel({
     }
     return derived.provincesByAlpha;
   }, [derived, selectedComunidad]);
+
+  const fallbackFacetCounts = useMemo(
+    () =>
+      facetCounts
+        ? null
+        : computeMapFilterFacetCounts({
+            derived,
+            searchQuery,
+            selectedComunidad,
+            selectedProvince,
+            activeOperators,
+            selectedBands,
+            exclusiveBands,
+          }),
+    [
+      facetCounts,
+      derived,
+      searchQuery,
+      selectedComunidad,
+      selectedProvince,
+      activeOperators,
+      selectedBands,
+      exclusiveBands,
+    ],
+  );
+  const resolvedFacetCounts = facetCounts ?? fallbackFacetCounts;
+  const displayedBands = resolvedFacetCounts
+    ? resolvedFacetCounts.availableBands
+    : (derived?.availableBands ?? []);
+  const allOperatorsActive =
+    activeOperators.length === OPERATOR_ORDER.length &&
+    OPERATOR_ORDER.every((key) => activeOperators.includes(key));
 
   const totalStations = derived?.dataset.total ?? 0;
   const visibleCount = filteredAntenas.length;
@@ -784,11 +820,16 @@ export function FilterPanel({
                 <option value="">
                   Todas las comunidades ({derived?.comunidadesByAlpha.length ?? 19})
                 </option>
-                {derived?.comunidadesByAlpha.map((c) => (
-                  <option key={c.comunidad} value={c.comunidad}>
-                    {c.comunidad} ({c.count.toLocaleString('es-ES')})
-                  </option>
-                ))}
+                {derived?.comunidadesByAlpha.map((c) => {
+                  const count = resolvedFacetCounts
+                    ? (resolvedFacetCounts.comunidadCounts.get(c.comunidad) ?? 0)
+                    : c.count;
+                  return (
+                    <option key={c.comunidad} value={c.comunidad}>
+                      {c.comunidad} ({count.toLocaleString('es-ES')})
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
@@ -808,11 +849,16 @@ export function FilterPanel({
                     ? `Todas en ${selectedComunidad} (${availableProvinces.length})`
                     : `Todas las provincias (${availableProvinces.length || 52})`}
                 </option>
-                {availableProvinces.map((p) => (
-                  <option key={p.provincia} value={p.provincia}>
-                    {p.provincia} ({p.count.toLocaleString('es-ES')})
-                  </option>
-                ))}
+                {availableProvinces.map((p) => {
+                  const count = resolvedFacetCounts
+                    ? (resolvedFacetCounts.provinceCounts.get(p.provincia) ?? 0)
+                    : p.count;
+                  return (
+                    <option key={p.provincia} value={p.provincia}>
+                      {p.provincia} ({count.toLocaleString('es-ES')})
+                    </option>
+                  );
+                })}
               </select>
             </div>
           </div>
@@ -847,17 +893,32 @@ export function FilterPanel({
             {OPERATOR_ORDER.map((opKey) => {
               const meta = OPERATOR_META[opKey];
               const isActive = activeOperators.includes(opKey);
-              const count = derived?.operatorCounts[opKey] ?? 0;
+              const isSelected = isActive && !allOperatorsActive;
+              const count = resolvedFacetCounts
+                ? (resolvedFacetCounts.operatorCounts[opKey] ?? 0)
+                : (derived?.operatorCounts[opKey] ?? 0);
+              const pillTitle = allOperatorsActive
+                ? `Seleccionar solo ${meta.shortName}`
+                : isActive
+                  ? activeOperators.length === 1
+                    ? 'Mostrar todos los operadores'
+                    : `Quitar ${meta.shortName}`
+                  : `Añadir ${meta.shortName}`;
               return (
                 <button
                   key={opKey}
                   type="button"
                   id={`filter-op-${opKey}`}
                   className={`operator-pill ${
-                    isActive ? 'is-active' : 'is-inactive'
+                    isSelected
+                      ? 'is-active is-selected'
+                      : isActive
+                        ? 'is-active'
+                        : 'is-inactive'
                   }`}
                   onClick={() => onToggleOperator(opKey)}
                   aria-pressed={isActive}
+                  title={pillTitle}
                 >
                   <span className="operator-pill-left">
                     <span
@@ -877,7 +938,7 @@ export function FilterPanel({
         </section>
 
         {/* Filtro por Bandas de Frecuencia */}
-        {derived && derived.availableBands.length > 0 && (
+        {derived && displayedBands.length > 0 && (
           <section className="panel-section">
             <div className="field-label">
               <span>
@@ -901,7 +962,7 @@ export function FilterPanel({
               role="group"
               aria-label="Filtrar por bandas"
             >
-              {derived.availableBands.map((item) => {
+              {displayedBands.map((item) => {
                 const isSelected = selectedBands.includes(item.band);
                 return (
                   <button
@@ -946,7 +1007,7 @@ export function FilterPanel({
           </section>
         )}
 
-        {(!derived || derived.availableBands.length === 0) && (
+        {(!derived || displayedBands.length === 0) && (
           <section className="panel-section">
             <div className="bands-actions-buttons bands-actions-fallback">
               {panelActionButtons}

@@ -3399,6 +3399,360 @@ export function useFilteredAntenas({
   );
 }
 
+/**
+ * Calcula el siguiente conjunto de operadoras activas al pulsar una píldora de operadora:
+ * - Por defecto (todas las operadoras activas), marcar 1 operadora la selecciona en exclusiva
+ *   eliminando todas las demás.
+ * - Si ya hay un subconjunto activo, pulsar una operadora inactiva la añade; pulsar una activa
+ *   la quita, y si era la última seleccionada se restauran todas las operadoras.
+ */
+export function computeNextActiveOperators(
+  prev: readonly OperatorKey[],
+  op: OperatorKey,
+): OperatorKey[] {
+  const allActive =
+    prev.length === OPERATOR_ORDER.length &&
+    OPERATOR_ORDER.every((key) => prev.includes(key));
+
+  if (allActive) {
+    return [op];
+  }
+
+  if (prev.includes(op)) {
+    const next = prev.filter((item) => item !== op);
+    return next.length === 0 ? [...OPERATOR_ORDER] : next;
+  }
+
+  const nextSet = new Set<OperatorKey>([...prev, op]);
+  return OPERATOR_ORDER.filter((key) => nextSet.has(key));
+}
+
+export interface MapFilterFacetCountsInput extends AntenasFilterInput {
+  onlyUnicoDeclared?: boolean;
+  /**
+   * Conjunto/Mapa de IDs de antenas declaradas UNICO 5G.
+   * Si `onlyUnicoDeclared` es `true` y este parámetro está definido, solo se contabilizan
+   * antenas cuyo `id` exista en `unicoDeclaredIds`. Si es `undefined` o `null` (p. ej. mientras
+   * carga el catálogo UNICO 5G), no se aplica el recorte UNICO todavía.
+   */
+  unicoDeclaredIds?: ReadonlySet<string> | ReadonlyMap<string, unknown> | null;
+}
+
+export interface MapFilterFacetCounts {
+  /** Conteo de antenas por operadora según los demás filtros elegidos */
+  operatorCounts: Record<OperatorKey, number>;
+  /** Conteo de antenas por banda RF según los demás filtros elegidos */
+  availableBands: BandOption[];
+  /** Conteo de antenas por comunidad autónoma según los demás filtros elegidos */
+  comunidadCounts: Map<string, number>;
+  /** Conteo de antenas por provincia según los demás filtros elegidos */
+  provinceCounts: Map<string, number>;
+}
+
+/**
+ * Calcula en un único barrido los contadores dinámicos (facetados) del panel de filtros del mapa:
+ * - Cada operadora muestra cuántas antenas tiene cumpliendo búsqueda, territorio, bandas y UNICO 5G.
+ * - Cada banda RF muestra cuántas antenas la tienen cumpliendo búsqueda, territorio, operadoras y UNICO 5G
+ *   (con `N28` incluyendo también `N28+`).
+ * - Cada comunidad autónoma y provincia muestra cuántas antenas cumplen búsqueda, operadoras, bandas y UNICO 5G.
+ */
+export function computeMapFilterFacetCounts({
+  derived,
+  searchQuery,
+  selectedComunidad = '',
+  selectedProvince,
+  selectedMunicipality = '',
+  activeOperators,
+  selectedBand = '',
+  selectedBands,
+  exclusiveBands = false,
+  onlyUnicoDeclared = false,
+  unicoDeclaredIds,
+}: MapFilterFacetCountsInput): MapFilterFacetCounts {
+  const emptyOperatorCounts: Record<OperatorKey, number> = {
+    movistar: 0,
+    orange: 0,
+    vodafone: 0,
+    digi: 0,
+    otros: 0,
+  };
+
+  if (!derived) {
+    return {
+      operatorCounts: emptyOperatorCounts,
+      availableBands: [],
+      comunidadCounts: new Map<string, number>(),
+      provinceCounts: new Map<string, number>(),
+    };
+  }
+
+  const { antenas } = derived.dataset;
+  const { searchIndex } = derived;
+  const hasAnyBands = derived.availableBands.length > 0;
+
+  const allOpsSelected =
+    activeOperators.length === OPERATOR_ORDER.length &&
+    OPERATOR_ORDER.every((key) => activeOperators.includes(key));
+  const noOpsSelected = activeOperators.length === 0;
+  const opSet =
+    allOpsSelected || noOpsSelected ? null : new Set<OperatorKey>(activeOperators);
+
+  const targetComunidad = selectedComunidad.trim();
+  const rawBands =
+    selectedBands !== undefined
+      ? selectedBands
+      : selectedBand && selectedBand.trim()
+        ? [selectedBand.trim()]
+        : [];
+  const selectedBandsMask = buildSelectedRfBandsMask(rawBands);
+
+  const isCoordQuery = parseCoordinateInput(searchQuery) !== null;
+  const normalizedQuery = isCoordQuery ? '' : normalizeSearchText(searchQuery);
+  const matchers = buildSearchMatchers(normalizedQuery);
+
+  const applyUnicoFilter =
+    onlyUnicoDeclared &&
+    unicoDeclaredIds !== undefined &&
+    unicoDeclaredIds !== null;
+
+  const hasNonOperatorFilters = Boolean(
+    targetComunidad ||
+      selectedProvince ||
+      selectedMunicipality ||
+      selectedBandsMask !== 0 ||
+      matchers.length > 0 ||
+      applyUnicoFilter,
+  );
+  const hasNonBandFilters = Boolean(
+    !allOpsSelected ||
+      targetComunidad ||
+      selectedProvince ||
+      selectedMunicipality ||
+      matchers.length > 0 ||
+      applyUnicoFilter,
+  );
+  const hasNonTerritorialFilters = Boolean(
+    !allOpsSelected ||
+      selectedMunicipality ||
+      selectedBandsMask !== 0 ||
+      matchers.length > 0 ||
+      applyUnicoFilter,
+  );
+
+  const buildStaticComunidadCounts = (): Map<string, number> => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < derived.comunidadesByAlpha.length; i++) {
+      const c = derived.comunidadesByAlpha[i];
+      map.set(c.comunidad, c.count);
+    }
+    return map;
+  };
+  const buildStaticProvinceCounts = (): Map<string, number> => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < derived.provincesByAlpha.length; i++) {
+      const p = derived.provincesByAlpha[i];
+      map.set(p.provincia, p.count);
+    }
+    return map;
+  };
+
+  if (
+    !hasNonOperatorFilters &&
+    !hasNonBandFilters &&
+    !hasNonTerritorialFilters
+  ) {
+    return {
+      operatorCounts: derived.operatorCounts,
+      availableBands: derived.availableBands,
+      comunidadCounts: buildStaticComunidadCounts(),
+      provinceCounts: buildStaticProvinceCounts(),
+    };
+  }
+
+  if (noOpsSelected && !hasNonOperatorFilters) {
+    return {
+      operatorCounts: derived.operatorCounts,
+      availableBands: hasAnyBands
+        ? ALL_RF_BAND_CODES.map((code) => ({ band: code, count: 0 }))
+        : [],
+      comunidadCounts: new Map<string, number>(),
+      provinceCounts: new Map<string, number>(),
+    };
+  }
+
+  const operatorCounts: Record<OperatorKey, number> = hasNonOperatorFilters
+    ? { ...emptyOperatorCounts }
+    : derived.operatorCounts;
+  const bandBitCounts =
+    hasAnyBands && hasNonBandFilters
+      ? new Uint32Array(ALL_RF_BAND_CODES.length)
+      : null;
+  let n28FilterCount = 0;
+  const comunidadCounts = hasNonTerritorialFilters
+    ? new Map<string, number>()
+    : buildStaticComunidadCounts();
+  const provinceCounts = hasNonTerritorialFilters
+    ? new Map<string, number>()
+    : buildStaticProvinceCounts();
+
+  const bandCodeMasks =
+    derived.bandCodeMasks && derived.bandCodeMasks.length === antenas.length
+      ? derived.bandCodeMasks
+      : null;
+
+  const needAntMask = selectedBandsMask !== 0 || bandBitCounts !== null;
+
+  for (let i = 0; i < antenas.length; i++) {
+    const ant = antenas[i];
+
+    if (applyUnicoFilter && !unicoDeclaredIds.has(ant.id)) continue;
+    if (selectedMunicipality && ant.mun !== selectedMunicipality) continue;
+
+    if (matchers.length > 0) {
+      const hay = searchIndex[i];
+      let paddedHay: string | null = null;
+      let matchesAll = true;
+      for (let t = 0; t < matchers.length; t++) {
+        const m = matchers[t];
+        if (m.exactWord) {
+          if (paddedHay === null) paddedHay = ` ${hay} `;
+          if (!paddedHay.includes(` ${m.token} `)) {
+            matchesAll = false;
+            break;
+          }
+        } else if (!hay.includes(m.token)) {
+          matchesAll = false;
+          break;
+        }
+      }
+      if (!matchesAll) continue;
+    }
+
+    let antComunidad: string | undefined;
+    const matchesProvince = !selectedProvince || ant.prov === selectedProvince;
+    let matchesComunidad = true;
+    if (targetComunidad) {
+      antComunidad = getComunidadAutonomaByProvince(ant.prov);
+      matchesComunidad = antComunidad === targetComunidad;
+    }
+    const matchesTerritory = matchesProvince && matchesComunidad;
+
+    const matchesOperator = allOpsSelected
+      ? true
+      : noOpsSelected
+        ? false
+        : opSet!.has(ant.op);
+
+    let antMask = 0;
+    let matchesBands = true;
+    if (needAntMask) {
+      antMask =
+        bandCodeMasks !== null
+          ? bandCodeMasks[i]
+          : computeAntennaRfBandMask(ant);
+      if (selectedBandsMask !== 0) {
+        matchesBands = matchesRfBandMask(
+          antMask,
+          selectedBandsMask,
+          exclusiveBands,
+        );
+      }
+    }
+
+    if (hasNonOperatorFilters && matchesTerritory && matchesBands) {
+      operatorCounts[ant.op] = (operatorCounts[ant.op] ?? 0) + 1;
+    }
+
+    if (
+      bandBitCounts !== null &&
+      matchesTerritory &&
+      matchesOperator &&
+      antMask !== 0
+    ) {
+      if ((antMask & (BIT_N28 | BIT_N28_PLUS)) !== 0) {
+        n28FilterCount += 1;
+      }
+      let bits = antMask;
+      while (bits !== 0) {
+        const bitIndex = 31 - Math.clz32(bits & -bits);
+        bandBitCounts[bitIndex] += 1;
+        bits &= bits - 1;
+      }
+    }
+
+    if (hasNonTerritorialFilters && matchesOperator && matchesBands && ant.prov) {
+      provinceCounts.set(ant.prov, (provinceCounts.get(ant.prov) ?? 0) + 1);
+      const ccaa =
+        antComunidad !== undefined
+          ? antComunidad
+          : getComunidadAutonomaByProvince(ant.prov);
+      if (ccaa) {
+        comunidadCounts.set(ccaa, (comunidadCounts.get(ccaa) ?? 0) + 1);
+      }
+    }
+  }
+
+  const availableBands: BandOption[] = !hasAnyBands
+    ? []
+    : bandBitCounts !== null
+      ? ALL_RF_BAND_CODES.map((code, idx) => ({
+          band: code,
+          count: code === 'N28' ? n28FilterCount : bandBitCounts[idx],
+        }))
+      : derived.availableBands;
+
+  return {
+    operatorCounts,
+    availableBands,
+    comunidadCounts,
+    provinceCounts,
+  };
+}
+
+export function useMapFilterFacetCounts({
+  derived,
+  searchQuery,
+  selectedComunidad = '',
+  selectedProvince,
+  selectedMunicipality = '',
+  activeOperators,
+  selectedBand = '',
+  selectedBands,
+  exclusiveBands = false,
+  onlyUnicoDeclared = false,
+  unicoDeclaredIds,
+}: MapFilterFacetCountsInput): MapFilterFacetCounts {
+  return useMemo(
+    () =>
+      computeMapFilterFacetCounts({
+        derived,
+        searchQuery,
+        selectedComunidad,
+        selectedProvince,
+        selectedMunicipality,
+        activeOperators,
+        selectedBand,
+        selectedBands,
+        exclusiveBands,
+        onlyUnicoDeclared,
+        unicoDeclaredIds,
+      }),
+    [
+      derived,
+      searchQuery,
+      selectedComunidad,
+      selectedProvince,
+      selectedMunicipality,
+      activeOperators,
+      selectedBand,
+      selectedBands,
+      exclusiveBands,
+      onlyUnicoDeclared,
+      unicoDeclaredIds,
+    ],
+  );
+}
+
 export interface AntennaCodeMatch {
   antenna: AntennaRecord;
   /** Código concreto (gid principal o mergedGid) que coincidió con la búsqueda */

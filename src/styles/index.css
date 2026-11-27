@@ -1165,8 +1165,27 @@ code {
   color: var(--text-primary);
 }
 
+.operator-pill.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.operator-pill.is-selected:hover {
+  background: var(--accent-soft-strong);
+  border-color: var(--accent-primary);
+}
+
+.operator-pill.is-selected .operator-pill-count {
+  color: var(--accent-primary);
+}
+
 .operator-pill.is-inactive {
   opacity: 0.46;
+}
+
+.operator-pill.is-inactive:hover {
+  opacity: 0.78;
 }
 
 .operator-pill-left {

@@ -97,6 +97,8 @@ import {
   buildDerivedAntenasStructures,
   compareFrequencyRanges,
   computeAntennaRfBandMask,
+  computeMapFilterFacetCounts,
+  computeNextActiveOperators,
   filterAntenas,
   findAntennasByCode,
   fuseSameOperatorExactCoordsInDataset,
@@ -10202,3 +10204,647 @@ describe('Mapa — Tamaño uniforme en los 4 botones inferiores derechos (GPS, M
     );
   });
 });
+
+describe('Mapa — Selección exclusiva de 1 operadora por defecto y contadores dinámicos facetados en filtros', () => {
+  function createFacetFilterDataset(): AntenasDataset {
+    const base = createSampleCustomDataset();
+    return {
+      ...base,
+      total: 7,
+      operators: {
+        movistar: {
+          key: 'movistar',
+          name: 'Movistar (Telefónica)',
+          count: 3,
+          legalEntities: ['TELEFONICA MOVILES ESPAÑA, S.A.U.'],
+        },
+        orange: {
+          key: 'orange',
+          name: 'Orange (MasOrange)',
+          count: 2,
+          legalEntities: ['ORANGE ESPAGNE, S.A.U.'],
+        },
+        vodafone: {
+          key: 'vodafone',
+          name: 'Vodafone España',
+          count: 1,
+          legalEntities: ['VODAFONE ESPAÑA, S.A.U.'],
+        },
+        digi: {
+          key: 'digi',
+          name: 'DIGI Spain',
+          count: 1,
+          legalEntities: ['DIGI SPAIN TELECOM, S.L.U.'],
+        },
+        otros: {
+          key: 'otros',
+          name: 'Otros Operadores',
+          count: 0,
+          legalEntities: [],
+        },
+      },
+      provinces: [
+        {
+          provincia: 'MADRID',
+          count: 4,
+          byOperator: { movistar: 2, orange: 1, digi: 1 },
+        },
+        {
+          provincia: 'PONTEVEDRA',
+          count: 2,
+          byOperator: { movistar: 1, vodafone: 1 },
+        },
+        {
+          provincia: 'A CORUÑA',
+          count: 1,
+          byOperator: { orange: 1 },
+        },
+      ],
+      antenas: [
+        // 1. Movistar · MADRID · N28 (estándar) + N78
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - FACET01',
+          gid: 'FACET01',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.4168,
+          lon: -3.7038,
+          dir: 'GRAN VIA 1',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '3500 MHz'],
+          frecuencias: ['758.00 - 768.00', '3500.00 - 3600.00'],
+        },
+        // 2. Movistar · MADRID · solo N78
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - FACET02',
+          gid: 'FACET02',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 40.425,
+          lon: -3.71,
+          dir: 'CASTELLANA 50',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['3500 MHz'],
+          frecuencias: ['3500.00 - 3600.00'],
+        },
+        // 3. Orange · MADRID · N28+ (SDL) + B3
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - FACET03',
+          gid: 'FACET03',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 40.48,
+          lon: -3.36,
+          dir: 'PLAZA CERVANTES 1',
+          mun: 'ALCALÁ DE HENARES',
+          prov: 'MADRID',
+          bandas: ['700 MHz', '1800 MHz'],
+          frecuencias: ['748.00 - 753.00', '1805.00 - 1825.00'],
+        },
+        // 4. DIGI · MADRID · B3 + N78
+        {
+          id: 'DIGI SPAIN TELECOM, S.L.U. - FACET04',
+          gid: 'FACET04',
+          op: 'digi',
+          opRaw: 'DIGI SPAIN TELECOM, S.L.U.',
+          lat: 40.43,
+          lon: -3.69,
+          dir: 'PRINCESA 20',
+          mun: 'MADRID',
+          prov: 'MADRID',
+          bandas: ['1800 MHz', '3500 MHz'],
+          frecuencias: ['1845.00 - 1855.00', '3600.00 - 3650.00'],
+        },
+        // 5. Movistar · PONTEVEDRA (Galicia) · B20 + N78
+        {
+          id: 'TELEFONICA MOVILES ESPAÑA, S.A.U. - FACET05',
+          gid: 'FACET05',
+          op: 'movistar',
+          opRaw: 'TELEFONICA MOVILES ESPAÑA, S.A.U.',
+          lat: 42.2406,
+          lon: -8.7207,
+          dir: 'URZAIZ 10',
+          mun: 'VIGO',
+          prov: 'PONTEVEDRA',
+          bandas: ['800 MHz', '3500 MHz'],
+          frecuencias: ['811.00 - 821.00', '3500.00 - 3600.00'],
+        },
+        // 6. Vodafone · PONTEVEDRA (Galicia) · solo N78
+        {
+          id: 'VODAFONE ESPAÑA, S.A.U. - FACET06',
+          gid: 'FACET06',
+          op: 'vodafone',
+          opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+          lat: 42.235,
+          lon: -8.725,
+          dir: 'GRAN VIA VIGO 5',
+          mun: 'VIGO',
+          prov: 'PONTEVEDRA',
+          bandas: ['3500 MHz'],
+          frecuencias: ['3400.00 - 3490.00'],
+        },
+        // 7. Orange · A CORUÑA (Galicia) · B20 + G9
+        {
+          id: 'ORANGE ESPAGNE, S.A.U. - FACET07',
+          gid: 'FACET07',
+          op: 'orange',
+          opRaw: 'ORANGE ESPAGNE, S.A.U.',
+          lat: 43.3623,
+          lon: -8.4115,
+          dir: 'CANTÓN GRANDE 1',
+          mun: 'A CORUÑA',
+          prov: 'A CORUÑA',
+          bandas: ['800 MHz', '900 MHz'],
+          frecuencias: ['791.00 - 801.00', '925.00 - 935.00'],
+        },
+      ],
+    };
+  }
+
+  it('por defecto (todas activas), marcar 1 operadora la selecciona eliminando a las demás; permite acumular varias y desmarcar la última restaura todas', () => {
+    // 1. Estado inicial por defecto: las 5 operadoras activas
+    const initial = [...OPERATOR_ORDER];
+
+    // Marcar Movistar selecciona SOLO Movistar (elimina Orange, Vodafone, DIGI y Otros)
+    const onlyMovistar = computeNextActiveOperators(initial, 'movistar');
+    expect(onlyMovistar).toEqual(['movistar']);
+
+    // Marcar DIGI desde todas activas selecciona SOLO DIGI
+    expect(computeNextActiveOperators(initial, 'digi')).toEqual(['digi']);
+
+    // 2. Desde un subconjunto, marcar otra operadora la añade manteniendo el orden canónico
+    const movistarAndVodafone = computeNextActiveOperators(onlyMovistar, 'vodafone');
+    expect(movistarAndVodafone).toEqual(['movistar', 'vodafone']);
+
+    const withOrange = computeNextActiveOperators(movistarAndVodafone, 'orange');
+    expect(withOrange).toEqual(['movistar', 'orange', 'vodafone']);
+
+    // 3. Quitar una de varias operadoras seleccionadas solo quita esa
+    const withoutMovistar = computeNextActiveOperators(withOrange, 'movistar');
+    expect(withoutMovistar).toEqual(['orange', 'vodafone']);
+
+    // 4. Desmarcar la última operadora seleccionada restaura todas las operadoras
+    const onlyVodafone = computeNextActiveOperators(withoutMovistar, 'orange');
+    expect(onlyVodafone).toEqual(['vodafone']);
+    const restoredAll = computeNextActiveOperators(onlyVodafone, 'vodafone');
+    expect(restoredAll).toEqual([...OPERATOR_ORDER]);
+
+    // 5. Desde "Ninguno" ([]), marcar 1 operadora la selecciona
+    expect(computeNextActiveOperators([], 'orange')).toEqual(['orange']);
+
+    // 6. Completar las 5 operadoras vuelve al estado completo donde el siguiente clic vuelve a aislar 1
+    let step: OperatorKey[] = ['digi'];
+    step = computeNextActiveOperators(step, 'movistar');
+    step = computeNextActiveOperators(step, 'orange');
+    step = computeNextActiveOperators(step, 'vodafone');
+    step = computeNextActiveOperators(step, 'otros');
+    expect(step).toEqual([...OPERATOR_ORDER]);
+    expect(computeNextActiveOperators(step, 'orange')).toEqual(['orange']);
+  });
+
+  it('actualiza dinámicamente los contadores de operadoras, bandas y territorio según los filtros activos (CCAA, provincia, bandas, Exclusivamente, búsqueda, UNICO 5G y operadoras)', () => {
+    const derived = buildDerivedAntenasStructures(createFacetFilterDataset());
+    const bandCountMap = (bands: { band: string; count: number }[]) =>
+      Object.fromEntries(bands.map((b) => [b.band, b.count]));
+
+    // 1. Sin filtros: coincide exactamente con los totales globales
+    const baseline = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(baseline.operatorCounts).toEqual(derived.operatorCounts);
+    expect(baseline.availableBands).toEqual(derived.availableBands);
+    expect(baseline.comunidadCounts.get('Galicia')).toBe(3);
+    expect(baseline.comunidadCounts.get('Comunidad de Madrid')).toBe(4);
+    expect(baseline.provinceCounts.get('PONTEVEDRA')).toBe(2);
+
+    // 2. Filtro por Comunidad Autónoma (Galicia): actualiza operadoras y bandas
+    const galiciaFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: 'Galicia',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(galiciaFacets.operatorCounts).toEqual({
+      movistar: 1,
+      orange: 1,
+      vodafone: 1,
+      digi: 0,
+      otros: 0,
+    });
+    const galiciaBands = bandCountMap(galiciaFacets.availableBands);
+    expect(galiciaBands.N78).toBe(2);
+    expect(galiciaBands.B20).toBe(2);
+    expect(galiciaBands.G9).toBe(1);
+    expect(galiciaBands.B3).toBe(0);
+    expect(galiciaBands.N28).toBe(0);
+
+    // 3. Filtro por Provincia (PONTEVEDRA) + Banda (N78) + Exclusivamente
+    const pontevedraN78Excl = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: 'Galicia',
+      selectedProvince: 'PONTEVEDRA',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: ['N78'],
+      exclusiveBands: true,
+    });
+    expect(pontevedraN78Excl.operatorCounts).toEqual({
+      movistar: 0, // FACET05 tiene B20 + N78 -> excluida en modo Exclusivamente
+      orange: 0,
+      vodafone: 1, // FACET06 tiene exclusivamente N78
+      digi: 0,
+      otros: 0,
+    });
+    // Conteos territoriales bajo N78 Exclusivamente (FACET02 en MADRID y FACET06 en PONTEVEDRA)
+    expect(pontevedraN78Excl.comunidadCounts.get('Comunidad de Madrid')).toBe(1);
+    expect(pontevedraN78Excl.comunidadCounts.get('Galicia')).toBe(1);
+    expect(pontevedraN78Excl.provinceCounts.get('MADRID')).toBe(1);
+    expect(pontevedraN78Excl.provinceCounts.get('PONTEVEDRA')).toBe(1);
+    expect(pontevedraN78Excl.provinceCounts.get('A CORUÑA')).toBeUndefined();
+
+    // 4. Filtro por banda N28 (debe incluir N28+ igual que filterAntenas)
+    const n28Facets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: ['N28'],
+      exclusiveBands: false,
+    });
+    expect(n28Facets.operatorCounts).toEqual({
+      movistar: 1, // FACET01 (N28)
+      orange: 1, // FACET03 (N28+ incluido en N28)
+      vodafone: 0,
+      digi: 0,
+      otros: 0,
+    });
+
+    // 5. Seleccionar 1 operadora (DIGI): actualiza bandas y territorio a DIGI, manteniendo conteos facetados de operadoras
+    const digiFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: ['digi'],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    const digiBands = bandCountMap(digiFacets.availableBands);
+    expect(digiBands.B3).toBe(1);
+    expect(digiBands.N78).toBe(1);
+    expect(digiBands.N28).toBe(0);
+    expect(digiBands.B20).toBe(0);
+    expect(digiBands.G9).toBe(0);
+    expect(digiFacets.comunidadCounts.get('Comunidad de Madrid')).toBe(1);
+    expect(digiFacets.comunidadCounts.get('Galicia')).toBeUndefined();
+    expect(digiFacets.operatorCounts).toEqual(derived.operatorCounts);
+
+    // 6. Seleccionar Movistar + Provincia MADRID: bandas solo de Movistar en Madrid, operadoras de Madrid
+    const movistarMadrid = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: 'MADRID',
+      activeOperators: ['movistar'],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(movistarMadrid.operatorCounts).toEqual({
+      movistar: 2,
+      orange: 1,
+      vodafone: 0,
+      digi: 1,
+      otros: 0,
+    });
+    const movistarMadridBands = bandCountMap(movistarMadrid.availableBands);
+    expect(movistarMadridBands.N78).toBe(2);
+    expect(movistarMadridBands.N28).toBe(1);
+    expect(movistarMadridBands.N28_PLUS).toBeUndefined();
+    expect(movistarMadridBands['N28+']).toBe(0);
+    expect(movistarMadridBands.B3).toBe(0);
+
+    // 7. Búsqueda textual ("Vigo") vs coordenadas WGS84 (no filtran)
+    const vigoFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: 'Vigo',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(vigoFacets.operatorCounts).toEqual({
+      movistar: 1,
+      orange: 0,
+      vodafone: 1,
+      digi: 0,
+      otros: 0,
+    });
+    expect(bandCountMap(vigoFacets.availableBands).N78).toBe(2);
+    expect(bandCountMap(vigoFacets.availableBands).B20).toBe(1);
+
+    const coordsFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '40.4168, -3.7038',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(coordsFacets.operatorCounts).toEqual(derived.operatorCounts);
+
+    // 8. Filtro "Solo declaradas UNICO 5G" actualiza operadoras, bandas y territorio
+    const unicoIds = new Set<string>([
+      'TELEFONICA MOVILES ESPAÑA, S.A.U. - FACET01',
+      'VODAFONE ESPAÑA, S.A.U. - FACET06',
+    ]);
+    const unicoFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: '',
+      activeOperators: [...OPERATOR_ORDER],
+      selectedBands: [],
+      exclusiveBands: false,
+      onlyUnicoDeclared: true,
+      unicoDeclaredIds: unicoIds,
+    });
+    expect(unicoFacets.operatorCounts).toEqual({
+      movistar: 1,
+      orange: 0,
+      vodafone: 1,
+      digi: 0,
+      otros: 0,
+    });
+    expect(bandCountMap(unicoFacets.availableBands).N78).toBe(2);
+    expect(bandCountMap(unicoFacets.availableBands).N28).toBe(1);
+    expect(bandCountMap(unicoFacets.availableBands).B3).toBe(0);
+    expect(unicoFacets.provinceCounts.get('MADRID')).toBe(1);
+    expect(unicoFacets.provinceCounts.get('PONTEVEDRA')).toBe(1);
+
+    // 9. Estado "Ninguno" (activeOperators = []): bandas y territorio pasan a 0, operadoras mantienen sus conteos
+    const noneOpsFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: 'Galicia',
+      selectedProvince: '',
+      activeOperators: [],
+      selectedBands: [],
+      exclusiveBands: false,
+    });
+    expect(noneOpsFacets.operatorCounts).toEqual({
+      movistar: 1,
+      orange: 1,
+      vodafone: 1,
+      digi: 0,
+      otros: 0,
+    });
+    expect(noneOpsFacets.availableBands.every((b) => b.count === 0)).toBe(true);
+    expect(noneOpsFacets.comunidadCounts.size).toBe(0);
+    expect(noneOpsFacets.provinceCounts.size).toBe(0);
+
+    // 10. Invariante matemática: la suma de conteos de operadoras activas === filteredAntenas.length
+    const comboOps: OperatorKey[] = ['movistar', 'digi'];
+    const comboFiltered = filterAntenas({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: 'MADRID',
+      activeOperators: comboOps,
+      selectedBands: ['N78'],
+      exclusiveBands: false,
+    });
+    const comboFacets = computeMapFilterFacetCounts({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: 'MADRID',
+      activeOperators: comboOps,
+      selectedBands: ['N78'],
+      exclusiveBands: false,
+    });
+    const activeSum = comboOps.reduce(
+      (sum, op) => sum + comboFacets.operatorCounts[op],
+      0,
+    );
+    expect(activeSum).toBe(comboFiltered.length);
+  });
+
+  it('renderiza en FilterPanel SSR las clases is-selected / is-inactive y los contadores dinámicos actualizados, y verifica la conexión en WorkspaceProvider, MapaView e index.css', async () => {
+    const derived = buildDerivedAntenasStructures(createFacetFilterDataset());
+
+    // 1. Estado por defecto (todas activas): ninguna pill tiene is-selected y cada una indica "Seleccionar solo ..."
+    const defaultHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: derived.dataset.antenas,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: '',
+        onProvinceChange: () => {},
+        selectedBands: [],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: [...OPERATOR_ORDER],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: false,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+    expect(defaultHtml).not.toContain('operator-pill is-active is-selected');
+    expect(defaultHtml.match(/class="operator-pill is-active"/g)).toHaveLength(5);
+    expect(defaultHtml).toContain('title="Seleccionar solo Movistar"');
+
+    // 2. Estado filtrado (solo Movistar + Provincia MADRID + N78):
+    // Movistar resaltada con is-selected y el resto eliminadas con is-inactive;
+    // los números de operadoras reflejan Madrid+N78 (Movistar 2, DIGI 1, Orange 0, Vodafone 0, Otros 0)
+    // y los números de bandas reflejan Movistar en Madrid (N78: 2, N28: 1, B3: 0)
+    const filteredList = filterAntenas({
+      derived,
+      searchQuery: '',
+      selectedComunidad: '',
+      selectedProvince: 'MADRID',
+      activeOperators: ['movistar'],
+      selectedBands: ['N78'],
+      exclusiveBands: false,
+    });
+    const filteredHtml = renderToStaticMarkup(
+      createElement(FilterPanel, {
+        derived,
+        filteredAntenas: filteredList,
+        collapsed: false,
+        mobileOpen: false,
+        onCollapseDesktop: () => {},
+        onCloseMobile: () => {},
+        searchQuery: '',
+        onSearchChange: () => {},
+        selectedComunidad: '',
+        onComunidadChange: () => {},
+        selectedProvince: 'MADRID',
+        onProvinceChange: () => {},
+        selectedBands: ['N78'],
+        onToggleBand: () => {},
+        onClearBands: () => {},
+        exclusiveBands: false,
+        onExclusiveBandsChange: () => {},
+        activeOperators: ['movistar'],
+        onToggleOperator: () => {},
+        onSelectAllOperators: () => {},
+        onClearAllOperators: () => {},
+        hasActiveFilters: true,
+        onResetFilters: () => {},
+        onFlyTo: () => {},
+      }),
+    );
+
+    expect(filteredHtml).toContain(
+      'id="filter-op-movistar" class="operator-pill is-active is-selected"',
+    );
+    expect(filteredHtml).toContain(
+      'id="filter-op-orange" class="operator-pill is-inactive"',
+    );
+    expect(filteredHtml).toContain(
+      'id="filter-op-digi" class="operator-pill is-inactive"',
+    );
+    expect(filteredHtml).toContain('title="Mostrar todos los operadores"');
+    expect(filteredHtml).toContain('title="Añadir Orange"');
+
+    const opCountFromHtml = (op: OperatorKey) => {
+      const m = new RegExp(
+        `id="filter-op-${op}"[\\s\\S]*?class="operator-pill-count">([^<]+)<`,
+      ).exec(filteredHtml);
+      return m?.[1];
+    };
+    expect(opCountFromHtml('movistar')).toBe('2');
+    expect(opCountFromHtml('digi')).toBe('1');
+    expect(opCountFromHtml('orange')).toBe('0');
+    expect(opCountFromHtml('vodafone')).toBe('0');
+    expect(opCountFromHtml('otros')).toBe('0');
+
+    const bandCountFromHtml = (bandCode: string) => {
+      const m = new RegExp(
+        `id="${bandCodeToDomId(bandCode)}"[\\s\\S]*?class="band-filter-pill-count mono">([^<]+)<`,
+      ).exec(filteredHtml);
+      return m?.[1];
+    };
+    expect(bandCountFromHtml('N78')).toBe('2');
+    expect(bandCountFromHtml('N28')).toBe('1');
+    expect(bandCountFromHtml('B3')).toBe('0');
+    expect(bandCountFromHtml('B20')).toBe('0');
+
+    // En el desplegable territorial bajo Movistar + N78: Comunidad de Madrid (2), Galicia (1)
+    expect(filteredHtml).toContain('Comunidad de Madrid (2)');
+    expect(filteredHtml).toContain('Galicia (1)');
+    expect(filteredHtml).toContain('MADRID (2)');
+    expect(filteredHtml).toContain('PONTEVEDRA (1)');
+    expect(filteredHtml).toContain('A CORUÑA (0)');
+
+    // 3. Verificación de integración en código fuente
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const workspaceProviderSource = readFileSync(
+      new URL('./WorkspaceProvider.tsx', import.meta.url),
+      'utf-8',
+    );
+    const mapaViewSource = readFileSync(
+      new URL('../views/MapaView.tsx', import.meta.url),
+      'utf-8',
+    );
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+
+    expect(workspaceProviderSource).toContain('computeNextActiveOperators(prev, op)');
+    expect(mapaViewSource).toContain('useMapFilterFacetCounts');
+    expect(mapaViewSource).toContain('facetCounts={facetCounts}');
+    expect(indexCssSource).toMatch(
+      /\.operator-pill\.is-selected\s*\{[^}]*background:\s*var\(--accent-soft\);[^}]*border-color:\s*var\(--accent-primary\);/s,
+    );
+  });
+
+  it(
+    'mantiene paridad exacta entre computeMapFilterFacetCounts y filterAntenas sobre el censo real public/data/antenas.json',
+    { timeout: 15_000 },
+    async () => {
+      const fsSpecifier = 'node:fs';
+      const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+        readFileSync: (path: URL, encoding: string) => string;
+      };
+      const rawDataset = JSON.parse(
+        readFileSync(
+          new URL('../../public/data/antenas.json', import.meta.url),
+          'utf-8',
+        ),
+      ) as unknown;
+      const derived = buildDerivedAntenasStructures(
+        parseCustomAntenasJson(rawDataset),
+      );
+
+      const facets = computeMapFilterFacetCounts({
+        derived,
+        searchQuery: '',
+        selectedComunidad: 'Galicia',
+        selectedProvince: '',
+        activeOperators: ['movistar'],
+        selectedBands: ['N78'],
+        exclusiveBands: false,
+      });
+
+      // Cada operadora coincide exactamente con filterAntenas(Galicia + N78 + [op])
+      for (const op of OPERATOR_ORDER) {
+        const expected = filterAntenas({
+          derived,
+          searchQuery: '',
+          selectedComunidad: 'Galicia',
+          selectedProvince: '',
+          activeOperators: [op],
+          selectedBands: ['N78'],
+          exclusiveBands: false,
+        }).length;
+        expect(facets.operatorCounts[op]).toBe(expected);
+      }
+
+      // Cada banda coincide exactamente con filterAntenas(Galicia + movistar + [band])
+      for (const bandItem of facets.availableBands) {
+        const expected = filterAntenas({
+          derived,
+          searchQuery: '',
+          selectedComunidad: 'Galicia',
+          selectedProvince: '',
+          activeOperators: ['movistar'],
+          selectedBands: [bandItem.band],
+          exclusiveBands: false,
+        }).length;
+        expect(bandItem.count).toBe(expected);
+      }
+    },
+  );
+});
+

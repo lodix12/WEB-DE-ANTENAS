@@ -16,6 +16,7 @@ import {
   resolveLiveSelectedAntenna,
   useAntenasData,
   useFilteredAntenas,
+  useMapFilterFacetCounts,
 } from '../hooks/useAntenasData';
 import { useUnico5gData } from '../hooks/useUnico5gData';
 import { useWorkspace } from '../hooks/useWorkspace';
@@ -260,6 +261,23 @@ export function MapaView() {
     unicoDataset,
   ]);
 
+  const activeUnicoDeclaredIds =
+    onlyUnicoDeclared && (unicoDataset || !isUnicoLoading)
+      ? declaredRealAntennasById
+      : undefined;
+
+  const facetCounts = useMapFilterFacetCounts({
+    derived,
+    searchQuery,
+    selectedComunidad,
+    selectedProvince,
+    activeOperators,
+    selectedBands,
+    exclusiveBands,
+    onlyUnicoDeclared,
+    unicoDeclaredIds: activeUnicoDeclaredIds,
+  });
+
   const clearHighlightedAntenna = useCallback(() => {
     if (highlightTimerRef.current !== null) {
       window.clearTimeout(highlightTimerRef.current);
@@ -429,6 +447,7 @@ export function MapaView() {
       <FilterPanel
         derived={derived}
         filteredAntenas={filteredAntenas}
+        facetCounts={facetCounts}
         collapsed={sidebarCollapsed}
         mobileOpen={mobilePanelOpen}
         onCollapseDesktop={() => setSidebarCollapsed(true)}
