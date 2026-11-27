@@ -10901,8 +10901,10 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(rowHtml).toContain('id="filter-unico-declared-checkbox"');
     expect(rowHtml).toContain('unico-filter-compact');
     expect(rowHtml).toContain('>UNICO 5G<');
+    expect(rowHtml).toContain('class="unico-filter-eu-flag"');
+    expect(rowHtml).toContain('aria-label="Unión Europea"');
     expect(rowHtml).toContain(
-      'class="unico-filter-count-number mono">7.164</span> Proyectos declaradas.</span>',
+      'class="unico-filter-count-number mono">7.164</span> Proyectos declarados.</span>',
     );
     expect(rowHtml).toContain('id="map-reset-filters-btn"');
     expect(rowHtml).toContain('lucide-rotate-ccw');
@@ -10911,16 +10913,21 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
 
     const idxExcl = rowHtml.indexOf('id="filter-bands-exclusive-checkbox"');
     const idxUnico = rowHtml.indexOf('id="filter-unico-declared-checkbox"');
+    const idxUnicoTitle = rowHtml.indexOf('>UNICO 5G<');
+    const idxEuFlag = rowHtml.indexOf('class="unico-filter-eu-flag"');
     const idxReset = rowHtml.indexOf('id="map-reset-filters-btn"');
     const idxClose = rowHtml.indexOf('id="sidebar-collapse-btn"');
     expect(idxExcl).toBeGreaterThan(-1);
     expect(idxExcl).toBeLessThan(idxUnico);
-    expect(idxUnico).toBeLessThan(idxReset);
+    expect(idxUnico).toBeLessThan(idxUnicoTitle);
+    expect(idxUnicoTitle).toBeLessThan(idxEuFlag);
+    expect(idxEuFlag).toBeLessThan(idxReset);
     expect(idxReset).toBeLessThan(idxClose);
 
     // Sin sección separada debajo ni descripciones/etiquetas extra dentro de la caja UNICO 5G
     expect(afterBandasSection).not.toContain('<section');
     expect(html).not.toContain('Solo declaradas UNICO 5G');
+    expect(html).not.toContain('Proyectos declaradas.');
     expect(html).not.toContain('unico-filter-legend-swatch');
     expect(html).not.toContain('bands-exclusive-hint');
 
@@ -10932,7 +10939,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     });
     expect(activeHtml).toContain('unico-filter-compact is-active');
     expect(activeHtml).toContain(
-      'class="unico-filter-count-number mono">42</span> Proyectos declaradas.</span>',
+      'class="unico-filter-count-number mono">42</span> Proyectos declarados.</span>',
     );
     expect(activeHtml).toContain('filter-reset-btn has-active-filters');
 
@@ -10943,7 +10950,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(fallbackHtml).toContain('id="map-reset-filters-btn"');
     expect(fallbackHtml).toContain('id="sidebar-collapse-btn"');
 
-    // 4. Reglas CSS: Reset y X exactamente del mismo tamaño (34px × 34px) y caja UNICO compacta
+    // 4. Reglas CSS: Reset y X exactamente del mismo tamaño (34px × 34px) y caja UNICO compacta con checkbox centrado
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -10959,7 +10966,7 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
       /\.filter-close-btn\s*\{[^}]*width:\s*34px;[^}]*min-height:\s*34px;[^}]*padding:\s*0;/s,
     );
     expect(indexCssSource).toMatch(
-      /\.bands-exclusive-row\.unico-filter-compact\s*\{[^}]*flex:\s*1\s+1\s+auto;/s,
+      /\.bands-exclusive-row\.unico-filter-compact\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*flex-direction:\s*row;[^}]*align-items:\s*center;/s,
     );
     expect(indexCssSource).toMatch(
       /\.bands-exclusive-row\.bands-exclusive-compact\s*\{[^}]*flex:\s*0\s+0\s+auto;/s,

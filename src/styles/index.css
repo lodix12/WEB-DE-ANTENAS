@@ -1345,7 +1345,7 @@ code {
 .bands-exclusive-row.bands-exclusive-compact {
   margin-top: 0;
   min-height: 34px;
-  padding: 0 6px;
+  padding: 0 5px;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
@@ -1471,15 +1471,26 @@ code {
 .bands-exclusive-row.unico-filter-compact {
   flex: 1 1 auto;
   min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 2px 5px;
+  gap: 4px;
+}
+
+.unico-filter-compact-copy {
+  display: flex;
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  padding: 2px 5px;
   gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1;
 }
 
 .unico-filter-compact-head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
@@ -1495,10 +1506,23 @@ code {
   white-space: nowrap;
 }
 
+.unico-filter-eu-flag {
+  display: block;
+  width: 15px;
+  height: 10px;
+  border-radius: 1.5px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0.5px rgba(15, 23, 42, 0.18);
+}
+
+[data-theme='dark'] .unico-filter-eu-flag {
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.22);
+}
+
 .unico-filter-count-badge {
   display: block;
   max-width: 100%;
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1.05;
   color: #166534;
@@ -1821,6 +1845,11 @@ code {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.filter-sidebar .sidebar-scroll {
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .panel-section {
@@ -4097,12 +4126,7 @@ code {
   :root,
   [data-theme='light'],
   [data-theme='dark'] {
-    --sidebar-width: 360px;
-  }
-
-  .filter-sidebar .sidebar-scroll {
-    padding-left: 12px;
-    padding-right: 12px;
+    --sidebar-width: 368px;
   }
 }
 
@@ -4277,6 +4301,15 @@ code {
   }
 
   @media (max-width: 375px) {
+    .filter-sidebar .sidebar-scroll {
+      padding-left: 10px;
+      padding-right: 10px;
+    }
+
+    .unico-filter-count-badge {
+      font-size: 8.6px;
+    }
+
     .mobile-controls-bar {
       gap: 4px;
     }
@@ -4301,8 +4334,13 @@ code {
 
     .bands-exclusive-row.bands-exclusive-compact {
       min-height: 32px;
-      padding: 0 5px;
+      padding: 0 4px;
       gap: 3px;
+    }
+
+    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
+      width: 12px;
+      height: 12px;
     }
 
     .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title,
@@ -4312,11 +4350,16 @@ code {
 
     .bands-exclusive-row.unico-filter-compact {
       padding: 2px 4px;
-      gap: 2px;
+      gap: 3px;
+    }
+
+    .unico-filter-eu-flag {
+      width: 13.5px;
+      height: 9px;
     }
 
     .unico-filter-count-badge {
-      font-size: 8.5px;
+      font-size: 7.7px;
     }
 
     .filter-reset-btn,

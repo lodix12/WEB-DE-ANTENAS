@@ -36,6 +36,20 @@ import {
 } from '../../types/map';
 import { parseCoordinateInput } from '../../utils/export';
 
+const EU_FLAG_STARS_PATH =
+  'M12.00,1.65L12.26,2.44L13.09,2.44L12.43,2.94L12.68,3.73L12.00,3.25L11.32,3.73L11.57,2.94L10.91,2.44L11.74,2.44Z ' +
+  'M14.60,2.35L14.86,3.13L15.69,3.14L15.03,3.64L15.28,4.43L14.60,3.95L13.92,4.43L14.17,3.64L13.51,3.14L14.34,3.13Z ' +
+  'M16.50,4.25L16.77,5.04L17.60,5.04L16.93,5.54L17.18,6.33L16.50,5.85L15.83,6.33L16.08,5.54L15.41,5.04L16.24,5.04Z ' +
+  'M17.20,6.85L17.46,7.64L18.29,7.64L17.63,8.14L17.88,8.93L17.20,8.45L16.52,8.93L16.77,8.14L16.11,7.64L16.94,7.64Z ' +
+  'M16.50,9.45L16.77,10.24L17.60,10.24L16.93,10.74L17.18,11.53L16.50,11.05L15.83,11.53L16.08,10.74L15.41,10.24L16.24,10.24Z ' +
+  'M14.60,11.35L14.86,12.14L15.69,12.15L15.03,12.64L15.28,13.43L14.60,12.95L13.92,13.43L14.17,12.64L13.51,12.15L14.34,12.14Z ' +
+  'M12.00,12.05L12.26,12.84L13.09,12.84L12.43,13.34L12.68,14.13L12.00,13.65L11.32,14.13L11.57,13.34L10.91,12.84L11.74,12.84Z ' +
+  'M9.40,11.35L9.66,12.14L10.49,12.15L9.83,12.64L10.08,13.43L9.40,12.95L8.72,13.43L8.97,12.64L8.31,12.15L9.14,12.14Z ' +
+  'M7.50,9.45L7.76,10.24L8.59,10.24L7.92,10.74L8.17,11.53L7.50,11.05L6.82,11.53L7.07,10.74L6.40,10.24L7.23,10.24Z ' +
+  'M6.80,6.85L7.06,7.64L7.89,7.64L7.23,8.14L7.48,8.93L6.80,8.45L6.12,8.93L6.37,8.14L5.71,7.64L6.54,7.64Z ' +
+  'M7.50,4.25L7.76,5.04L8.59,5.04L7.92,5.54L8.17,6.33L7.50,5.85L6.82,6.33L7.07,5.54L6.40,5.04L7.23,5.04Z ' +
+  'M9.40,2.35L9.66,3.13L10.49,3.14L9.83,3.64L10.08,4.43L9.40,3.95L8.72,4.43L8.97,3.64L8.31,3.14L9.14,3.13Z';
+
 export interface FilterPanelProps {
   derived: DerivedAntenasStructures | null;
   filteredAntenas: AntennaRecord[];
@@ -440,32 +454,45 @@ export function FilterPanel({
       className={`bands-exclusive-row bands-exclusive-compact unico-filter-row unico-filter-compact${onlyUnicoDeclared ? ' is-active' : ''}${unicoStatus !== 'ready' ? ' is-disabled' : ''}`}
       title={unicoFilterTitle}
     >
-      <span className="unico-filter-compact-head">
-        <input
-          id="filter-unico-declared-checkbox"
-          type="checkbox"
-          className="bands-exclusive-checkbox unico-filter-checkbox"
-          checked={onlyUnicoDeclared}
-          disabled={unicoStatus !== 'ready'}
-          onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
-        />
-        <span className="bands-exclusive-title unico-filter-compact-title">
-          UNICO 5G
+      <input
+        id="filter-unico-declared-checkbox"
+        type="checkbox"
+        className="bands-exclusive-checkbox unico-filter-checkbox"
+        checked={onlyUnicoDeclared}
+        disabled={unicoStatus !== 'ready'}
+        onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
+      />
+      <span className="unico-filter-compact-copy">
+        <span className="unico-filter-compact-head">
+          <span className="bands-exclusive-title unico-filter-compact-title">
+            UNICO 5G
+          </span>
+          <svg
+            className="unico-filter-eu-flag"
+            viewBox="0 0 24 16"
+            width="15"
+            height="10"
+            role="img"
+            aria-label="Unión Europea"
+          >
+            <rect width="24" height="16" rx="2" fill="#003399" />
+            <path d={EU_FLAG_STARS_PATH} fill="#FFCC00" />
+          </svg>
         </span>
-      </span>
-      <span className="unico-filter-count-badge">
-        {unicoStatus === 'ready' ? (
-          <>
+        <span className="unico-filter-count-badge">
+          {unicoStatus === 'ready' ? (
+            <>
+              <span className="unico-filter-count-number mono">
+                {unicoCountDisplay}
+              </span>{' '}
+              Proyectos declarados.
+            </>
+          ) : (
             <span className="unico-filter-count-number mono">
               {unicoCountDisplay}
-            </span>{' '}
-            Proyectos declaradas.
-          </>
-        ) : (
-          <span className="unico-filter-count-number mono">
-            {unicoCountDisplay}
-          </span>
-        )}
+            </span>
+          )}
+        </span>
       </span>
     </label>
   ) : null;
