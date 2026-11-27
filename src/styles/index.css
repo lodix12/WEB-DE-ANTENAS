@@ -1339,26 +1339,27 @@ code {
   margin-top: 9px;
   display: flex;
   align-items: stretch;
-  gap: 5px;
+  gap: 4px;
 }
 
 .bands-exclusive-row.bands-exclusive-compact {
   margin-top: 0;
   min-height: 34px;
-  padding: 0 7px;
+  padding: 0 6px;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   flex: 0 0 auto;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   margin: 0;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title {
   font-size: 11px;
+  letter-spacing: -0.015em;
   white-space: nowrap;
 }
 
@@ -1367,7 +1368,7 @@ code {
   margin-left: auto;
   display: inline-flex;
   align-items: stretch;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -1470,16 +1471,19 @@ code {
 .bands-exclusive-row.unico-filter-compact {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 2px 7px;
-  gap: 5px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2px 5px;
+  gap: 2px;
 }
 
-.unico-filter-compact-copy {
+.unico-filter-compact-head {
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 1px;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
+  max-width: 100%;
   line-height: 1;
 }
 
@@ -1487,21 +1491,25 @@ code {
   font-size: 11px;
   font-weight: 700;
   line-height: 1.1;
+  letter-spacing: 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .unico-filter-count-badge {
-  font-size: 10.5px;
-  font-weight: 700;
+  display: block;
+  max-width: 100%;
+  font-size: 9.5px;
+  font-weight: 600;
   line-height: 1.05;
   color: #166534;
   text-transform: none;
-  letter-spacing: 0;
+  letter-spacing: -0.02em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.unico-filter-count-number {
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 [data-theme='dark'] .unico-filter-count-badge {
@@ -4089,7 +4097,12 @@ code {
   :root,
   [data-theme='light'],
   [data-theme='dark'] {
-    --sidebar-width: 348px;
+    --sidebar-width: 360px;
+  }
+
+  .filter-sidebar .sidebar-scroll {
+    padding-left: 12px;
+    padding-right: 12px;
   }
 }
 
@@ -4276,20 +4289,20 @@ code {
   }
 
   @media (max-width: 355px) {
+    .filter-sidebar .sidebar-scroll {
+      padding-left: 8px;
+      padding-right: 8px;
+    }
+
     .bands-actions-row,
     .bands-actions-buttons {
-      gap: 4px;
+      gap: 3px;
     }
 
     .bands-exclusive-row.bands-exclusive-compact {
       min-height: 32px;
       padding: 0 5px;
-      gap: 4px;
-    }
-
-    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
-      width: 13px;
-      height: 13px;
+      gap: 3px;
     }
 
     .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title,
@@ -4298,12 +4311,12 @@ code {
     }
 
     .bands-exclusive-row.unico-filter-compact {
-      padding: 2px 5px;
-      gap: 4px;
+      padding: 2px 4px;
+      gap: 2px;
     }
 
     .unico-filter-count-badge {
-      font-size: 10px;
+      font-size: 8.5px;
     }
 
     .filter-reset-btn,

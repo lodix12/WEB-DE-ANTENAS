@@ -10901,7 +10901,9 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(rowHtml).toContain('id="filter-unico-declared-checkbox"');
     expect(rowHtml).toContain('unico-filter-compact');
     expect(rowHtml).toContain('>UNICO 5G<');
-    expect(rowHtml).toContain('class="unico-filter-count-badge mono">7.164<');
+    expect(rowHtml).toContain(
+      'class="unico-filter-count-number mono">7.164</span> Proyectos declaradas.</span>',
+    );
     expect(rowHtml).toContain('id="map-reset-filters-btn"');
     expect(rowHtml).toContain('lucide-rotate-ccw');
     expect(rowHtml).not.toContain('>Reset<');
@@ -10919,7 +10921,6 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     // Sin sección separada debajo ni descripciones/etiquetas extra dentro de la caja UNICO 5G
     expect(afterBandasSection).not.toContain('<section');
     expect(html).not.toContain('Solo declaradas UNICO 5G');
-    expect(html).not.toContain('declaradas<');
     expect(html).not.toContain('unico-filter-legend-swatch');
     expect(html).not.toContain('bands-exclusive-hint');
 
@@ -10930,7 +10931,9 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
       hasActiveFilters: true,
     });
     expect(activeHtml).toContain('unico-filter-compact is-active');
-    expect(activeHtml).toContain('class="unico-filter-count-badge mono">42<');
+    expect(activeHtml).toContain(
+      'class="unico-filter-count-number mono">42</span> Proyectos declaradas.</span>',
+    );
     expect(activeHtml).toContain('filter-reset-btn has-active-filters');
 
     // 3. Fallback sin bandas disponibles: mantiene UNICO 5G + Reset + X en la misma fila

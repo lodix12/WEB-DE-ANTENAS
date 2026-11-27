@@ -440,21 +440,32 @@ export function FilterPanel({
       className={`bands-exclusive-row bands-exclusive-compact unico-filter-row unico-filter-compact${onlyUnicoDeclared ? ' is-active' : ''}${unicoStatus !== 'ready' ? ' is-disabled' : ''}`}
       title={unicoFilterTitle}
     >
-      <input
-        id="filter-unico-declared-checkbox"
-        type="checkbox"
-        className="bands-exclusive-checkbox unico-filter-checkbox"
-        checked={onlyUnicoDeclared}
-        disabled={unicoStatus !== 'ready'}
-        onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
-      />
-      <span className="unico-filter-compact-copy">
+      <span className="unico-filter-compact-head">
+        <input
+          id="filter-unico-declared-checkbox"
+          type="checkbox"
+          className="bands-exclusive-checkbox unico-filter-checkbox"
+          checked={onlyUnicoDeclared}
+          disabled={unicoStatus !== 'ready'}
+          onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
+        />
         <span className="bands-exclusive-title unico-filter-compact-title">
           UNICO 5G
         </span>
-        <span className="unico-filter-count-badge mono">
-          {unicoCountDisplay}
-        </span>
+      </span>
+      <span className="unico-filter-count-badge">
+        {unicoStatus === 'ready' ? (
+          <>
+            <span className="unico-filter-count-number mono">
+              {unicoCountDisplay}
+            </span>{' '}
+            Proyectos declaradas.
+          </>
+        ) : (
+          <span className="unico-filter-count-number mono">
+            {unicoCountDisplay}
+          </span>
+        )}
       </span>
     </label>
   ) : null;

@@ -1754,7 +1754,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(filterBandsActions).toContain('id="filter-unico-declared-checkbox"');
     expect(filterBandsActions).toContain('unico-filter-compact');
     expect(filterBandsActions).toContain('>UNICO 5G<');
-    expect(filterBandsActions).toContain('class="unico-filter-count-badge mono">1<');
+    expect(filterBandsActions).toContain(
+      'class="unico-filter-count-number mono">1</span> Proyectos declaradas.</span>',
+    );
     expect(filterBandsActions.indexOf('>Exclusivamente<')).toBeLessThan(
       filterBandsActions.indexOf('id="filter-unico-declared-checkbox"'),
     );
@@ -1799,7 +1801,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         onFlyTo: () => {},
       }),
     );
-    expect(filterLoadingHtml).toContain('class="unico-filter-count-badge mono">…<');
+    expect(filterLoadingHtml).toContain(
+      'class="unico-filter-count-number mono">…</span>',
+    );
     expect(filterLoadingHtml).toContain('disabled=""');
     expect(filterLoadingHtml).toContain(
       'title="Sincronizando declaraciones UNICO 5G…"',
@@ -1838,7 +1842,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         onFlyTo: () => {},
       }),
     );
-    expect(filterErrorHtml).toContain('class="unico-filter-count-badge mono">—<');
+    expect(filterErrorHtml).toContain(
+      'class="unico-filter-count-number mono">—</span>',
+    );
     expect(filterErrorHtml).toContain('disabled=""');
     expect(filterErrorHtml).toContain(
       'title="No se pudo cargar el catálogo UNICO 5G"',
@@ -1925,7 +1931,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
       mapaHtml.split('class="bands-actions-row"')[1] ?? '';
     expect(mapaBandsActions).toContain('id="filter-unico-declared-checkbox"');
     expect(mapaBandsActions).toContain('>UNICO 5G<');
-    expect(mapaBandsActions).toContain('class="unico-filter-count-badge mono">1<');
+    expect(mapaBandsActions).toContain(
+      'class="unico-filter-count-number mono">1</span> Proyectos declaradas.</span>',
+    );
     expect(mapaHtml).not.toContain('Solo declaradas UNICO 5G');
 
     // 4. Casos límite de formatUnicoDistance y matchUnicoDeclaredAntennas
