@@ -10074,10 +10074,15 @@ describe('Mapa — Eliminación de tarjetas flotantes en antenas conservando pop
       'Clic para inspeccionar operadores integrados',
     );
 
-    // 2. Se mantienen intactas la selección por clic en antenas y los popups de coordenadas oficiales UNICO 5G (hover y fijado al marcar)
+    // 2. Se mantienen intactas la selección por clic en antenas y los popups de coordenadas oficiales UNICO 5G,
+    // usando exactamente la misma tarjeta interactiva tanto al pasar el ratón encima (hover) como al hacer clic
     expect(antenasMapRawSource).toContain('onSelectAntennaRef.current(resolvedStation)');
     expect(antenasMapRawSource).toContain('openPinnedUnicoPopup(projectsAtCoord, fallbackStation)');
-    expect(antenasMapRawSource).toContain('buildUnicoProjectsPopupHtml(projectsAtCoord');
+    expect(antenasMapRawSource).toContain('openPinnedUnicoPopup(projectsAtCoord, fallbackStation, {');
+    expect(antenasMapRawSource).toContain('pinned: false,');
+    expect(antenasMapRawSource).toContain('buildUnicoProjectsPopupHtml(projects, {');
+    expect(antenasMapRawSource).toContain('interactive: true,');
+    expect(antenasMapRawSource).not.toContain('interactive: false');
     expect(antenasMapRawSource).toContain('antenas-map-popup-interactive');
   });
 });

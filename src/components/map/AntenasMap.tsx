@@ -867,10 +867,11 @@ export function AntenasMap(props: AntenasMapProps) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const popupRef = useRef<maplibregl.Popup | null>(null);
   const pinnedUnicoPopupRef = useRef<maplibregl.Popup | null>(null);
   const pinnedUnicoCoordKeyRef = useRef<string | null>(null);
-  const hoveredIdRef = useRef<string | null>(null);
+  const isUnicoPopupPinnedRef = useRef<boolean>(false);
+  const isPointerOverUnicoPopupRef = useRef<boolean>(false);
+  const unicoHoverCloseTimerRef = useRef<number | null>(null);
   const appliedStyleIdRef = useRef<AntenasMapProps['styleId']>(styleId);
   const lastFlyTokenRef = useRef<number | string | null>(null);
   const hasLoadedOnceRef = useRef(false);
@@ -883,13 +884,44 @@ export function AntenasMap(props: AntenasMapProps) {
     UnicoProjectFeatureProperties
   > | null>(null);
 
+  const cancelUnicoHoverCloseTimer = useCallback(() => {
+    if (unicoHoverCloseTimerRef.current !== null) {
+      window.clearTimeout(unicoHoverCloseTimerRef.current);
+      unicoHoverCloseTimerRef.current = null;
+    }
+  }, []);
+
   const clearPinnedUnicoPopup = useCallback(() => {
+    cancelUnicoHoverCloseTimer();
+    isPointerOverUnicoPopupRef.current = false;
     if (pinnedUnicoPopupRef.current) {
       pinnedUnicoPopupRef.current.remove();
       pinnedUnicoPopupRef.current = null;
     }
     pinnedUnicoCoordKeyRef.current = null;
-  }, []);
+    isUnicoPopupPinnedRef.current = false;
+  }, [cancelUnicoHoverCloseTimer]);
+
+  const scheduleUnicoHoverClose = useCallback(() => {
+    if (
+      pinnedUnicoPopupRef.current === null ||
+      isUnicoPopupPinnedRef.current ||
+      isPointerOverUnicoPopupRef.current
+    ) {
+      return;
+    }
+    cancelUnicoHoverCloseTimer();
+    unicoHoverCloseTimerRef.current = window.setTimeout(() => {
+      unicoHoverCloseTimerRef.current = null;
+      if (
+        pinnedUnicoPopupRef.current !== null &&
+        !isUnicoPopupPinnedRef.current &&
+        !isPointerOverUnicoPopupRef.current
+      ) {
+        clearPinnedUnicoPopup();
+      }
+    }, 220);
+  }, [cancelUnicoHoverCloseTimer, clearPinnedUnicoPopup]);
 
   // Bloqueo 3D / vertical activado SIEMPRE por defecto al cargar la web (nunca se lee de localStorage)
   const [internalLock3dPitch, setInternalLock3dPitch] = useState<boolean>(true);
@@ -1261,10 +1293,6 @@ export function AntenasMap(props: AntenasMapProps) {
         effectiveShowBandsOnMap ? 'visible' : 'none',
       );
     }
-    if (!effectiveShowBandsOnMap && hoveredIdRef.current !== null) {
-      hoveredIdRef.current = null;
-      popupRef.current?.remove();
-    }
   }, [effectiveShowBandsOnMap]);
 
   // Sincronización inmediata en GPU del resaltado visual de antenas seleccionadas como declaración UNICO 5G
@@ -1310,14 +1338,10 @@ export function AntenasMap(props: AntenasMapProps) {
     }
     if (!effectiveShowUnicoProjects) {
       clearPinnedUnicoPopup();
-      if (hoveredIdRef.current?.startsWith(UNICO_COORD_ICON_PREFIX)) {
-        hoveredIdRef.current = null;
-        popupRef.current?.remove();
-      }
     }
   }, [effectiveShowUnicoProjects, clearPinnedUnicoPopup]);
 
-  // Permitir cerrar un popup fijado de coordenada UNICO 5G pulsando la tecla Escape
+  // Permitir cerrar un popup abierto de coordenada UNICO 5G pulsando la tecla Escape
   useEffect(() => {
     if (!effectiveShowUnicoProjects) {
       return;
@@ -1354,10 +1378,6 @@ export function AntenasMap(props: AntenasMapProps) {
       });
     }
     syncClusteringVisualLayers(map, !clusterOptions.cluster);
-    if (hoveredIdRef.current !== null) {
-      hoveredIdRef.current = null;
-      popupRef.current?.remove();
-    }
   }, [effectiveClusteringLevel]);
 
   // Permitir cancelar o limpiar la medición de 2 puntos pulsando la tecla Escape
@@ -2043,16 +2063,7 @@ export function AntenasMap(props: AntenasMapProps) {
       'bottom-right',
     );
 
-    const popup = new maplibregl.Popup({
-      closeButton: false,
-      closeOnClick: false,
-      offset: 12,
-      maxWidth: '320px',
-      className: 'antenas-map-popup',
-    });
-
     mapRef.current = map;
-    popupRef.current = popup;
 
     const resolveMissingStyleImage = (id: string) => {
       if (id.startsWith('multi:')) {
@@ -2279,17 +2290,30 @@ export function AntenasMap(props: AntenasMapProps) {
     const openPinnedUnicoPopup = (
       projects: UnicoProjectFeatureProperties[],
       fallbackStation: AntennaRecord | null,
+      options: { pinned?: boolean } = {},
     ) => {
       if (projects.length === 0) {
         return;
       }
+      const shouldPin = options.pinned !== false;
       const first = projects[0];
       const coordKey = `${UNICO_COORD_ICON_PREFIX}${projects
         .map((item) => item.id)
         .join('|')}`;
 
-      if (pinnedUnicoCoordKeyRef.current === coordKey) {
-        clearPinnedUnicoPopup();
+      if (
+        pinnedUnicoCoordKeyRef.current === coordKey &&
+        pinnedUnicoPopupRef.current !== null
+      ) {
+        cancelUnicoHoverCloseTimer();
+        if (shouldPin) {
+          if (isUnicoPopupPinnedRef.current) {
+            clearPinnedUnicoPopup();
+          } else {
+            // Al hacer clic sobre una tarjeta ya abierta por hover, se fija sin parpadeo
+            isUnicoPopupPinnedRef.current = true;
+          }
+        }
         return;
       }
 
@@ -2319,8 +2343,6 @@ export function AntenasMap(props: AntenasMapProps) {
           ? `${OPERATOR_META[fallbackStation.op]?.shortName ?? 'Estación'} #${fallbackStation.gid}`
           : null;
 
-      hoveredIdRef.current = null;
-      popup.remove();
       clearPinnedUnicoPopup();
 
       const pinned = new maplibregl.Popup({
@@ -2342,6 +2364,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
       pinnedUnicoPopupRef.current = pinned;
       pinnedUnicoCoordKeyRef.current = coordKey;
+      isUnicoPopupPinnedRef.current = shouldPin;
 
       let copyResetTimer: number | null = null;
       const clearCopyTimer = () => {
@@ -2354,13 +2377,25 @@ export function AntenasMap(props: AntenasMapProps) {
       pinned.on('close', () => {
         clearCopyTimer();
         if (pinnedUnicoPopupRef.current === pinned) {
+          cancelUnicoHoverCloseTimer();
+          isPointerOverUnicoPopupRef.current = false;
           pinnedUnicoPopupRef.current = null;
           pinnedUnicoCoordKeyRef.current = null;
+          isUnicoPopupPinnedRef.current = false;
         }
       });
 
       const popupEl = pinned.getElement();
       if (popupEl) {
+        popupEl.addEventListener('mouseenter', () => {
+          isPointerOverUnicoPopupRef.current = true;
+          cancelUnicoHoverCloseTimer();
+        });
+        popupEl.addEventListener('mouseleave', () => {
+          isPointerOverUnicoPopupRef.current = false;
+          scheduleUnicoHoverClose();
+        });
+
         const closeBtn = popupEl.querySelector<HTMLButtonElement>(
           '.maplibregl-popup-close-button',
         );
@@ -2635,10 +2670,7 @@ export function AntenasMap(props: AntenasMapProps) {
 
       if (hits.length === 0) {
         map.getCanvas().style.cursor = isCrosshairActive ? 'crosshair' : '';
-        if (hoveredIdRef.current !== null) {
-          hoveredIdRef.current = null;
-          popup.remove();
-        }
+        scheduleUnicoHoverClose();
         return;
       }
 
@@ -2648,10 +2680,7 @@ export function AntenasMap(props: AntenasMapProps) {
       );
       if (!priorityUnicoHit && !topNonUnicoHit) {
         map.getCanvas().style.cursor = isCrosshairActive ? 'crosshair' : '';
-        if (hoveredIdRef.current !== null) {
-          hoveredIdRef.current = null;
-          popup.remove();
-        }
+        scheduleUnicoHoverClose();
         return;
       }
 
@@ -2661,12 +2690,11 @@ export function AntenasMap(props: AntenasMapProps) {
           : ''
         : 'pointer';
 
-      // Mientras haya un popup interactivo fijado de UNICO abierto, no abrir tooltips flotantes que lo solapen
-      if (pinnedUnicoPopupRef.current !== null) {
-        if (hoveredIdRef.current !== null) {
-          hoveredIdRef.current = null;
-          popup.remove();
-        }
+      // Mientras haya una tarjeta fijada por clic de UNICO abierta, no sustituirla al pasar el ratón por otro punto
+      if (
+        pinnedUnicoPopupRef.current !== null &&
+        isUnicoPopupPinnedRef.current
+      ) {
         return;
       }
 
@@ -2676,40 +2704,36 @@ export function AntenasMap(props: AntenasMapProps) {
           lon: priorityUnicoHit.lon,
         });
         if (projectsAtCoord.length > 0) {
-          const hoverKey = `${UNICO_COORD_ICON_PREFIX}${projectsAtCoord
-            .map((item) => item.id)
-            .join('|')}`;
-          const firstProj = projectsAtCoord[0];
-          if (hoveredIdRef.current !== hoverKey) {
-            hoveredIdRef.current = hoverKey;
-            const hasMatchedAntenna = projectsAtCoord.some(
-              (item) =>
-                item.matchedAntennaId !== '' &&
-                (Boolean(onFocusUnicoMatchedAntennaRef.current) ||
-                  antenasByIdRef.current.has(item.matchedAntennaId)),
-            );
-            popup.setOffset(UNICO_PIN_POPUP_OFFSET);
-            popup.setHTML(
-              buildUnicoProjectsPopupHtml(projectsAtCoord, {
-                interactive: false,
-                hasMatchedAntenna,
-              }),
-            );
-          }
-          popup.setLngLat([firstProj.lon, firstProj.lat]).addTo(map);
+          const underlyingStationFeature = hits.find(
+            (f) =>
+              f.layer.id !== LAYER_UNICO_PROJECTS &&
+              f.layer.id !== LAYER_CLUSTERS,
+          );
+          const fallbackStation = underlyingStationFeature
+            ? resolveStationFromFeature(underlyingStationFeature, event.lngLat)
+            : null;
+          openPinnedUnicoPopup(projectsAtCoord, fallbackStation, {
+            pinned: false,
+          });
           return;
         }
       }
 
-      if (hoveredIdRef.current !== null) {
-        hoveredIdRef.current = null;
-        popup.remove();
-      }
+      scheduleUnicoHoverClose();
     };
 
-    const handleCanvasLeave = () => {
-      hoveredIdRef.current = null;
-      popup.remove();
+    const handleCanvasLeave = (event: MouseEvent) => {
+      const popupEl = pinnedUnicoPopupRef.current?.getElement();
+      if (
+        popupEl &&
+        event.relatedTarget instanceof Node &&
+        popupEl.contains(event.relatedTarget)
+      ) {
+        isPointerOverUnicoPopupRef.current = true;
+        cancelUnicoHoverCloseTimer();
+        return;
+      }
+      scheduleUnicoHoverClose();
     };
 
     const resizeObserver =
@@ -2732,18 +2756,20 @@ export function AntenasMap(props: AntenasMapProps) {
       resizeObserver?.disconnect();
       map.getCanvas().removeEventListener('mouseleave', handleCanvasLeave);
       map.setMissingStyleImageResolver(null);
-      popup.remove();
       clearPinnedUnicoPopup();
       map.remove();
       mapRef.current = null;
-      popupRef.current = null;
-      hoveredIdRef.current = null;
       hasLoadedOnceRef.current = false;
       lastAppliedGeoJsonRef.current = null;
       lastAppliedUnicoGeoJsonRef.current = null;
       lastFlyTokenRef.current = null;
     };
-  }, [ensureCustomSourcesAndLayers, clearPinnedUnicoPopup]);
+  }, [
+    ensureCustomSourcesAndLayers,
+    clearPinnedUnicoPopup,
+    cancelUnicoHoverCloseTimer,
+    scheduleUnicoHoverClose,
+  ]);
 
   // Cambio resiliente de estilo OpenFreeMap / OSM Retina / Google Maps preservando todas las fuentes y capas
   useEffect(() => {
@@ -2754,10 +2780,8 @@ export function AntenasMap(props: AntenasMapProps) {
     }
 
     appliedStyleIdRef.current = styleId;
-    hoveredIdRef.current = null;
     lastAppliedGeoJsonRef.current = null;
     lastAppliedUnicoGeoJsonRef.current = null;
-    popupRef.current?.remove();
     clearPinnedUnicoPopup();
 
     map.setStyle(resolveMapStyleInput(currentStyleOption), { diff: false });
