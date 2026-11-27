@@ -238,14 +238,11 @@ code {
     visibility 0s linear 0s;
 }
 
-.sections-drawer-footer {
-  padding: 10px 16px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
+.sections-close-row {
+  margin-top: 10px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  flex-shrink: 0;
 }
 
 .sections-nav-list {
@@ -2932,7 +2929,7 @@ code {
 }
 
 /* ==========================================================================
-   Páginas Analíticas y de Referencia
+   Páginas de Secciones (Novedades, Eliminaciones, UNICO 5G y Ruta no encontrada)
    ========================================================================== */
 
 .page-container {
@@ -2953,28 +2950,12 @@ code {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.page-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--accent-primary);
-}
-
 .page-h1 {
   font-size: clamp(22px, 2.6vw, 30px);
   font-weight: 700;
   letter-spacing: -0.025em;
   color: var(--text-primary);
   line-height: 1.2;
-}
-
-.page-lead {
-  font-size: 15px;
-  color: var(--text-secondary);
-  max-width: 78ch;
-  line-height: 1.6;
 }
 
 /* Summary Strip arquitectónico */
@@ -3021,290 +3002,12 @@ code {
   color: var(--text-muted);
 }
 
-/* Secciones analíticas */
+/* Bloques de sección */
 .section-block {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   overflow: hidden;
-}
-
-.section-block-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.section-h2 {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
-  color: var(--text-primary);
-}
-
-.section-desc {
-  font-size: 13px;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.section-block-body {
-  padding: 20px;
-}
-
-/* Barras por Operador */
-.operator-bars-list {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.operator-bar-row {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.operator-bar-meta {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.operator-bar-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 14px;
-}
-
-.operator-bar-numbers {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.operator-bar-track {
-  width: 100%;
-  height: 10px;
-  border-radius: 999px;
-  background: var(--bg-surface-subtle);
-  overflow: hidden;
-}
-
-.operator-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.legal-entities-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-.legal-entity-tag {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-surface-subtle);
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-}
-
-/* Sincronización y Desglose por Banda de Frecuencia (MHz) */
-.spectrum-sync-strip {
-  padding: 13px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface-subtle);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.spectrum-sync-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
-
-.spectrum-sync-meta strong {
-  color: var(--text-primary);
-}
-
-.spectrum-sync-batch {
-  font-size: 11.5px;
-  color: var(--accent-primary);
-  font-weight: 600;
-}
-
-.spectrum-bands-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.spectrum-band-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.spectrum-band-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.spectrum-band-title-group {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.spectrum-band-role {
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
-
-/* Tabla de Provincias con Barra Apilada */
-.province-table-wrap {
-  overflow-x: auto;
-}
-
-.clean-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
-}
-
-.clean-table th {
-  padding: 10px 14px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  background: var(--bg-surface-subtle);
-  border-bottom: 1px solid var(--border-default);
-  white-space: nowrap;
-}
-
-.clean-table td {
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border-subtle);
-  font-size: 13px;
-  vertical-align: middle;
-}
-
-.clean-table tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.clean-table tbody tr:hover td {
-  background: var(--bg-surface-subtle);
-}
-
-.stacked-bar {
-  display: flex;
-  width: 100%;
-  min-width: 180px;
-  height: 10px;
-  border-radius: 999px;
-  overflow: hidden;
-  background: var(--bg-surface-subtle);
-}
-
-.stacked-bar-seg {
-  height: 100%;
-}
-
-.legend-inline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.legend-inline-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* Metodología — Bandas RF y Normativa */
-.band-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 8px;
-  border-radius: var(--radius-xs);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--accent-soft);
-  color: var(--accent-primary);
-  border: 1px solid var(--accent-soft-strong);
-}
-
-.tech-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 7px;
-  border-radius: var(--radius-xs);
-  font-size: 11.5px;
-  font-weight: 600;
-  background: var(--bg-surface-subtle);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-}
-
-.two-col-editorial {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.prose-list {
-  margin: 10px 0 0;
-  padding-left: 18px;
-  color: var(--text-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.prose-list li strong {
-  color: var(--text-primary);
-}
-
-.callout-note {
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  background: var(--bg-surface-subtle);
-  border-left: 3px solid var(--accent-primary);
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.55;
 }
 
 /* Estados de carga y vacío */
@@ -4416,10 +4119,6 @@ code {
   .metric-cell:nth-child(2) {
     border-bottom: 1px solid var(--border-subtle);
   }
-
-  .two-col-editorial {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 860px) {
@@ -4527,10 +4226,6 @@ code {
   .filter-sidebar .sidebar-scroll,
   .sections-drawer .sidebar-scroll {
     padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .sections-drawer .sections-drawer-footer {
-    padding: 10px 16px calc(12px + env(safe-area-inset-bottom, 0px));
   }
 
   @media (max-width: 600px) {

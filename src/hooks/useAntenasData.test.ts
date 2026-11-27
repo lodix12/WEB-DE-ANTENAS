@@ -9547,22 +9547,27 @@ describe('Eliminación de Datos y Estadísticas y botón X rojo abajo en menú d
     expect(drawerHtml).toContain('id="nav-tab-eliminaciones"');
     expect(drawerHtml).toContain('id="nav-tab-unico-5g"');
 
-    // 2. El botón X de cierre ya no está arriba en .sidebar-header sino abajo en .sections-drawer-footer con clase .filter-close-btn (roja)
-    const drawerHeaderPart = drawerHtml.split('<div class="sidebar-scroll">')[0] ?? '';
-    const drawerFooterStart = drawerHtml.indexOf('class="sections-drawer-footer"');
-    const drawerScrollStart = drawerHtml.indexOf('class="sidebar-scroll"');
-    expect(drawerHeaderPart).not.toContain('id="sections-drawer-close-btn"');
-    expect(drawerFooterStart).toBeGreaterThan(drawerScrollStart);
+    // Estado del censo oficial sin abreviatura ("estaciones registradas" en lugar de "est. registradas")
+    expect(drawerHtml).toContain('estaciones registradas');
+    expect(drawerHtml).not.toContain('est. registradas');
 
-    const drawerFooterPart = drawerHtml.slice(drawerFooterStart);
-    expect(drawerFooterPart).toContain('id="sections-drawer-close-btn"');
-    expect(drawerFooterPart).toContain('class="filter-close-btn"');
-    expect(drawerFooterPart).toContain('aria-label="Cerrar menú de secciones"');
-    expect(drawerFooterPart).toContain('lucide-x');
-    expect(drawerFooterPart).toContain('stroke-width="2.25"');
+    // 2. El botón X de cierre ya no está arriba en .sidebar-header sino justo debajo del estado del censo oficial (.sections-close-row) con clase .filter-close-btn (roja)
+    const drawerHeaderPart = drawerHtml.split('<div class="sidebar-scroll">')[0] ?? '';
+    const censusBadgePos = drawerHtml.indexOf('sections-dataset-badge');
+    const closeRowStart = drawerHtml.indexOf('class="sections-close-row"');
+    expect(drawerHeaderPart).not.toContain('id="sections-drawer-close-btn"');
+    expect(censusBadgePos).toBeGreaterThan(-1);
+    expect(closeRowStart).toBeGreaterThan(censusBadgePos);
+
+    const closeRowPart = drawerHtml.slice(closeRowStart);
+    expect(closeRowPart).toContain('id="sections-drawer-close-btn"');
+    expect(closeRowPart).toContain('class="filter-close-btn"');
+    expect(closeRowPart).toContain('aria-label="Cerrar menú de secciones"');
+    expect(closeRowPart).toContain('lucide-x');
+    expect(closeRowPart).toContain('stroke-width="2.25"');
     expect(drawerHtml.match(/id="sections-drawer-close-btn"/g)).toHaveLength(1);
 
-    // 3. Verificación en código fuente: sin EstadisticasView.tsx, sin ruta /estadisticas y con estilos CSS del pie y X roja
+    // 3. Verificación en código fuente: sin EstadisticasView.tsx, sin ruta /estadisticas y sin restos CSS obsoletos
     const fsSpecifier = 'node:fs';
     const { existsSync, readFileSync } = (await import(
       /* @vite-ignore */ fsSpecifier
@@ -9594,10 +9599,15 @@ describe('Eliminación de Datos y Estadísticas y botón X rojo abajo en menú d
       'utf-8',
     );
     expect(indexCssSource).not.toContain('.estadisticas-blank-page');
+    expect(indexCssSource).not.toContain('.operator-bars-list');
+    expect(indexCssSource).not.toContain('.spectrum-bands-list');
+    expect(indexCssSource).not.toContain('.province-table-wrap');
+    expect(indexCssSource).not.toContain('.clean-table');
+    expect(indexCssSource).not.toContain('.stacked-bar');
+    expect(indexCssSource).not.toContain('.two-col-editorial');
     expect(indexCssSource).toMatch(
-      /\.sections-drawer-footer\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s,
+      /\.sections-close-row\s*\{[^}]*margin-top:\s*10px;[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s,
     );
-    expect(indexCssSource).toContain('.sections-drawer .sections-drawer-footer');
     expect(indexCssSource).toMatch(
       /\.filter-close-btn\s*\{[^}]*color:\s*#dc2626;/s,
     );

@@ -342,7 +342,10 @@ export function AppHeader() {
               ) : (
                 <div className="sections-dataset-copy">
                   <span className="dataset-live-count">
-                    {totalFormatted} est. registradas
+                    {totalFormatted}{' '}
+                    {derived?.dataset.total === 1
+                      ? 'estación registrada'
+                      : 'estaciones registradas'}
                   </span>
                   {relativeDate && (
                     <span className="dataset-live-date">
@@ -353,20 +356,20 @@ export function AppHeader() {
                 </div>
               )}
             </div>
-          </section>
-        </div>
 
-        <div className="sections-drawer-footer">
-          <button
-            type="button"
-            id="sections-drawer-close-btn"
-            className="filter-close-btn"
-            aria-label="Cerrar menú de secciones"
-            title="Cerrar menú de secciones"
-            onClick={() => setSectionsMenuOpen(false)}
-          >
-            <X size={16} strokeWidth={2.25} aria-hidden="true" />
-          </button>
+            <div className="sections-close-row">
+              <button
+                type="button"
+                id="sections-drawer-close-btn"
+                className="filter-close-btn"
+                aria-label="Cerrar menú de secciones"
+                title="Cerrar menú de secciones"
+                onClick={() => setSectionsMenuOpen(false)}
+              >
+                <X size={16} strokeWidth={2.25} aria-hidden="true" />
+              </button>
+            </div>
+          </section>
         </div>
       </aside>
     </>
