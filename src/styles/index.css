@@ -1328,13 +1328,6 @@ code {
   cursor: pointer;
 }
 
-.bands-exclusive-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
 .bands-exclusive-title {
   font-size: 12px;
   font-weight: 700;
@@ -1342,75 +1335,61 @@ code {
   color: var(--text-primary);
 }
 
-.bands-exclusive-hint {
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--text-muted);
-}
-
-.bands-exclusive-row.is-active .bands-exclusive-hint {
-  color: var(--text-secondary);
-}
-
 .bands-actions-row {
   margin-top: 9px;
   display: flex;
   align-items: stretch;
-  gap: 6px;
+  gap: 5px;
 }
 
 .bands-exclusive-row.bands-exclusive-compact {
   margin-top: 0;
   min-height: 34px;
-  padding: 0 9px;
+  padding: 0 7px;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex: 0 1 auto;
   min-width: 0;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-checkbox {
+  width: 14px;
+  height: 14px;
   margin-top: 0;
 }
 
 .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title {
+  font-size: 11.5px;
   white-space: nowrap;
 }
 
 .bands-actions-buttons {
-  flex: 1 1 auto;
-  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: inline-flex;
   align-items: stretch;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
 }
 
 .bands-actions-fallback {
+  margin-top: 0;
   justify-content: flex-end;
 }
 
-.bands-actions-fallback .filter-reset-btn {
-  flex: 0 1 auto;
-  min-width: 96px;
-}
-
 .filter-reset-btn {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 34px;
-  padding: 0 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  flex-shrink: 0;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-default);
   background: var(--bg-surface);
   color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 600;
   line-height: 1;
-  white-space: nowrap;
   cursor: pointer;
   transition:
     background-color 0.14s ease,
@@ -1487,45 +1466,43 @@ code {
   color: #ffffff;
 }
 
-/* Declaración UNICO 5G en FilterPanel */
+/* Declaración UNICO 5G compacto junto a "Exclusivamente" en FilterPanel */
 
-.unico-filter-legend-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.bands-exclusive-row.unico-filter-compact {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 7px;
+  gap: 5px;
 }
 
-.unico-filter-legend-swatch {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--accent-primary);
-  border: 2px solid #ffffff;
-  box-shadow:
-    0 0 0 2px #16a34a,
-    0 0 0 4.5px rgba(16, 185, 129, 0.24);
-  margin: 0 2px;
-  flex-shrink: 0;
-  transition: opacity 0.15s ease;
+.unico-filter-compact-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1;
 }
 
-[data-theme='dark'] .unico-filter-legend-swatch {
-  border-color: #0b1120;
-  box-shadow:
-    0 0 0 2px #4ade80,
-    0 0 0 4.5px rgba(34, 197, 94, 0.28);
-}
-
-.unico-filter-legend-swatch.is-muted {
-  opacity: 0.4;
+.bands-exclusive-row.unico-filter-compact .unico-filter-compact-title {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .unico-filter-count-badge {
   font-size: 10.5px;
   font-weight: 700;
+  line-height: 1.05;
   color: #166534;
   text-transform: none;
   letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 [data-theme='dark'] .unico-filter-count-badge {
@@ -1533,12 +1510,17 @@ code {
 }
 
 .unico-filter-row {
-  margin-top: 2px;
+  margin-top: 0;
 }
 
 .unico-filter-row.is-disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.unico-filter-row.is-disabled:hover {
+  background: var(--bg-surface-subtle);
+  border-color: var(--border-subtle);
 }
 
 .unico-filter-row.is-active {
@@ -4290,6 +4272,27 @@ code {
     .mobile-controls-bar > * {
       padding: 0 6.5px;
       font-size: 11px;
+      gap: 4px;
+    }
+  }
+
+  @media (max-width: 355px) {
+    .bands-actions-row,
+    .bands-actions-buttons {
+      gap: 4px;
+    }
+
+    .bands-exclusive-row.bands-exclusive-compact {
+      padding: 0 5px;
+      gap: 4px;
+    }
+
+    .bands-exclusive-row.bands-exclusive-compact .bands-exclusive-title {
+      font-size: 11px;
+    }
+
+    .bands-exclusive-row.unico-filter-compact {
+      padding: 2px 5px;
       gap: 4px;
     }
   }

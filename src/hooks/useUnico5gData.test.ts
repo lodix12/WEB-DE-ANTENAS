@@ -1716,7 +1716,7 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(declaredRealAntennasById.has(mvAnt.id)).toBe(true);
     expect(declaredRealAntennasById.has(vfSharedAnt.id)).toBe(false);
 
-    // FilterPanel SSR con sección UNICO 5G y contador exacto
+    // FilterPanel SSR con filtro compacto UNICO 5G a la derecha de "Exclusivamente" y contador exacto
     const filterHtml = renderToStaticMarkup(
       createElement(FilterPanel, {
         derived,
@@ -1749,13 +1749,23 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         onFlyTo: () => {},
       }),
     );
-    expect(filterHtml).toContain('id="filter-unico-declared-checkbox"');
-    expect(filterHtml).toContain('Solo declaradas UNICO 5G');
-    expect(filterHtml).toContain('1 declarada');
-    expect(filterHtml).toContain('unico-filter-legend-swatch');
-    expect(filterHtml).toContain('≤ 1.200 m con N28/N28+/N78');
+    const filterBandsActions =
+      filterHtml.split('class="bands-actions-row"')[1] ?? '';
+    expect(filterBandsActions).toContain('id="filter-unico-declared-checkbox"');
+    expect(filterBandsActions).toContain('unico-filter-compact');
+    expect(filterBandsActions).toContain('>UNICO 5G<');
+    expect(filterBandsActions).toContain('class="unico-filter-count-badge mono">1<');
+    expect(filterBandsActions.indexOf('>Exclusivamente<')).toBeLessThan(
+      filterBandsActions.indexOf('id="filter-unico-declared-checkbox"'),
+    );
+    expect(filterBandsActions.indexOf('id="filter-unico-declared-checkbox"')).toBeLessThan(
+      filterBandsActions.indexOf('id="map-reset-filters-btn"'),
+    );
+    expect(filterHtml).not.toContain('Solo declaradas UNICO 5G');
+    expect(filterHtml).not.toContain('unico-filter-legend-swatch');
+    expect(filterHtml).not.toContain('bands-exclusive-hint');
 
-    // FilterPanel SSR con unicoStatus loading/error y highlightUnicoDeclared desactivado
+    // FilterPanel SSR con unicoStatus loading y error
     const filterLoadingHtml = renderToStaticMarkup(
       createElement(FilterPanel, {
         derived,
@@ -1789,47 +1799,10 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         onFlyTo: () => {},
       }),
     );
-    expect(filterLoadingHtml).toContain('Cargando…');
+    expect(filterLoadingHtml).toContain('class="unico-filter-count-badge mono">…<');
     expect(filterLoadingHtml).toContain('disabled=""');
-    expect(filterLoadingHtml).toContain('Sincronizando declaraciones UNICO 5G…');
-    expect(filterLoadingHtml).toContain('unico-filter-legend-swatch is-muted');
-
-    const filterMutedHtml = renderToStaticMarkup(
-      createElement(FilterPanel, {
-        derived,
-        filteredAntenas: derived.dataset.antenas,
-        collapsed: false,
-        mobileOpen: false,
-        onCollapseDesktop: () => {},
-        onCloseMobile: () => {},
-        searchQuery: '',
-        onSearchChange: () => {},
-        selectedComunidad: '',
-        onComunidadChange: () => {},
-        selectedProvince: '',
-        onProvinceChange: () => {},
-        selectedBands: [],
-        onToggleBand: () => {},
-        onClearBands: () => {},
-        exclusiveBands: false,
-        onExclusiveBandsChange: () => {},
-        onlyUnicoDeclared: false,
-        onOnlyUnicoDeclaredChange: () => {},
-        unicoDeclaredCount: 1,
-        unicoStatus: 'ready',
-        highlightUnicoDeclared: false,
-        activeOperators: [...OPERATOR_ORDER],
-        onToggleOperator: () => {},
-        onSelectAllOperators: () => {},
-        onClearAllOperators: () => {},
-        hasActiveFilters: false,
-        onResetFilters: () => {},
-        onFlyTo: () => {},
-      }),
-    );
-    expect(filterMutedHtml).toContain('unico-filter-legend-swatch is-muted');
-    expect(filterMutedHtml).toContain(
-      'Resaltado verde desactivado en opciones del mapa (≤ 1.200 m con N28/N28+/N78)',
+    expect(filterLoadingHtml).toContain(
+      'title="Sincronizando declaraciones UNICO 5G…"',
     );
 
     const filterErrorHtml = renderToStaticMarkup(
@@ -1865,9 +1838,11 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         onFlyTo: () => {},
       }),
     );
-    expect(filterErrorHtml).toContain('No disponible');
+    expect(filterErrorHtml).toContain('class="unico-filter-count-badge mono">—<');
     expect(filterErrorHtml).toContain('disabled=""');
-    expect(filterErrorHtml).toContain('No se pudo cargar el catálogo UNICO 5G');
+    expect(filterErrorHtml).toContain(
+      'title="No se pudo cargar el catálogo UNICO 5G"',
+    );
 
     // StationDetailDrawer SSR sobre la estación Movistar declarada UNICO
     const drawerMovistarHtml = renderToStaticMarkup(
@@ -1946,9 +1921,12 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
         ),
       ),
     );
-    expect(mapaHtml).toContain('id="filter-unico-declared-checkbox"');
-    expect(mapaHtml).toContain('Solo declaradas UNICO 5G');
-    expect(mapaHtml).toContain('1 declarada');
+    const mapaBandsActions =
+      mapaHtml.split('class="bands-actions-row"')[1] ?? '';
+    expect(mapaBandsActions).toContain('id="filter-unico-declared-checkbox"');
+    expect(mapaBandsActions).toContain('>UNICO 5G<');
+    expect(mapaBandsActions).toContain('class="unico-filter-count-badge mono">1<');
+    expect(mapaHtml).not.toContain('Solo declaradas UNICO 5G');
 
     // 4. Casos límite de formatUnicoDistance y matchUnicoDeclaredAntennas
     expect(formatUnicoDistance(0.009)).toBe('9\u00A0m');

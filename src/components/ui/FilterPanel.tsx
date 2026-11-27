@@ -97,7 +97,6 @@ export function FilterPanel({
   onOnlyUnicoDeclaredChange,
   unicoDeclaredCount = 0,
   unicoStatus = 'ready',
-  highlightUnicoDeclared = true,
   activeOperators,
   onToggleOperator,
   onSelectAllOperators,
@@ -419,6 +418,47 @@ export function FilterPanel({
     }
   }
 
+  const unicoCountDisplay =
+    unicoStatus === 'loading'
+      ? '…'
+      : unicoStatus === 'error'
+        ? '—'
+        : formatUnicoInt(unicoDeclaredCount);
+
+  const unicoFilterTitle =
+    unicoStatus === 'loading'
+      ? 'Sincronizando declaraciones UNICO 5G…'
+      : unicoStatus === 'error'
+        ? 'No se pudo cargar el catálogo UNICO 5G'
+        : onlyUnicoDeclared
+          ? `Mostrando solo antenas declaradas UNICO 5G (${formatUnicoInt(unicoDeclaredCount)})`
+          : `Filtrar solo antenas declaradas UNICO 5G (${formatUnicoInt(unicoDeclaredCount)} actuales)`;
+
+  const unicoDeclaredControl = onOnlyUnicoDeclaredChange ? (
+    <label
+      htmlFor="filter-unico-declared-checkbox"
+      className={`bands-exclusive-row bands-exclusive-compact unico-filter-row unico-filter-compact${onlyUnicoDeclared ? ' is-active' : ''}${unicoStatus !== 'ready' ? ' is-disabled' : ''}`}
+      title={unicoFilterTitle}
+    >
+      <input
+        id="filter-unico-declared-checkbox"
+        type="checkbox"
+        className="bands-exclusive-checkbox unico-filter-checkbox"
+        checked={onlyUnicoDeclared}
+        disabled={unicoStatus !== 'ready'}
+        onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
+      />
+      <span className="unico-filter-compact-copy">
+        <span className="bands-exclusive-title unico-filter-compact-title">
+          UNICO 5G
+        </span>
+        <span className="unico-filter-count-badge mono">
+          {unicoCountDisplay}
+        </span>
+      </span>
+    </label>
+  ) : null;
+
   const panelActionButtons = (
     <>
       <button
@@ -429,8 +469,7 @@ export function FilterPanel({
         title="Restablecer todos los filtros"
         aria-label="Restablecer filtros"
       >
-        <RotateCcw size={13} aria-hidden="true" />
-        <span>Reset</span>
+        <RotateCcw size={15} strokeWidth={2.2} aria-hidden="true" />
       </button>
 
       <button
@@ -1002,6 +1041,8 @@ export function FilterPanel({
                 <span className="bands-exclusive-title">Exclusivamente</span>
               </label>
 
+              {unicoDeclaredControl}
+
               <div className="bands-actions-buttons">{panelActionButtons}</div>
             </div>
           </section>
@@ -1009,63 +1050,10 @@ export function FilterPanel({
 
         {(!derived || displayedBands.length === 0) && (
           <section className="panel-section">
-            <div className="bands-actions-buttons bands-actions-fallback">
-              {panelActionButtons}
+            <div className="bands-actions-row bands-actions-fallback">
+              {unicoDeclaredControl}
+              <div className="bands-actions-buttons">{panelActionButtons}</div>
             </div>
-          </section>
-        )}
-
-        {/* Declaración UNICO 5G */}
-        {onOnlyUnicoDeclaredChange && (
-          <section className="panel-section">
-            <div className="field-label">
-              <span className="unico-filter-legend-title">
-                <span
-                  className={`unico-filter-legend-swatch${highlightUnicoDeclared ? '' : ' is-muted'}`}
-                  aria-hidden="true"
-                />
-                <span>UNICO 5G</span>
-              </span>
-              <span className="unico-filter-count-badge mono">
-                {unicoStatus === 'loading'
-                  ? 'Cargando…'
-                  : unicoStatus === 'error'
-                    ? 'No disponible'
-                    : unicoDeclaredCount === 1
-                      ? '1 declarada'
-                      : `${formatUnicoInt(unicoDeclaredCount)} declaradas`}
-              </span>
-            </div>
-
-            <label
-              htmlFor="filter-unico-declared-checkbox"
-              className={`bands-exclusive-row unico-filter-row${onlyUnicoDeclared ? ' is-active' : ''}${unicoStatus !== 'ready' ? ' is-disabled' : ''}`}
-            >
-              <input
-                id="filter-unico-declared-checkbox"
-                type="checkbox"
-                className="bands-exclusive-checkbox unico-filter-checkbox"
-                checked={onlyUnicoDeclared}
-                disabled={unicoStatus !== 'ready'}
-                onChange={(e) => onOnlyUnicoDeclaredChange(e.target.checked)}
-              />
-              <span className="bands-exclusive-copy">
-                <span className="bands-exclusive-title">
-                  Solo declaradas UNICO 5G
-                </span>
-                <span className="bands-exclusive-hint">
-                  {unicoStatus === 'loading'
-                    ? 'Sincronizando declaraciones UNICO 5G…'
-                    : unicoStatus === 'error'
-                      ? 'No se pudo cargar el catálogo UNICO 5G'
-                      : onlyUnicoDeclared
-                        ? 'Mostrando únicamente antenas seleccionadas como declaración UNICO 5G'
-                        : highlightUnicoDeclared
-                          ? 'Resaltadas con aro verde en el mapa (≤ 1.200 m con N28/N28+/N78)'
-                          : 'Resaltado verde desactivado en opciones del mapa (≤ 1.200 m con N28/N28+/N78)'}
-                </span>
-              </span>
-            </label>
           </section>
         )}
       </div>

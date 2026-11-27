@@ -9438,7 +9438,9 @@ describe('Mapa — FilterPanel: fila compacta "Exclusivamente" + Reset permanent
     expect(bandsActionsPart).not.toContain('Por defecto:');
     expect(bandsActionsPart).not.toContain('bands-exclusive-hint');
     expect(bandsActionsPart).toContain('id="map-reset-filters-btn"');
-    expect(bandsActionsPart).toContain('>Reset<');
+    expect(bandsActionsPart).toContain('aria-label="Restablecer filtros"');
+    expect(bandsActionsPart).toContain('lucide-rotate-ccw');
+    expect(bandsActionsPart).not.toContain('>Reset<');
     expect(bandsActionsPart).toContain('id="sidebar-collapse-btn"');
     expect(bandsActionsPart).toContain('class="filter-close-btn"');
     expect(bandsActionsPart).toContain('lucide-x');
@@ -10847,4 +10849,116 @@ describe('Mapa — Selección exclusiva de 1 operadora por defecto y contadores 
     },
   );
 });
+
+describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclusivamente" y botón Reset del mismo tamaño que "X"', () => {
+  it('coloca la caja compacta UNICO 5G (solo título + número actual de declaradas) a la derecha de "Exclusivamente" e iguala el tamaño del botón Reset al de la X', async () => {
+    const sample = createSampleCustomDataset();
+    sample.antenas[0] = { ...sample.antenas[0], bandas: ['700 MHz', '3500 MHz'] };
+    const derived = buildDerivedAntenasStructures(sample);
+
+    const renderPanel = (overrides: Partial<Parameters<typeof FilterPanel>[0]> = {}) =>
+      renderToStaticMarkup(
+        createElement(FilterPanel, {
+          derived,
+          filteredAntenas: derived.dataset.antenas,
+          collapsed: false,
+          mobileOpen: false,
+          onCollapseDesktop: () => {},
+          onCloseMobile: () => {},
+          searchQuery: '',
+          onSearchChange: () => {},
+          selectedComunidad: '',
+          onComunidadChange: () => {},
+          selectedProvince: '',
+          onProvinceChange: () => {},
+          selectedBands: [],
+          onToggleBand: () => {},
+          onClearBands: () => {},
+          exclusiveBands: false,
+          onExclusiveBandsChange: () => {},
+          onlyUnicoDeclared: false,
+          onOnlyUnicoDeclaredChange: () => {},
+          unicoDeclaredCount: 7164,
+          unicoStatus: 'ready',
+          activeOperators: [...OPERATOR_ORDER],
+          onToggleOperator: () => {},
+          onSelectAllOperators: () => {},
+          onClearAllOperators: () => {},
+          hasActiveFilters: false,
+          onResetFilters: () => {},
+          onFlyTo: () => {},
+          ...overrides,
+        }),
+      );
+
+    // 1. Estado por defecto: orden exacto Exclusivamente -> UNICO 5G -> Reset -> X dentro de .bands-actions-row
+    const html = renderPanel();
+    const afterRow = html.split('class="bands-actions-row"')[1] ?? '';
+    const rowHtml = afterRow.split('</section>')[0] ?? '';
+    const afterBandasSection = afterRow.split('</section>')[1] ?? '';
+
+    expect(rowHtml).toContain('id="filter-bands-exclusive-checkbox"');
+    expect(rowHtml).toContain('id="filter-unico-declared-checkbox"');
+    expect(rowHtml).toContain('unico-filter-compact');
+    expect(rowHtml).toContain('>UNICO 5G<');
+    expect(rowHtml).toContain('class="unico-filter-count-badge mono">7.164<');
+    expect(rowHtml).toContain('id="map-reset-filters-btn"');
+    expect(rowHtml).toContain('lucide-rotate-ccw');
+    expect(rowHtml).not.toContain('>Reset<');
+    expect(rowHtml).toContain('id="sidebar-collapse-btn"');
+
+    const idxExcl = rowHtml.indexOf('id="filter-bands-exclusive-checkbox"');
+    const idxUnico = rowHtml.indexOf('id="filter-unico-declared-checkbox"');
+    const idxReset = rowHtml.indexOf('id="map-reset-filters-btn"');
+    const idxClose = rowHtml.indexOf('id="sidebar-collapse-btn"');
+    expect(idxExcl).toBeGreaterThan(-1);
+    expect(idxExcl).toBeLessThan(idxUnico);
+    expect(idxUnico).toBeLessThan(idxReset);
+    expect(idxReset).toBeLessThan(idxClose);
+
+    // Sin sección separada debajo ni descripciones/etiquetas extra dentro de la caja UNICO 5G
+    expect(afterBandasSection).not.toContain('<section');
+    expect(html).not.toContain('Solo declaradas UNICO 5G');
+    expect(html).not.toContain('declaradas<');
+    expect(html).not.toContain('unico-filter-legend-swatch');
+    expect(html).not.toContain('bands-exclusive-hint');
+
+    // 2. Estado activo con conteo dinámico actualizado (p. ej. tras filtrar por operadora/provincia)
+    const activeHtml = renderPanel({
+      onlyUnicoDeclared: true,
+      unicoDeclaredCount: 42,
+      hasActiveFilters: true,
+    });
+    expect(activeHtml).toContain('unico-filter-compact is-active');
+    expect(activeHtml).toContain('class="unico-filter-count-badge mono">42<');
+    expect(activeHtml).toContain('filter-reset-btn has-active-filters');
+
+    // 3. Fallback sin bandas disponibles: mantiene UNICO 5G + Reset + X en la misma fila
+    const fallbackHtml = renderPanel({ derived: null, filteredAntenas: [] });
+    expect(fallbackHtml).toContain('class="bands-actions-row bands-actions-fallback"');
+    expect(fallbackHtml).toContain('id="filter-unico-declared-checkbox"');
+    expect(fallbackHtml).toContain('id="map-reset-filters-btn"');
+    expect(fallbackHtml).toContain('id="sidebar-collapse-btn"');
+
+    // 4. Reglas CSS: Reset y X exactamente del mismo tamaño (34px × 34px) y caja UNICO compacta
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const indexCssSource = readFileSync(
+      new URL('../styles/index.css', import.meta.url),
+      'utf-8',
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-reset-btn\s*\{[^}]*width:\s*34px;[^}]*min-height:\s*34px;[^}]*padding:\s*0;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-close-btn\s*\{[^}]*width:\s*34px;[^}]*min-height:\s*34px;[^}]*padding:\s*0;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.bands-exclusive-row\.unico-filter-compact\s*\{[^}]*flex:\s*1\s+1\s+auto;/s,
+    );
+  });
+});
+
 
