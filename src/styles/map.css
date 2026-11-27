@@ -111,10 +111,10 @@
 
 .map-tools-cluster {
   pointer-events: auto;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   align-items: center;
-  justify-content: flex-end;
   gap: 6px;
   flex: 0 1 auto;
   max-width: 100%;
@@ -125,7 +125,10 @@
   appearance: none;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  width: 100%;
+  min-width: 0;
   height: 32px;
   padding: 0 10px;
   background: var(--map-surface);
@@ -146,6 +149,16 @@
     border-color 0.15s ease,
     color 0.15s ease,
     transform 0.1s ease;
+}
+
+.map-tool-btn > svg {
+  flex-shrink: 0;
+}
+
+.map-tool-btn-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .map-tool-btn:hover:not(:disabled) {
@@ -171,7 +184,6 @@
   background: var(--map-accent-soft);
   border-color: var(--map-accent-border);
   color: var(--map-accent);
-  font-weight: 600;
 }
 
 .map-spin {
@@ -191,6 +203,8 @@
 
 .map-style-switcher-wrap {
   position: relative;
+  width: 100%;
+  min-width: 0;
 }
 
 .map-tool-btn.map-style-switcher-btn {
@@ -199,7 +213,7 @@
 }
 
 .map-style-switcher-btn .map-tool-btn-label {
-  max-width: 112px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1273,7 +1287,7 @@
   }
 
   .map-tool-btn.map-style-switcher-btn {
-    padding: 0 6.5px;
+    padding: 0 6px;
   }
 }
 
@@ -1282,14 +1296,10 @@
     display: none;
   }
 
-  .map-tool-btn {
-    padding: 0 8.5px;
-  }
-
+  .map-tool-btn,
   .map-tool-btn.map-style-switcher-btn {
-    padding: 0 6px;
-    min-width: 26px;
-    justify-content: center;
+    padding: 0 8.5px;
+    gap: 0;
   }
 }
 
@@ -1302,22 +1312,14 @@
 }
 
 @media (max-width: 680px) {
-  .map-tools-cluster {
-    flex-wrap: nowrap;
-  }
-
   .map-tool-btn-label {
     display: none;
   }
 
-  .map-tool-btn {
-    padding: 0 9px;
-  }
-
+  .map-tool-btn,
   .map-tool-btn.map-style-switcher-btn {
-    padding: 0 6px;
-    min-width: 26px;
-    justify-content: center;
+    padding: 0 9px;
+    gap: 0;
   }
 }
 
@@ -1350,13 +1352,10 @@
     gap: 4px;
   }
 
-  .map-tool-btn {
-    padding: 0 7.5px;
-  }
-
+  .map-tool-btn,
   .map-tool-btn.map-style-switcher-btn {
-    padding: 0 6px;
-    min-width: 26px;
+    padding: 0 7.5px;
+    gap: 0;
   }
 }
 
@@ -1365,12 +1364,9 @@
     gap: 4px;
   }
 
-  .map-tool-btn {
-    padding: 0 6.5px;
-  }
-
+  .map-tool-btn,
   .map-tool-btn.map-style-switcher-btn {
-    padding: 0 5.5px;
-    min-width: 25px;
+    padding: 0 6.5px;
+    gap: 0;
   }
 }

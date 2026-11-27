@@ -10136,3 +10136,69 @@ describe('Mapa — Eliminación de tarjetas flotantes en antenas conservando pop
   });
 });
 
+describe('Mapa — Tamaño uniforme en los 4 botones inferiores derechos (GPS, Medir, Mostrar bandas y Capa cartográfica)', () => {
+  it('iguala el ancho y alto de los 4 controles de .map-tools-cluster al de Mostrar bandas tanto en escritorio como en modo compacto/móvil', async () => {
+    const overlaysHtml = renderToStaticMarkup(
+      createElement(MapOverlays, {
+        styleId: 'google-standard',
+        onStyleChange: () => {},
+        onFlyToRegion: () => {},
+        measurePoints: [],
+        onMeasurePointsChange: () => {},
+        measureModeActive: false,
+        onToggleMeasureMode: () => {},
+        lock3dPitch: true,
+        onToggleLock3dPitch: () => {},
+        clusteringLevel: 'max',
+        onClusteringLevelChange: () => {},
+        showBandsOnMap: false,
+        onToggleShowBandsOnMap: () => {},
+      }),
+    );
+
+    expect(overlaysHtml).toContain('id="map-locate-gps-btn"');
+    expect(overlaysHtml).toContain('id="map-toggle-radar-btn"');
+    expect(overlaysHtml).toContain('id="map-toggle-bands-btn"');
+    expect(overlaysHtml).toContain('id="map-style-switcher-btn"');
+
+    const fsSpecifier = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const mapCssSource = readFileSync(
+      new URL('../styles/map.css', import.meta.url),
+      'utf-8',
+    );
+
+    // 1. Contenedor .map-tools-cluster en grid de columnas idénticas y botones centrados al 100% de su celda
+    expect(mapCssSource).toMatch(
+      /\.map-tools-cluster\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-auto-flow:\s*column;[\s\S]*?grid-auto-columns:\s*minmax\(0,\s*1fr\);/,
+    );
+    expect(mapCssSource).toMatch(
+      /\.map-tool-btn\s*\{[\s\S]*?justify-content:\s*center;[\s\S]*?width:\s*100%;[\s\S]*?height:\s*32px;/,
+    );
+    expect(mapCssSource).toMatch(
+      /\.map-style-switcher-wrap\s*\{[\s\S]*?position:\s*relative;[\s\S]*?width:\s*100%;[\s\S]*?min-width:\s*0;/,
+    );
+
+    // 2. El estado activo no altera font-weight para evitar saltos de ancho entre los 4 botones
+    const activeRuleMatch = mapCssSource.match(/\.map-tool-btn\.is-active\s*\{[^}]*\}/);
+    expect(activeRuleMatch).not.toBeNull();
+    expect(activeRuleMatch?.[0]).not.toContain('font-weight');
+
+    // 3. En los breakpoints de solo icono (<= 620px contenedor y <= 680/480/375px viewport),
+    // el selector de capa cartográfica usa el mismo padding que Mostrar bandas sin estrecharse
+    expect(mapCssSource).toMatch(
+      /@container\s+map-canvas\s*\(max-width:\s*620px\)\s*\{[\s\S]*?\.map-tool-btn,\s*\.map-tool-btn\.map-style-switcher-btn\s*\{[\s\S]*?padding:\s*0\s+8\.5px;/,
+    );
+    expect(mapCssSource).toMatch(
+      /@media\s*\(max-width:\s*680px\)\s*\{[\s\S]*?\.map-tool-btn,\s*\.map-tool-btn\.map-style-switcher-btn\s*\{[\s\S]*?padding:\s*0\s+9px;/,
+    );
+    expect(mapCssSource).toMatch(
+      /@media\s*\(max-width:\s*480px\)\s*\{[\s\S]*?\.map-tool-btn,\s*\.map-tool-btn\.map-style-switcher-btn\s*\{[\s\S]*?padding:\s*0\s+7\.5px;/,
+    );
+    expect(mapCssSource).toMatch(
+      /@media\s*\(max-width:\s*375px\)\s*\{[\s\S]*?\.map-tool-btn,\s*\.map-tool-btn\.map-style-switcher-btn\s*\{[\s\S]*?padding:\s*0\s+6\.5px;/,
+    );
+  });
+});
