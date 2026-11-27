@@ -1656,8 +1656,9 @@ describe('UNICO 5G — Agrupación unificada Orange+Avatel, cruce espacial a 1.2
     expect(
       antenasMapSource.indexOf('id: LAYER_UNICO_DECLARED_RING'),
     ).toBeLessThan(antenasMapSource.indexOf('id: LAYER_UNCLUSTERED,'));
-    expect(antenasMapSource).toContain('map-popup-unico-badge');
-    expect(antenasMapSource).toContain('map-popup-unico-tag');
+    // Tarjetas flotantes de hover en antenas eliminadas (la ficha técnica completa se abre al hacer clic)
+    expect(antenasMapSource).not.toContain('function buildPopupHtml');
+    expect(antenasMapSource).not.toContain('Clic para inspeccionar ficha técnica');
 
     // 2. MapOverlays expone el interruptor #map-highlight-unico-option en el desplegable de capas
     expect(mapOverlaysSource).toContain('id="map-highlight-unico-option"');

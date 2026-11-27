@@ -4029,7 +4029,7 @@ describe('Unificación integral de 26MHz / 27MHz en 26 GHz en toda la web', () =
       'buildMeasureGeoJson',
       'evaluateClusterCountLabel',
     ]);
-    expect(antenasMapRawSource).toContain('normalizeAntennaBandsList');
+    expect(antenasMapRawSource).toContain('buildSiteBandCardKey');
 
     const base = createSampleCustomDataset();
     const mmwAntenna = {
@@ -5718,9 +5718,6 @@ describe('Rango de fusión multioperador en mapa y StationDetailDrawer (< 15 m)'
     );
     expect(antenasMapRawSource).not.toMatch(
       /groupColocatedAntennasForMap\(\s*antenas,\s*(?:30|35)\b/,
-    );
-    expect(antenasMapRawSource).toContain(
-      'Emplazamiento compartido (&lt; ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)',
     );
 
     const baseLat = 40.4168;
@@ -7862,7 +7859,7 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
 
     const derived = buildDerivedAntenasStructures(createFull11BandsFixture());
     expect(derived.availableBands).toEqual([
-      { band: 'N28', count: 1 },
+      { band: 'N28', count: 3 },
       { band: 'N28+', count: 2 },
       { band: 'B20', count: 1 },
       { band: 'G9', count: 1 },
@@ -7893,8 +7890,11 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
         exclusiveBands: exclusive,
       }).map((a) => a.gid);
 
-    // Filtros de banda individuales y modo "Exclusivamente"
-    expect(byBand(['N28'])).toEqual(['BAND01']);
+    // Filtros de banda individuales y modo "Exclusivamente" (N28 incluye también N28+, mientras que N28+ es estricto)
+    expect(byBand(['N28'])).toEqual(['BAND01', 'BAND02', 'BAND03']);
+    expect(byBand(['N28'], true)).toEqual(['BAND02']);
+    expect(byBand(['N28', 'B1'], true)).toEqual(['BAND03']);
+    expect(byBand(['N28', 'B20', 'G9', 'B3'], true)).toEqual(['BAND01']);
     expect(byBand(['N28+'])).toEqual(['BAND02', 'BAND03']);
     expect(byBand(['N28+'], true)).toEqual(['BAND02']);
     expect(byBand(['N28+', 'B1'], true)).toEqual(['BAND03']);
@@ -8009,13 +8009,35 @@ describe('Bandas RF en Filtros y Estadísticas (N28, N28+, B20, G9, B3, B1, B38,
 
     ALL_RF_BAND_CODES.forEach((band, idx) => {
       expect(Number.isInteger(countsByBand[band])).toBe(true);
-      expect(countsByBand[band]).toBe(maskBandCounts[idx]);
+      const expectedCount =
+        band === 'N28'
+          ? maskBandCounts[0] + maskBandCounts[1]
+          : maskBandCounts[idx];
+      expect(countsByBand[band]).toBe(expectedCount);
       expect(countsByBand[band]).toBeGreaterThanOrEqual(0);
       expect(countsByBand[band]).toBeLessThanOrEqual(
         derived.dataset.antenas.length,
       );
     });
-    expect(countsByBand['N28']).toBeGreaterThan(0);
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: ['N28'],
+      }).length,
+    ).toBe(countsByBand['N28']);
+    expect(
+      filterAntenas({
+        derived,
+        searchQuery: '',
+        selectedProvince: '',
+        activeOperators: [...OPERATOR_ORDER],
+        selectedBands: ['N28+'],
+      }).length,
+    ).toBe(countsByBand['N28+']);
+    expect(countsByBand['N28']).toBeGreaterThan(countsByBand['N28+']);
     expect(countsByBand['N28+']).toBeGreaterThan(0);
     expect(countsByBand['B7']).toBeGreaterThan(0);
     expect(countsByBand['B7+']).toBeGreaterThan(0);
@@ -10037,6 +10059,26 @@ describe('Mapa — Buscador específico por código de antena en la misma fila +
     );
     expect(indexCssSource).toContain('.search-code-input');
     expect(indexCssSource).toContain('.code-highlight-banner');
+  });
+});
+
+describe('Mapa — Eliminación de tarjetas flotantes en antenas conservando popups de coordenadas oficiales UNICO 5G', () => {
+  it('elimina el popup flotante en hover sobre antenas y mantiene intactos el clic en antenas y los popups de coordenadas oficiales UNICO 5G', () => {
+    // 1. Sin tarjetas flotantes en antenas (ni buildPopupHtml ni texto "Clic para inspeccionar ficha técnica")
+    expect(antenasMapRawSource).not.toContain('function buildPopupHtml');
+    expect(antenasMapRawSource).not.toContain('buildPopupHtml(');
+    expect(antenasMapRawSource).not.toContain(
+      'Clic para inspeccionar ficha técnica',
+    );
+    expect(antenasMapRawSource).not.toContain(
+      'Clic para inspeccionar operadores integrados',
+    );
+
+    // 2. Se mantienen intactas la selección por clic en antenas y los popups de coordenadas oficiales UNICO 5G (hover y fijado al marcar)
+    expect(antenasMapRawSource).toContain('onSelectAntennaRef.current(resolvedStation)');
+    expect(antenasMapRawSource).toContain('openPinnedUnicoPopup(projectsAtCoord, fallbackStation)');
+    expect(antenasMapRawSource).toContain('buildUnicoProjectsPopupHtml(projectsAtCoord');
+    expect(antenasMapRawSource).toContain('antenas-map-popup-interactive');
   });
 });
 

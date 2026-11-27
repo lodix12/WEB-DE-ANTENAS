@@ -2369,6 +2369,7 @@ export function buildDerivedAntenasStructures(
   >();
   const bandCodeMasks = new Uint16Array(antenas.length);
   const bandBitCounts = new Uint32Array(ALL_RF_BAND_CODES.length);
+  let n28FilterCount = 0;
   let anyBandMaskNonZero = false;
   let bandsPopulatedCount = 0;
   const byId = new Map<string, AntennaRecord>();
@@ -2408,6 +2409,9 @@ export function buildDerivedAntenasStructures(
     bandCodeMasks[i] = antMask;
     if (antMask !== 0) {
       anyBandMaskNonZero = true;
+      if ((antMask & (BIT_N28 | BIT_N28_PLUS)) !== 0) {
+        n28FilterCount += 1;
+      }
       let bits = antMask;
       while (bits !== 0) {
         const bitIndex = 31 - Math.clz32(bits & -bits);
@@ -2492,7 +2496,7 @@ export function buildDerivedAntenasStructures(
     bandsPopulatedCount > 0 || anyBandMaskNonZero
       ? ALL_RF_BAND_CODES.map((code, idx) => ({
           band: code,
-          count: bandBitCounts[idx],
+          count: code === 'N28' ? n28FilterCount : bandBitCounts[idx],
         }))
       : [];
 
@@ -3137,9 +3141,30 @@ function matchesRfBandMask(
   if (antMask === 0) {
     return false;
   }
-  return exclusiveBands
-    ? antMask === selectedMask
-    : (antMask & selectedMask) !== 0;
+  const hasN28Filter = (selectedMask & BIT_N28) !== 0;
+  if (!exclusiveBands) {
+    const effectiveSelectedMask = hasN28Filter
+      ? selectedMask | BIT_N28_PLUS
+      : selectedMask;
+    return (antMask & effectiveSelectedMask) !== 0;
+  }
+  if (!hasN28Filter) {
+    return antMask === selectedMask;
+  }
+  const hasN28PlusFilter = (selectedMask & BIT_N28_PLUS) !== 0;
+  if (!hasN28PlusFilter) {
+    // En modo "Exclusivamente" con N28 marcado (sin N28+ aparte), N28+ satisface N28
+    const normalizedAntMask =
+      (antMask & BIT_N28_PLUS) !== 0
+        ? (antMask & ~BIT_N28_PLUS) | BIT_N28
+        : antMask;
+    return normalizedAntMask === selectedMask;
+  }
+  // Con N28 y N28+ marcados juntos en "Exclusivamente", N28+ satisface ambos
+  return (
+    (antMask & BIT_N28_PLUS) !== 0 &&
+    (antMask | BIT_N28) === selectedMask
+  );
 }
 
 export type AntennaBandsFilterTarget =

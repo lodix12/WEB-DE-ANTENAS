@@ -251,17 +251,6 @@ export async function importNovedadesJsonDataset(): Promise<NovedadesDataset> {
  */
 export const STANDARD_NOVEDADES_BANDS: readonly RfBandCode[] = ALL_RF_BAND_CODES;
 
-export const LEGACY_COMMERCIAL_BANDS_MHZ = [
-  '700 MHz',
-  '800 MHz',
-  '900 MHz',
-  '1800 MHz',
-  '2100 MHz',
-  '2600 MHz',
-  '3500 MHz',
-  '26 GHz',
-] as const;
-
 export const NOVEDADES_PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
 
 export type NovedadesPageSize = (typeof NOVEDADES_PAGE_SIZE_OPTIONS)[number];
@@ -739,6 +728,22 @@ export function classifyNovedadFrequencyBandCode(
   return classifyFrequencyRangeToBandCode(freqText);
 }
 
+/**
+ * Evalúa si el código de banda RF clasificado de una fila cumple el filtro seleccionado:
+ * seleccionar `N28` incluye tanto `N28` como `N28+`, mientras que `N28+` y el resto de
+ * bandas requieren coincidencia exacta.
+ */
+export function matchesRfBandFilterCode(
+  inferredCode: RfBandCode | null,
+  targetBand: RfBandCode,
+): boolean {
+  if (!inferredCode) return false;
+  if (targetBand === 'N28') {
+    return inferredCode === 'N28' || inferredCode === 'N28+';
+  }
+  return inferredCode === targetBand;
+}
+
 const RF_BAND_SEARCH_TOKEN_RE =
   /^(n258|n78|b7\+|b7|b38|b1|b3|g9|b20|n28\+|n28)$/;
 
@@ -756,7 +761,10 @@ function matchesExactBandToken(haystack: string, token: string): boolean {
   return false;
 }
 
-function matchesNovedadSearchToken(haystack: string, token: string): boolean {
+export function matchesNovedadSearchToken(
+  haystack: string,
+  token: string,
+): boolean {
   const stripped = token.replace(/^[,;]+|[,;]+$/g, '');
   if (RF_BAND_SEARCH_TOKEN_RE.test(stripped)) {
     return matchesExactBandToken(haystack, stripped);
@@ -900,7 +908,7 @@ export function filterNovedades({
     if (activeRfBand) {
       if (row.tipo !== 'frecuencia') continue;
       const inferredCode = classifyNovedadFrequencyBandCode(row.frecuencia);
-      if (inferredCode !== activeRfBand) continue;
+      if (!matchesRfBandFilterCode(inferredCode, activeRfBand)) continue;
     } else if (activeLegacyBand) {
       if (row.tipo !== 'frecuencia') continue;
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia);

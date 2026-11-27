@@ -524,11 +524,11 @@ describe('Filtro de bandas en Novedades con las mismas 11 opciones que el Mapa',
     expect(selectMatch?.[1]).not.toContain('26 GHz');
   });
 
-  it('filtra estrictamente cada una de las 11 bandas RF separando N28/N28+ y B38/B7/B7+ igual que el Mapa', async () => {
+  it('filtra cada una de las 11 bandas RF igual que el Mapa (N28 incluye N28+; N28+ y B38/B7/B7+ estrictas)', async () => {
     const rows = createAll11BandsNovedadesRows();
 
     const expectedByBand: Record<(typeof ALL_RF_BAND_CODES)[number], string[]> = {
-      N28: ['r-n28'],
+      N28: ['r-n28', 'r-n28-plus'],
       'N28+': ['r-n28-plus'],
       B20: ['r-b20'],
       G9: ['r-g9'],
@@ -569,7 +569,7 @@ describe('Filtro de bandas en Novedades con las mismas 11 opciones que el Mapa',
     expect(bySearch('B7+')).toEqual(['r-b7-plus']);
     expect(bySearch('N258')).toEqual(['r-n258']);
 
-    // Renderizado SSR con banda con signo '+' (N28+ y B7+) desde URL
+    // Renderizado SSR: N28 incluye tanto 1001 (N28) como 1002 (N28+); N28+ solo 1002; B7+ solo 1009
     const dataset: NovedadesDataset = {
       updatedAt: '2026-11-26T10:05:00Z',
       scanId: 'scan-11-bands',
@@ -579,6 +579,13 @@ describe('Filtro de bandas en Novedades con las mismas 11 opciones que el Mapa',
       frecuenciasNuevas: 11,
       novedades: rows,
     };
+
+    const n28Url = `/novedades${defaultStringifySearch({ banda: 'N28' })}`;
+    const n28Html = await renderNovedadesAtUrl(n28Url, dataset);
+    expect(n28Html).toMatch(/<option value="N28" selected="">N28<\/option>/);
+    expect(n28Html).toContain('1001');
+    expect(n28Html).toContain('1002');
+    expect(n28Html).not.toContain('1003');
 
     const n28PlusUrl = `/novedades${defaultStringifySearch({ banda: 'N28+' })}`;
     const n28PlusHtml = await renderNovedadesAtUrl(n28PlusUrl, dataset);
@@ -594,7 +601,7 @@ describe('Filtro de bandas en Novedades con las mismas 11 opciones que el Mapa',
     expect(b7PlusHtml).not.toContain('1007');
   });
 
-  it('clasifica el 100 % de las frecuencias reales de public/data/novedades.json en los 11 códigos RF del Mapa y mantiene intacto Eliminaciones', async () => {
+  it('clasifica el 100 % de las frecuencias reales de public/data/novedades.json en los 11 códigos RF del Mapa y comparte las 11 bandas con Eliminaciones', async () => {
     const fsSpecifier = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsSpecifier)) as {
       readFileSync: (path: URL, encoding: string) => string;
@@ -617,12 +624,15 @@ describe('Filtro de bandas en Novedades con las mismas 11 opciones que el Mapa',
     }
     expect(freqCount).toBeGreaterThan(0);
 
-    // Normalizador de Novedades rechaza valores inválidos y mantiene Eliminaciones independiente
+    // Normalizador de Novedades rechaza valores inválidos y Eliminaciones comparte exactamente las mismas 11 bandas RF
     expect(normalizeNovedadesBandFilter('9999 MHz')).toBeNull();
     expect(normalizeNovedadesBandFilter('1500 MHz')).toBeNull();
-    expect(STANDARD_ELIMINACIONES_BANDS).toContain('700 MHz');
+    expect(STANDARD_ELIMINACIONES_BANDS).toEqual(ALL_RF_BAND_CODES);
+    expect(validateEliminacionesSearch({ banda: 'N28+' })).toEqual({
+      banda: 'N28+',
+    });
     expect(validateEliminacionesSearch({ banda: '700 MHz' })).toEqual({
-      banda: '700 MHz',
+      banda: 'N28',
     });
   });
 });

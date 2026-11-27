@@ -6,6 +6,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  defaultStringifySearch,
 } from '@tanstack/react-router';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -20,17 +21,20 @@ import type {
 } from '../types/antena';
 import { EliminacionesView } from '../views/EliminacionesView';
 import {
+  ALL_RF_BAND_CODES,
   buildDerivedAntenasStructures,
   mergeLiveDeltaIntoAntenasDataset,
   resolveLiveSelectedAntenna,
 } from './useAntenasData';
 import {
+  STANDARD_ELIMINACIONES_BANDS,
   computeLatestScanEliminacionesCounts,
   filterEliminaciones,
   isLatestScanEliminacion,
   mergeLiveDeltaIntoEliminacionesDataset,
   orderEliminacionesGroupedByRemovedAntenna,
   parseCustomEliminacionesJson,
+  validateEliminacionesSearch,
 } from './useEliminacionesData';
 import { validateNovedadesSearch } from './useNovedadesData';
 import {
@@ -1023,6 +1027,140 @@ describe('Eliminaciones — Renderizado SSR de EliminacionesView y AppHeader', (
     expect(liveMovistar?.id).toBe(oldMovistar.id);
     expect(liveMovistar?.bandas).toEqual(['800 MHz']);
     expect(liveMovistar?.frecuencias).toEqual(['852.00 - 862.00']);
+  });
+
+  it('expone en #eliminaciones-band-filter las mismas 11 bandas RF que Mapa y Novedades (con N28 incluyendo N28+)', async () => {
+    expect(STANDARD_ELIMINACIONES_BANDS).toEqual(ALL_RF_BAND_CODES);
+
+    const cases: Array<{ id: string; codigo: string; freq: string }> = [
+      { id: 'e-n28', codigo: '2001', freq: '758.00 - 768.00 MHz' },
+      { id: 'e-n28-plus', codigo: '2002', freq: '758.00 - 788.00 MHz' },
+      { id: 'e-b20', codigo: '2003', freq: '852.00 - 862.00 MHz' },
+      { id: 'e-g9', codigo: '2004', freq: '935.10 - 949.90 MHz' },
+      { id: 'e-b3', codigo: '2005', freq: '1855.10 - 1879.90 MHz' },
+      { id: 'e-b1', codigo: '2006', freq: '2120.00 - 2140.00 MHz' },
+      { id: 'e-b38', codigo: '2007', freq: '2575.00 - 2595.00 MHz' },
+      { id: 'e-b7', codigo: '2008', freq: '2620.00 - 2640.00 MHz' },
+      { id: 'e-b7-plus', codigo: '2009', freq: '2680.00 - 2690.00 MHz' },
+      { id: 'e-n78', codigo: '2010', freq: '3460.00 - 3600.00 MHz' },
+      { id: 'e-n258', codigo: '2011', freq: '25.70 - 26.70 MHz' },
+    ];
+
+    const rows: EliminacionRecord[] = cases.map((item, idx) =>
+      makeEliminacion({
+        id: item.id,
+        tipo: 'frecuencia',
+        op: 'vodafone',
+        opRaw: 'VODAFONE ESPAÑA, S.A.U.',
+        codigo: item.codigo,
+        antennaId: `VODAFONE ESPAÑA, S.A.U. - ${item.codigo}`,
+        codigoBanda: `DEL-${idx + 1}`,
+        frecuencia: item.freq,
+        ubicacion: 'SEVILLA',
+        prov: 'SEVILLA',
+        scanId: 'scan-elim-11',
+        scannedAt: `2026-11-26T10:00:${String(10 + idx).padStart(2, '0')}Z`,
+        fecha: `26/11/2026 11:00:${String(10 + idx).padStart(2, '0')}`,
+      }),
+    );
+
+    const expectedByBand: Record<(typeof ALL_RF_BAND_CODES)[number], string[]> = {
+      N28: ['e-n28', 'e-n28-plus'],
+      'N28+': ['e-n28-plus'],
+      B20: ['e-b20'],
+      G9: ['e-g9'],
+      B3: ['e-b3'],
+      B1: ['e-b1'],
+      B38: ['e-b38'],
+      B7: ['e-b7'],
+      'B7+': ['e-b7-plus'],
+      N78: ['e-n78'],
+      N258: ['e-n258'],
+    };
+
+    for (const bandCode of ALL_RF_BAND_CODES) {
+      const filtered = filterEliminaciones({
+        eliminaciones: rows,
+        tipoFilter: 'all',
+        operatorFilter: 'all',
+        bandFilter: bandCode,
+        searchQuery: '',
+      });
+      expect(filtered.map((r) => r.id)).toEqual(expectedByBand[bandCode]);
+    }
+
+    const renderElimAtUrl = async (initialEntry: string) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(['eliminaciones-dataset'], {
+        updatedAt: '2026-11-26T10:05:00Z',
+        scanId: 'scan-elim-11',
+        previousScanAt: '2026-11-25T10:05:00Z',
+        isBaselineScan: false,
+        total: rows.length,
+        antenasEliminadas: 0,
+        frecuenciasEliminadas: rows.length,
+        eliminaciones: rows,
+      });
+      const testRoot = createRootRoute({
+        component: () => createElement(WorkspaceProvider, null, createElement(Outlet)),
+      });
+      const testMap = createRoute({
+        getParentRoute: () => testRoot,
+        path: '/',
+        component: () => createElement('div', null, 'Mapa'),
+      });
+      const testElim = createRoute({
+        getParentRoute: () => testRoot,
+        path: '/eliminaciones',
+        validateSearch: validateEliminacionesSearch,
+        component: EliminacionesView,
+      });
+      const testRouter = createRouter({
+        routeTree: testRoot.addChildren([testMap, testElim]),
+        history: createMemoryHistory({ initialEntries: [initialEntry] }),
+      });
+      await testRouter.load();
+      return renderToStaticMarkup(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(RouterProvider, { router: testRouter }),
+        ),
+      );
+    };
+
+    const defaultHtml = await renderElimAtUrl('/eliminaciones');
+    const selectMatch = defaultHtml.match(
+      /<select[^>]*id="eliminaciones-band-filter"[^>]*>([\s\S]*?)<\/select>/,
+    );
+    expect(selectMatch).not.toBeNull();
+    const options = Array.from(
+      (selectMatch?.[1] ?? '').matchAll(
+        /<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g,
+      ),
+      (m) => ({ value: m[1], label: m[2] }),
+    );
+    expect(options).toEqual([
+      { value: 'all', label: 'Todas las bandas' },
+      ...ALL_RF_BAND_CODES.map((code) => ({ value: code, label: code })),
+    ]);
+
+    const n28Html = await renderElimAtUrl(
+      `/eliminaciones${defaultStringifySearch({ banda: 'N28' })}`,
+    );
+    expect(n28Html).toMatch(/<option value="N28" selected="">N28<\/option>/);
+    expect(n28Html).toContain('2001');
+    expect(n28Html).toContain('2002');
+    expect(n28Html).not.toContain('2003');
+
+    const n28PlusHtml = await renderElimAtUrl(
+      `/eliminaciones${defaultStringifySearch({ banda: 'N28+' })}`,
+    );
+    expect(n28PlusHtml).toMatch(/<option value="N28\+" selected="">N28\+<\/option>/);
+    expect(n28PlusHtml).toContain('2002');
+    expect(n28PlusHtml).not.toContain('2001');
   });
 });
 

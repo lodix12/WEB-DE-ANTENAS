@@ -9,16 +9,23 @@ import {
   type OperatorKey,
 } from '../types/antena';
 import { normalizeSearchText } from '../utils/export';
-import { getCanonicalSpanishProvince } from './useAntenasData';
 import {
-  LEGACY_COMMERCIAL_BANDS_MHZ,
+  ALL_RF_BAND_CODES,
+  getCanonicalSpanishProvince,
+  type RfBandCode,
+} from './useAntenasData';
+import {
   classifyFrequencyBandMhz,
+  classifyNovedadFrequencyBandCode,
   createTableSearchHelpers,
   extractScanDayDmy,
   formatScanDateTimeDmyHms,
   getNovedadAntennaGroupKey,
   getNovedadScanBatchKey,
   getNovedadesOperatorLabel,
+  matchesNovedadSearchToken,
+  matchesRfBandFilterCode,
+  normalizeNovedadesBandFilter,
   orderNovedadesGroupedByNewAntenna,
   resolveNovedadComunidad,
   resolveNovedadProvince,
@@ -32,16 +39,20 @@ import {
 
 const VALID_ELIMINACION_TIPOS = new Set<string>(['antena', 'frecuencia']);
 
-export const STANDARD_ELIMINACIONES_BANDS = LEGACY_COMMERCIAL_BANDS_MHZ;
+/**
+ * Opciones canónicas del filtro de bandas en la sección de Eliminaciones:
+ * idénticas en nombres, orden y lógica (`N28` incluye `N28+`) a Mapa y Novedades.
+ */
+export const STANDARD_ELIMINACIONES_BANDS: readonly RfBandCode[] =
+  ALL_RF_BAND_CODES;
 
-const VALID_STANDARD_ELIMINACIONES_BANDS = new Set<string>(
-  STANDARD_ELIMINACIONES_BANDS,
+const VALID_ELIMINACIONES_RF_BANDS = new Map<string, RfBandCode>(
+  ALL_RF_BAND_CODES.map((code) => [code.toUpperCase(), code]),
 );
 
-const eliminacionesSearchHelpers = createTableSearchHelpers((rawBand) => {
-  const trimmed = rawBand.trim();
-  return VALID_STANDARD_ELIMINACIONES_BANDS.has(trimmed) ? trimmed : null;
-});
+const eliminacionesSearchHelpers = createTableSearchHelpers(
+  normalizeNovedadesBandFilter,
+);
 
 export function validateEliminacionesSearch(
   raw: Record<string, unknown>,
@@ -271,7 +282,15 @@ export function filterEliminaciones({
   const tokens = normalizedQuery
     ? normalizedQuery.split(/\s+/).filter(Boolean)
     : [];
-  const activeBand = bandFilter && bandFilter !== 'all' ? bandFilter : '';
+  const rawActiveBand =
+    bandFilter && bandFilter !== 'all' ? bandFilter.trim() : '';
+  const activeRfBand = rawActiveBand
+    ? (VALID_ELIMINACIONES_RF_BANDS.get(
+        rawActiveBand.replace(/\s*\+\s*/g, '+').toUpperCase(),
+      ) ?? null)
+    : null;
+  const activeLegacyBand =
+    rawActiveBand && !activeRfBand ? rawActiveBand : '';
   const activeComunidad =
     comunidadFilter && comunidadFilter !== 'all'
       ? normalizeSearchText(comunidadFilter)
@@ -291,7 +310,7 @@ export function filterEliminaciones({
   if (
     tipoFilter === 'all' &&
     operatorFilter === 'all' &&
-    !activeBand &&
+    !rawActiveBand &&
     !activeComunidad &&
     !targetProv &&
     !activeLocation &&
@@ -308,10 +327,14 @@ export function filterEliminaciones({
     if (tipoFilter !== 'all' && row.tipo !== tipoFilter) continue;
     if (operatorFilter !== 'all' && rowOp !== operatorFilter) continue;
 
-    if (activeBand) {
+    if (activeRfBand) {
+      if (row.tipo !== 'frecuencia') continue;
+      const inferredCode = classifyNovedadFrequencyBandCode(row.frecuencia);
+      if (!matchesRfBandFilterCode(inferredCode, activeRfBand)) continue;
+    } else if (activeLegacyBand) {
       if (row.tipo !== 'frecuencia') continue;
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia);
-      if (inferredBand !== activeBand) continue;
+      if (inferredBand !== activeLegacyBand) continue;
     }
 
     if (activeComunidad) {
@@ -359,14 +382,18 @@ export function filterEliminaciones({
       const inferredBand = classifyFrequencyBandMhz(row.frecuencia) ?? '';
       const inferredBandSearch =
         inferredBand === '26 GHz' ? '26 GHz 26GHz' : inferredBand;
+      const inferredRfBand =
+        row.tipo === 'frecuencia'
+          ? (classifyNovedadFrequencyBandCode(row.frecuencia) ?? '')
+          : '';
       const resolvedProv = resolveNovedadProvince(row);
       const resolvedComunidad = resolveNovedadComunidad(row);
       const haystack = normalizeSearchText(
-        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${rowOp} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
+        `${tipoLabel} ${opLabel} ${meta.name} ${meta.shortName} ${row.opRaw} ${rowOp} ${row.codigo} ${row.codigoBanda} ${row.frecuencia} ${inferredBandSearch} ${inferredRfBand} ${row.ubicacion} ${row.prov ?? ''} ${resolvedProv} ${resolvedComunidad} ${formattedDate}`,
       );
       let matchesAll = true;
       for (let t = 0; t < tokens.length; t++) {
-        if (!haystack.includes(tokens[t])) {
+        if (!matchesNovedadSearchToken(haystack, tokens[t])) {
           matchesAll = false;
           break;
         }

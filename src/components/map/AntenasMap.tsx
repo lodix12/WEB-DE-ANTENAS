@@ -16,13 +16,7 @@ import {
   type AntennaRecord,
   type OperatorKey,
 } from '../../types/antena';
-import { normalizeAntennaBandsList } from '../../hooks/useAntenasData';
-import {
-  formatUnicoDeclaredBitsList,
-  formatUnicoDistance,
-  formatUnicoFasesLabel,
-  isUnicoOperatorKey,
-} from '../../hooks/useUnico5gData';
+import { isUnicoOperatorKey } from '../../hooks/useUnico5gData';
 import {
   DEFAULT_CLUSTERING_LEVEL,
   MAX_MEASURE_POINTS,
@@ -34,7 +28,6 @@ import {
 import {
   UNICO_OPERATOR_ORDER,
   type UnicoAntennaRecord,
-  type UnicoDeclaredRealAntennaMatch,
   type UnicoFase,
   type UnicoOperatorKey,
 } from '../../types/unico5g';
@@ -187,15 +180,6 @@ function formatMeasureDistanceLabel(km: number): string {
     return `${Math.round(meters).toLocaleString('es-ES')} m`;
   }
   return formatDistance(km);
-}
-
-function escapeHtml(raw: string): string {
-  return raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function isValidOperatorKey(value: unknown): value is OperatorKey {
@@ -842,175 +826,6 @@ function syncClusteringVisualLayers(
   }
 }
 
-function resolveSiteUnicoMatch(
-  site: MapSiteEntry | undefined,
-  primaryAnt: AntennaRecord | undefined,
-  unicoDeclaredById:
-    | ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>
-    | undefined,
-): UnicoDeclaredRealAntennaMatch | undefined {
-  if (!unicoDeclaredById || unicoDeclaredById.size === 0) {
-    return undefined;
-  }
-  if (primaryAnt) {
-    const direct = unicoDeclaredById.get(primaryAnt.id);
-    if (direct) return direct;
-  }
-  if (site) {
-    for (let i = 0; i < site.members.length; i++) {
-      const m = unicoDeclaredById.get(site.members[i].id);
-      if (m) return m;
-    }
-    for (let i = 0; i < site.memberIds.length; i++) {
-      const m = unicoDeclaredById.get(site.memberIds[i]);
-      if (m) return m;
-    }
-  }
-  return undefined;
-}
-
-function buildPopupHtml(
-  props: AntennaFeatureProperties,
-  site?: MapSiteEntry,
-  primaryAnt?: AntennaRecord,
-  unicoDeclaredById?: ReadonlyMap<string, UnicoDeclaredRealAntennaMatch>,
-): string {
-  const locationLine = [props.mun, props.prov].filter(Boolean).join(', ');
-  const safeLocation = escapeHtml(locationLine || 'Ubicación registrada');
-  const safeDir = escapeHtml(props.dir || 'Sin dirección postal detallada');
-  const popupBands = primaryAnt?.bandas
-    ? normalizeAntennaBandsList(primaryAnt.bandas)
-    : [];
-  const bandsHtml =
-    popupBands.length > 0
-      ? `<div class="map-popup-bands">${popupBands
-          .map(
-            (band) =>
-              `<span class="map-popup-band-chip">${escapeHtml(band)}</span>`,
-          )
-          .join('')}</div>`
-      : '';
-
-  if (props.isMultiOp) {
-    const declaredMultiSummaries: string[] = [];
-    const pillsHtml = site
-      ? site.members
-          .map((member) => {
-            const mMeta = OPERATOR_META[member.op] ?? OPERATOR_META.otros;
-            const safeShort = escapeHtml(mMeta.shortName);
-            const safeMemberGid = escapeHtml(member.gid || 'S/D');
-            const memberUnico = unicoDeclaredById?.get(member.id);
-            if (memberUnico) {
-              const faseLabel = formatUnicoFasesLabel(memberUnico.fases);
-              const distLabel = formatUnicoDistance(
-                memberUnico.minDistanceKm,
-              );
-              declaredMultiSummaries.push(
-                `${mMeta.shortName} (${faseLabel} · ${distLabel})`,
-              );
-            }
-            const unicoTag = memberUnico
-              ? `<span class="map-popup-unico-tag">UNICO</span>`
-              : '';
-            return `
-              <span class="map-popup-multi-pill${memberUnico ? ' is-unico' : ''}">
-                <span class="map-popup-op-dot" style="background-color:${mMeta.color}"></span>
-                <span>${safeShort}</span>
-                <span class="map-popup-multi-gid">#${safeMemberGid}</span>
-                ${unicoTag}
-              </span>
-            `;
-          })
-          .join('')
-      : parseOperatorsFromIconKey(props.iconKey)
-          .map((op) => {
-            const mMeta = OPERATOR_META[op] ?? OPERATOR_META.otros;
-            return `
-              <span class="map-popup-multi-pill">
-                <span class="map-popup-op-dot" style="background-color:${mMeta.color}"></span>
-                <span>${escapeHtml(mMeta.shortName)}</span>
-              </span>
-            `;
-          })
-          .join('');
-
-    const opCount = site
-      ? site.operators.length
-      : Math.max(2, parseOperatorsFromIconKey(props.iconKey).length);
-
-    const unicoBannerHtml =
-      declaredMultiSummaries.length > 0
-        ? `<div class="map-popup-unico-badge">
-            <span class="map-popup-unico-dot"></span>
-            <span>Declaración UNICO 5G · ${escapeHtml(declaredMultiSummaries.join(' · '))}</span>
-          </div>`
-        : props.isUnicoDeclared
-          ? `<div class="map-popup-unico-badge">
-              <span class="map-popup-unico-dot"></span>
-              <span>Declaración UNICO 5G</span>
-            </div>`
-          : '';
-
-    return `
-      <div class="map-popup-head">
-        <span class="map-popup-shared-badge">Emplazamiento compartido (&lt; ${MULTI_OPERATOR_SITE_MAX_DISTANCE_METERS} m)</span>
-        <span class="map-popup-gid">${opCount} oper.</span>
-      </div>
-      <div class="map-popup-multi-list">${pillsHtml}</div>
-      ${unicoBannerHtml}
-      <div class="map-popup-loc">${safeLocation}</div>
-      <div class="map-popup-dir">${safeDir}</div>
-      ${bandsHtml}
-      <div class="map-popup-hint">Clic para inspeccionar operadores integrados</div>
-    `;
-  }
-
-  const opMeta = OPERATOR_META[props.op] ?? OPERATOR_META.otros;
-  const safeOpName = escapeHtml(opMeta.shortName);
-  const safeGid = escapeHtml(props.gid || 'S/D');
-  const singleUnicoMatch = resolveSiteUnicoMatch(
-    site,
-    primaryAnt,
-    unicoDeclaredById,
-  );
-  const singleUnicoHtml = singleUnicoMatch
-    ? (() => {
-        const faseLabel = formatUnicoFasesLabel(singleUnicoMatch.fases);
-        const distLabel = formatUnicoDistance(
-          singleUnicoMatch.minDistanceKm,
-        );
-        const bitsList = formatUnicoDeclaredBitsList(
-          singleUnicoMatch.declaredBits,
-        );
-        const bitsPart = bitsList.length > 0 ? ` · ${bitsList.join('/')}` : '';
-        return `<div class="map-popup-unico-badge">
-          <span class="map-popup-unico-dot"></span>
-          <span>Declaración UNICO 5G · ${escapeHtml(faseLabel)}${escapeHtml(bitsPart)} · ${escapeHtml(distLabel)}</span>
-        </div>`;
-      })()
-    : props.isUnicoDeclared
-      ? `<div class="map-popup-unico-badge">
-          <span class="map-popup-unico-dot"></span>
-          <span>Declaración UNICO 5G</span>
-        </div>`
-      : '';
-
-  return `
-    <div class="map-popup-head">
-      <span class="map-popup-op-pill">
-        <span class="map-popup-op-dot" style="background-color:${opMeta.color}"></span>
-        ${safeOpName}
-      </span>
-      <span class="map-popup-gid">ID ${safeGid}</span>
-    </div>
-    ${singleUnicoHtml}
-    <div class="map-popup-loc">${safeLocation}</div>
-    <div class="map-popup-dir">${safeDir}</div>
-    ${bandsHtml}
-    <div class="map-popup-hint">Clic para inspeccionar ficha técnica</div>
-  `;
-}
-
 const EMPTY_MEASURE_POINTS: MeasurePoint[] = [];
 const EMPTY_UNICO_PROJECTS: readonly UnicoAntennaRecord[] = [];
 const EMPTY_UNICO_PROJECTS_GEOJSON: FeatureCollection<
@@ -1365,7 +1180,6 @@ export function AntenasMap(props: AntenasMapProps) {
   const antenasByIdRef = useRef(antenasById);
   const sitesByIdRef = useRef(sitesById);
   const multiIconKeysRef = useRef(multiIconKeys);
-  const unicoDeclaredByIdRef = useRef(unicoDeclaredById);
   const measureGeoJsonRef = useRef(measureGeoJson);
   const selectedAntennaRef = useRef(selectedAntenna);
   const onSelectAntennaRef = useRef(onSelectAntenna);
@@ -1390,11 +1204,6 @@ export function AntenasMap(props: AntenasMapProps) {
   useEffect(() => {
     codeHighlightGeoJsonRef.current = codeHighlightGeoJson;
   }, [codeHighlightGeoJson]);
-
-  useEffect(() => {
-    unicoDeclaredByIdRef.current = unicoDeclaredById;
-    hoveredIdRef.current = null;
-  }, [unicoDeclaredById]);
 
   useEffect(() => {
     measureGeoJsonRef.current = measureGeoJson;
@@ -2846,7 +2655,6 @@ export function AntenasMap(props: AntenasMapProps) {
         return;
       }
 
-      const topHit = topNonUnicoHit ?? hits[0];
       map.getCanvas().style.cursor = measureModeActiveRef.current
         ? isCrosshairActive
           ? 'crosshair'
@@ -2893,60 +2701,7 @@ export function AntenasMap(props: AntenasMapProps) {
         }
       }
 
-      if (
-        (topHit.layer.id === LAYER_UNCLUSTERED_BANDS ||
-          topHit.layer.id === LAYER_UNCLUSTERED_MULTI ||
-          topHit.layer.id === LAYER_UNCLUSTERED ||
-          topHit.layer.id === LAYER_UNICO_DECLARED_RING) &&
-        topHit.geometry.type === 'Point'
-      ) {
-        const raw = topHit.properties as Record<string, unknown>;
-        const stationId = String(raw.id ?? '');
-        const [lon, lat] = topHit.geometry.coordinates;
-
-        if (hoveredIdRef.current !== stationId) {
-          hoveredIdRef.current = stationId;
-          const matchedSite = sitesByIdRef.current.get(stationId);
-          const popupProps: AntennaFeatureProperties = {
-            idx: Number(raw.idx ?? 0),
-            id: stationId,
-            primaryId: String(raw.primaryId ?? stationId),
-            gid: String(raw.gid ?? ''),
-            op: isValidOperatorKey(raw.op) ? raw.op : 'otros',
-            opRaw: String(raw.opRaw ?? ''),
-            dir: String(raw.dir ?? ''),
-            mun: String(raw.mun ?? ''),
-            prov: String(raw.prov ?? ''),
-            lat: Number(raw.lat ?? lat),
-            lon: Number(raw.lon ?? lon),
-            isMultiOp:
-              raw.isMultiOp === true ||
-              raw.isMultiOp === 'true' ||
-              Boolean(matchedSite?.isMultiOperator),
-            isUnicoDeclared:
-              raw.isUnicoDeclared === true || raw.isUnicoDeclared === 'true',
-            iconKey: String(raw.iconKey ?? matchedSite?.iconKey ?? ''),
-            bandCardKey: String(raw.bandCardKey ?? ''),
-            operatorsCsv: String(raw.operatorsCsv ?? ''),
-            stationCount: Number(raw.stationCount ?? 1),
-            memberIdsPipe: String(raw.memberIdsPipe ?? ''),
-          };
-          const primaryAnt =
-            matchedSite?.primary ??
-            antenasByIdRef.current.get(popupProps.primaryId);
-          popup.setOffset(12);
-          popup.setHTML(
-            buildPopupHtml(
-              popupProps,
-              matchedSite,
-              primaryAnt,
-              unicoDeclaredByIdRef.current,
-            ),
-          );
-        }
-
-        popup.setLngLat([lon, lat]).addTo(map);
-      } else if (hoveredIdRef.current !== null) {
+      if (hoveredIdRef.current !== null) {
         hoveredIdRef.current = null;
         popup.remove();
       }
