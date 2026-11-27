@@ -1211,8 +1211,8 @@ code {
 .operator-pill-count {
   font-family: var(--font-mono);
   font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
+  font-weight: 700;
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -1277,8 +1277,8 @@ code {
 
 .band-filter-pill-count {
   font-size: 10.5px;
-  font-weight: 500;
-  color: var(--text-muted);
+  font-weight: 700;
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -1857,6 +1857,14 @@ code {
 .filter-sidebar .sidebar-scroll {
   padding-left: 12px;
   padding-right: 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.filter-sidebar .sidebar-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .panel-section {

@@ -10980,6 +10980,18 @@ describe('Mapa — FilterPanel: filtro UNICO 5G compacto a la derecha de "Exclus
     expect(indexCssSource).toMatch(
       /\.bands-exclusive-row\.bands-exclusive-compact\s+\.bands-exclusive-checkbox\s*\{[^}]*margin:\s*0;/s,
     );
+    expect(indexCssSource).toMatch(
+      /\.filter-sidebar\s+\.sidebar-scroll\s*\{[^}]*scrollbar-width:\s*none;[^}]*-ms-overflow-style:\s*none;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.filter-sidebar\s+\.sidebar-scroll::-webkit-scrollbar\s*\{[^}]*display:\s*none;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.operator-pill-count\s*\{[^}]*font-weight:\s*700;/s,
+    );
+    expect(indexCssSource).toMatch(
+      /\.band-filter-pill-count\s*\{[^}]*font-weight:\s*700;/s,
+    );
   });
 });
 
