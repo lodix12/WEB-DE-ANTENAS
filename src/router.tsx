@@ -5,19 +5,22 @@ import {
   createRouter,
 } from '@tanstack/react-router';
 import { NotFoundView, RootLayout } from './components/ui/RootLayout';
+import { validateCnmcSearch } from './hooks/useCnmcData';
 import { validateEliminacionesSearch } from './hooks/useEliminacionesData';
 import {
   validateNovedadesSearch,
   type NovedadesRouteSearch,
 } from './hooks/useNovedadesData';
 import { validateUnico5gSearch } from './hooks/useUnico5gData';
+import type { CnmcRouteSearch } from './types/cnmc';
 import type { UnicoRouteSearch } from './types/unico5g';
+import { CnmcView } from './views/CnmcView';
 import { EliminacionesView } from './views/EliminacionesView';
 import { MapaView } from './views/MapaView';
 import { NovedadesView } from './views/NovedadesView';
 import { Unico5gView } from './views/Unico5gView';
 
-export type { NovedadesRouteSearch, UnicoRouteSearch };
+export type { CnmcRouteSearch, NovedadesRouteSearch, UnicoRouteSearch };
 
 export interface MapaRouteSearch {
   gid?: string;
@@ -105,11 +108,19 @@ const unico5gRoute = createRoute({
   component: Unico5gView,
 });
 
+const cnmcRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/cnmc',
+  validateSearch: validateCnmcSearch,
+  component: CnmcView,
+});
+
 const routeTree = rootRoute.addChildren([
   mapaRoute,
   novedadesRoute,
   eliminacionesRoute,
   unico5gRoute,
+  cnmcRoute,
 ]);
 
 export const router = createRouter({

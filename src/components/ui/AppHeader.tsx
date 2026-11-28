@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from '@tanstack/react-router';
 import {
+  BarChart3,
   Download,
   LayoutGrid,
   Map as MapIcon,
@@ -13,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAntenasData } from '../../hooks/useAntenasData';
+import { CNMC_ANNUAL_QUERY_KEY } from '../../hooks/useCnmcData';
 import {
   computeLatestScanEliminacionesCounts,
   useEliminacionesData,
@@ -24,12 +27,15 @@ import {
 import { usePwaInstall } from '../../hooks/usePwaInstall';
 import { formatUnicoInt, useUnico5gData } from '../../hooks/useUnico5gData';
 import { useWorkspace } from '../../hooks/useWorkspace';
+import type { CnmcDatasetPayload } from '../../types/cnmc';
+import { readCnmcCachedPeriodSummary } from '../../utils/cnmcApi';
 import {
   formatDateTimeEs,
   formatRelativeDateEs,
 } from '../../utils/export';
 
 export function AppHeader() {
+  const queryClient = useQueryClient();
   const { derived, isLoading } = useAntenasData();
   const { data: novedadesData } = useNovedadesData();
   const { data: eliminacionesData } = useEliminacionesData();
@@ -82,6 +88,19 @@ export function AppHeader() {
     computeLatestScanEliminacionesCounts(eliminacionesData);
   const eliminacionesCount = latestEliminacionesCounts.total;
   const unicoCount = unicoDataset?.total ?? 0;
+  const cachedCnmcQuery = queryClient.getQueryData<CnmcDatasetPayload>(
+    CNMC_ANNUAL_QUERY_KEY,
+  );
+  const cnmcCachedSummary = cachedCnmcQuery
+    ? null
+    : readCnmcCachedPeriodSummary();
+  const cnmcLatestYear = cachedCnmcQuery
+    ? cachedCnmcQuery.records.reduce(
+        (acc, rec) => (rec.anno > acc ? rec.anno : acc),
+        0,
+      )
+    : (cnmcCachedSummary?.maxYear ?? 0);
+  const cnmcBadgeLabel = cnmcLatestYear > 0 ? String(cnmcLatestYear) : 'API';
   const relativeDate = derived
     ? formatRelativeDateEs(derived.dataset.updatedAt)
     : '';
@@ -230,6 +249,35 @@ export function AppHeader() {
                   </span>
                   <span className="sections-nav-sub">
                     Antenas subvencionadas · Fase 1 y Fase 2
+                  </span>
+                </span>
+              </Link>
+
+              <Link
+                to="/cnmc"
+                id="nav-tab-cnmc"
+                className="sections-nav-item"
+                onClick={() => setSectionsMenuOpen(false)}
+              >
+                <span className="sections-nav-icon" aria-hidden="true">
+                  <BarChart3 size={17} />
+                </span>
+                <span className="sections-nav-copy">
+                  <span className="sections-nav-title-row">
+                    <span className="sections-nav-title">CNMC</span>
+                    <span
+                      className="nav-tab-badge mono"
+                      title={
+                        cnmcLatestYear > 0
+                          ? `Datos anuales CNMC hasta ${cnmcLatestYear}`
+                          : 'Datos anuales CNMC en directo desde la API CKAN'
+                      }
+                    >
+                      {cnmcBadgeLabel}
+                    </span>
+                  </span>
+                  <span className="sections-nav-sub">
+                    Telecomunicaciones anual · API oficial en directo
                   </span>
                 </span>
               </Link>

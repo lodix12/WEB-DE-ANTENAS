@@ -15,9 +15,10 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
   - Inspección completa de operador comercial, razón social concesionaria, `Gis_ID` (incluyendo expedientes fusionados `mergedGids`), bandas comerciales, rangos de frecuencias y concesiones administrativas (`Referencia` + frecuencia declarada), dirección postal, coordenadas copiables en un clic y acceso directo al expediente oficial `detalleEstacion.do?emplazamiento=<Gis_ID>`, **Google Street View** y **OpenStreetMap**.
 - **Filtrado Avanzado y Exportación Abierta**:
   - Filtros en cascada por comunidad autónoma, provincia y municipio, filtrado por operador y banda de frecuencia RF (`N28`, `N28+`, `B20`, `G9`, `B3`, `B1`, `B38`, `B7`, `B7+`, `N78`, `N258`), búsqueda por coordenadas/dirección/`Gis_ID` y exportación en **JSON propio (`.json`)**, **CSV (Excel UTF-8)** y **GeoJSON**.
-- **Sección de Novedades (`#/novedades`), Eliminaciones (`#/eliminaciones`) y UNICO 5G (`#/unico-5g`)**:
+- **Sección de Novedades (`#/novedades`), Eliminaciones (`#/eliminaciones`), UNICO 5G (`#/unico-5g`) y CNMC (`#/cnmc`)**:
   - Monitor en tiempo real durante escaneos forzados manuales (telemetría en la rama `scan-status`), historial acumulativo permanente de altas en `public/data/novedades.json` y de bajas en `public/data/eliminaciones.json`.
   - Panel simplificado **UNICO 5G** (`#/unico-5g`) con las **9.291 antenas subvencionadas** de **Fase 1 (7.330)** y **Fase 2 (1.961)**, unificación de proyectos de **Orange y Avatel** bajo **Orange**, filtros por provincia, comunidad autónoma y fase, reparto por operadora y detección automática de **antenas ya declaradas** (emparejamiento 1-a-1 por operadora hasta **1.200 m** dando preferencia a antenas con **N78** o **N28+** antes que **solo N28**, y buscando de más cercano a lejano con los saltos necesarios sobre antenas no válidas u ocupadas).
+  - Sección **CNMC** (`#/cnmc`) conectada en directo a la API CKAN oficial de **CNMC|Data** en 2 pasos (*Telecomunicaciones Anual Datos Generales*, `idTipoDataSetBD: 203`) con gráfica interactiva anual (Líneas, Área apilada, Barras y Base 100), selector de año de inicio y fin, los 6 parámetros oficiales, exportación CSV/JSON y respaldo estático ligero (`public/data/cnmc-anual.json`).
 
 ---
 
@@ -26,10 +27,10 @@ Aplicación web cartográfica de ingeniería RF y explorador de datos abiertos p
 | Capa | Tecnología | Propósito |
 | :--- | :--- | :--- |
 | **Interfaz y Bundler** | React 19 + TypeScript 7 + Vite 8 | Arquitectura modular tipada con *bundle splitting* optimizado |
-| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades`, `#/eliminaciones` y `#/unico-5g` sin errores 404 en GitHub Pages |
-| **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio | Importación exclusiva de `public/data/antenas.json`, `novedades.json`, `eliminaciones.json` y `unico-5g.json` (validación estricta anti-GeoJSON), caché en memoria e índices `O(1)` |
+| **Enrutamiento SPA** | `@tanstack/react-router` (`createHashHistory`) | Rutas `#/`, `#/novedades`, `#/eliminaciones`, `#/unico-5g` y `#/cnmc` sin errores 404 en GitHub Pages |
+| **Datos y Caché** | `@tanstack/react-query` v5 + JSON Propio + API CKAN CNMC | Importación de `public/data/*.json` y consulta en vivo en 2 pasos contra `catalogodatos.cnmc.es` con respaldo local y estático (`public/data/cnmc-anual.json`) |
 | **Motor Cartográfico** | `maplibre-gl` v6 + OpenFreeMap + OSM Retina + Google Maps | 8 estilos cartográficos (vectoriales, OSM Retina y Google Estándar / Satélite Híbrido) con renderizado WebGL en GPU |
-| **Escaneo y Procesamiento** | Python 3.12 (`scripts/fetch_antenas.py` + `scripts/build_unico_5g.py`) | Recolección bajo demanda desde MINETUR y generación determinista del censo UNICO 5G Fase 1 y Fase 2 |
+| **Escaneo y Procesamiento** | Python 3.12 (`scripts/fetch_antenas.py`, `scripts/build_unico_5g.py`, `scripts/fetch_cnmc_anual.py`) | Recolección bajo demanda desde MINETUR, generación UNICO 5G y regeneración del respaldo CNMC (`npm run update:cnmc`) |
 | **CI/CD y Hosting** | GitHub Actions (`.github/workflows/update-and-deploy.yml`) + GitHub Pages | Escaneo forzado manual (`workflow_dispatch`) y despliegue estático en cada `push` a `main` |
 
 ---

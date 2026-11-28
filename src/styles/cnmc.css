@@ -1,0 +1,1284 @@
+/* ==========================================================================
+   Sección CNMC (#/cnmc) — Telecomunicaciones Anual Datos Generales (API CKAN)
+   Alineada al sistema técnico Slate/Ocean de Redes Moviles España
+   ========================================================================== */
+
+.page-container.cnmc-page {
+  max-width: 1120px;
+  gap: 20px;
+  --cnmc-total-stroke: #0f172a;
+}
+
+[data-theme='dark'] .page-container.cnmc-page {
+  --cnmc-total-stroke: #f8fafc;
+}
+
+.cnmc-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme='dark'] .cnmc-card {
+  box-shadow: var(--shadow-md);
+}
+
+/* ==========================================================================
+   Cabecera y Estado API
+   ========================================================================== */
+
+.cnmc-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.cnmc-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 640px;
+}
+
+.cnmc-hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--accent-primary);
+}
+
+.cnmc-hero-title {
+  font-size: clamp(22px, 3vw, 28px);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+  color: var(--text-primary);
+}
+
+.cnmc-hero-sub {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.cnmc-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 9px;
+}
+
+.cnmc-hero-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cnmc-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.cnmc-status-pill.is-live {
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
+  border-color: rgba(13, 148, 136, 0.28);
+}
+
+.cnmc-status-pill.is-cache,
+.cnmc-status-pill.is-fallback {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+  border-color: rgba(217, 119, 6, 0.3);
+}
+
+.cnmc-meta-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.cnmc-meta-inline strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.cnmc-spin {
+  animation: cnmc-spin-anim 0.9s linear infinite;
+}
+
+@keyframes cnmc-spin-anim {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.cnmc-fallback-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 16px;
+  border-radius: 12px;
+  background: var(--status-warn-bg);
+  border: 1px solid rgba(217, 119, 6, 0.34);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.cnmc-fallback-banner svg {
+  color: var(--status-warn);
+  flex-shrink: 0;
+}
+
+.cnmc-fallback-copy {
+  flex: 1;
+  min-width: 220px;
+}
+
+/* ==========================================================================
+   Estados de Carga y Error
+   ========================================================================== */
+
+.cnmc-loading-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cnmc-loading-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.cnmc-error-icon {
+  color: var(--status-danger);
+}
+
+.cnmc-error-msg {
+  color: var(--status-danger);
+  font-size: 13.5px;
+  max-width: 480px;
+  text-align: center;
+}
+
+/* ==========================================================================
+   Tarjeta de Controles: Pestañas, Mercado, Rango Anual y Series
+   ========================================================================== */
+
+.cnmc-tabs-header {
+  padding: 2px 14px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.cnmc-underline-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: max-content;
+}
+
+.cnmc-underline-tab {
+  appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 12px 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.14s ease;
+}
+
+.cnmc-underline-tab:hover {
+  color: var(--text-primary);
+}
+
+.cnmc-underline-tab.is-active {
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+.cnmc-underline-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: -1px;
+  height: 2.5px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent-primary);
+}
+
+.cnmc-tab-unit {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.cnmc-underline-tab.is-active .cnmc-tab-unit {
+  background: var(--accent-soft);
+  color: var(--accent-primary);
+}
+
+.cnmc-controls-body {
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.cnmc-metric-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.cnmc-metric-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.cnmc-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.cnmc-segmented-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.cnmc-segmented-btn:hover {
+  color: var(--text-primary);
+}
+
+.cnmc-segmented-btn.is-active {
+  background: var(--bg-surface);
+  color: var(--accent-primary);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ==========================================================================
+   Selector Sincronizado de Año Inicio / Año Fin
+   ========================================================================== */
+
+.cnmc-year-control {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.cnmc-year-control-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cnmc-year-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cnmc-muted-icon {
+  color: var(--text-muted);
+}
+
+.cnmc-control-heading {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.cnmc-year-span-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.cnmc-year-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cnmc-preset-btn {
+  appearance: none;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  padding: 4px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.cnmc-preset-btn:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.cnmc-preset-btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.cnmc-year-inputs-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.cnmc-year-select-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cnmc-year-select-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.cnmc-select {
+  height: 34px;
+  min-width: 92px;
+  padding: 0 28px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cnmc-select:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+/* Barra deslizante doble sincronizada */
+.cnmc-dual-slider-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+}
+
+.cnmc-dual-slider-bar {
+  position: relative;
+  height: 20px;
+  display: flex;
+  align-items: center;
+}
+
+.cnmc-dual-slider-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border-default);
+}
+
+.cnmc-dual-slider-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: var(--accent-primary);
+}
+
+.cnmc-dual-slider-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  height: 20px;
+  background: transparent;
+  pointer-events: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.cnmc-dual-slider-input::-webkit-slider-thumb {
+  pointer-events: auto;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 2.5px solid var(--accent-primary);
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+  transition: transform 0.12s ease;
+}
+
+.cnmc-dual-slider-input::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+.cnmc-dual-slider-input::-moz-range-thumb {
+  pointer-events: auto;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  border: 2.5px solid var(--accent-primary);
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+}
+
+.cnmc-dual-slider-ticks {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   Selector de Series / Operadores / Servicios
+   ========================================================================== */
+
+.cnmc-series-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cnmc-series-selector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cnmc-series-selector-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cnmc-series-count {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.cnmc-series-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cnmc-mini-btn {
+  appearance: none;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-subtle);
+  color: var(--text-secondary);
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cnmc-mini-btn:hover,
+.cnmc-mini-btn.is-active {
+  border-color: var(--accent-primary);
+  background: var(--accent-soft);
+  color: var(--accent-primary);
+}
+
+.cnmc-series-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.cnmc-series-pill {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0.58;
+  transition:
+    opacity 0.14s ease,
+    border-color 0.14s ease,
+    background-color 0.14s ease,
+    color 0.14s ease;
+}
+
+.cnmc-series-pill:hover {
+  opacity: 0.9;
+  border-color: var(--border-default);
+}
+
+.cnmc-series-pill.is-selected {
+  opacity: 1;
+  background: var(--bg-surface-subtle);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.cnmc-series-pill-label {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cnmc-series-pill-val {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding-left: 4px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.cnmc-series-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cnmc-series-dot.is-lg {
+  width: 11px;
+  height: 11px;
+}
+
+/* ==========================================================================
+   Banda de 4 KPIs
+   ========================================================================== */
+
+.cnmc-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.cnmc-kpi-card {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cnmc-kpi-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.cnmc-kpi-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.cnmc-kpi-value.is-up,
+.cnmc-delta-text.is-up {
+  color: var(--status-ok);
+}
+
+.cnmc-kpi-value.is-down,
+.cnmc-delta-text.is-down {
+  color: var(--status-danger);
+}
+
+.cnmc-kpi-arrow {
+  display: inline-flex;
+  align-items: center;
+}
+
+.cnmc-kpi-leader {
+  min-width: 0;
+}
+
+.cnmc-kpi-leader-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cnmc-kpi-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+/* ==========================================================================
+   Tarjeta de Gráfica Interactiva
+   ========================================================================== */
+
+.cnmc-chart-card,
+.cnmc-share-card,
+.cnmc-table-card {
+  padding: 20px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cnmc-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.cnmc-card-head-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cnmc-section-title {
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+
+.cnmc-card-head-sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.cnmc-chart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cnmc-total-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cnmc-total-toggle input {
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.cnmc-export-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cnmc-chart-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cnmc-chart-canvas-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+
+.cnmc-chart-svg {
+  display: block;
+  width: 100%;
+  cursor: crosshair;
+  touch-action: pan-y;
+  outline: none;
+}
+
+.cnmc-chart-svg:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.cnmc-grid-line {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.cnmc-axis-baseline {
+  stroke: var(--border-default);
+  stroke-width: 1.25;
+}
+
+.cnmc-axis-label {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.cnmc-axis-label.is-highlighted {
+  fill: var(--accent-primary);
+  font-weight: 700;
+}
+
+.cnmc-base100-line {
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 4;
+  opacity: 0.7;
+}
+
+.cnmc-base100-label {
+  fill: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.cnmc-total-line {
+  stroke: var(--cnmc-total-stroke);
+  opacity: 0.75;
+}
+
+.cnmc-total-dot {
+  fill: var(--cnmc-total-stroke);
+  stroke: var(--bg-surface);
+  stroke-width: 2;
+}
+
+.cnmc-crosshair-line {
+  stroke: var(--accent-primary);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 3;
+  opacity: 0.75;
+}
+
+.cnmc-chart-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  border-radius: 10px;
+  background: var(--bg-surface-subtle);
+}
+
+/* Panel de inspección del año activo */
+.cnmc-inspector-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 15px;
+  border-radius: 10px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.cnmc-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cnmc-inspector-year-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cnmc-inspector-year {
+  font-size: 14px;
+  font-weight: 800;
+  padding: 2px 9px;
+  border-radius: 6px;
+  background: var(--accent-primary);
+  color: #ffffff;
+}
+
+.cnmc-inspector-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cnmc-inspector-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.cnmc-inspector-total-label {
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+}
+
+.cnmc-inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 8px;
+}
+
+.cnmc-inspector-item {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.cnmc-inspector-item:hover {
+  border-color: var(--border-strong);
+}
+
+.cnmc-inspector-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cnmc-inspector-item-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cnmc-inspector-item-val {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cnmc-inspector-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cnmc-inspector-item-meta .is-up {
+  color: var(--status-ok);
+  font-weight: 700;
+}
+
+.cnmc-inspector-item-meta .is-down {
+  color: var(--status-danger);
+  font-weight: 700;
+}
+
+.cnmc-delta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+}
+
+.cnmc-delta-chip.is-up {
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
+}
+
+.cnmc-delta-chip.is-down {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+}
+
+/* ==========================================================================
+   Barras de Cuota y Comparativa Año Inicio vs Año Fin
+   ========================================================================== */
+
+.cnmc-share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.cnmc-share-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cnmc-share-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cnmc-share-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cnmc-share-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cnmc-share-row-nums {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.cnmc-share-pct {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cnmc-share-bar-track {
+  width: 100%;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--bg-surface-subtle);
+  overflow: hidden;
+}
+
+.cnmc-share-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ==========================================================================
+   Tabla Anual Detallada
+   ========================================================================== */
+
+.cnmc-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+}
+
+.cnmc-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.cnmc-data-table thead th {
+  position: sticky;
+  top: 0;
+  padding: 10px 12px;
+  background: var(--bg-surface-subtle);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cnmc-data-table tbody td {
+  padding: 8.5px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.cnmc-data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cnmc-data-table tbody tr:hover td {
+  background: var(--bg-surface-subtle);
+}
+
+.cnmc-col-year {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--bg-surface);
+  z-index: 1;
+}
+
+.cnmc-data-table thead .cnmc-col-year {
+  background: var(--bg-surface-subtle);
+  z-index: 2;
+}
+
+.cnmc-data-table tbody tr:hover .cnmc-col-year {
+  background: var(--bg-surface-subtle);
+}
+
+.cnmc-col-num {
+  text-align: right;
+}
+
+.cnmc-col-total {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.cnmc-th-series {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   Detalles Técnicos API CKAN (2 pasos)
+   ========================================================================== */
+
+.cnmc-api-details {
+  overflow: hidden;
+}
+
+.cnmc-api-details-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 18px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  list-style: none;
+}
+
+.cnmc-api-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.cnmc-api-summary-meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.cnmc-api-details-body {
+  padding: 0 18px 18px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cnmc-api-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  padding-top: 14px;
+}
+
+.cnmc-api-meta-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cnmc-api-k {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.cnmc-api-v {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.cnmc-api-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cnmc-api-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.cnmc-api-step-num {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cnmc-api-step-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.cnmc-api-code {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* ==========================================================================
+   Adaptación Responsiva
+   ========================================================================== */
+
+@media (max-width: 960px) {
+  .cnmc-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cnmc-hero-actions {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 680px) {
+  .cnmc-year-inputs-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 12px;
+  }
+
+  .cnmc-dual-slider-wrap {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+
+  .cnmc-controls-body {
+    padding: 14px 15px 16px;
+  }
+
+  .cnmc-chart-card,
+  .cnmc-share-card,
+  .cnmc-table-card {
+    padding: 16px 15px 18px;
+  }
+
+  .cnmc-api-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cnmc-api-summary-meta {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .cnmc-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cnmc-kpi-value {
+    font-size: 19px;
+  }
+}
